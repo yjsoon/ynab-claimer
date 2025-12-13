@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Receipt Upload</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Receipt Upload</h1>
+
+    <div id="dropzone" class="dropzone">
+      <input type="file" id="fileInput" accept="image/*,.pdf" multiple>
+      <p>Tap to upload or drag files here</p>
+      <p class="hint">Images and PDFs accepted</p>
+    </div>
+
+    <div id="status" class="status"></div>
+
+    <div class="pending-section">
+      <h2>Pending Receipts <span id="count">(0)</span></h2>
+      <button id="refreshBtn" class="btn-secondary">Refresh</button>
+      <ul id="receiptList" class="receipt-list"></ul>
+    </div>
+  </div>
+
+  <script src="main.js"></script>
+</body>
+</html>

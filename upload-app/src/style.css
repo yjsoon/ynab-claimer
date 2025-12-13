@@ -1,0 +1,148 @@
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f5f5f5;
+  min-height: 100vh;
+  padding: 20px;
+}
+
+.container {
+  max-width: 500px;
+  margin: 0 auto;
+}
+
+h1 {
+  text-align: center;
+  margin-bottom: 24px;
+  color: #333;
+}
+
+h2 {
+  font-size: 1rem;
+  color: #666;
+  margin-bottom: 12px;
+}
+
+.dropzone {
+  background: #fff;
+  border: 2px dashed #ccc;
+  border-radius: 12px;
+  padding: 40px 20px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  position: relative;
+}
+
+.dropzone:hover,
+.dropzone.dragover {
+  border-color: #007aff;
+  background: #f0f7ff;
+}
+
+.dropzone input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.dropzone p {
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.dropzone .hint {
+  color: #999;
+  font-size: 0.85rem;
+  margin-top: 8px;
+}
+
+.status {
+  margin: 16px 0;
+  padding: 12px;
+  border-radius: 8px;
+  text-align: center;
+  display: none;
+}
+
+.status.success {
+  display: block;
+  background: #d4edda;
+  color: #155724;
+}
+
+.status.error {
+  display: block;
+  background: #f8d7da;
+  color: #721c24;
+}
+
+.status.uploading {
+  display: block;
+  background: #cce5ff;
+  color: #004085;
+}
+
+.pending-section {
+  margin-top: 32px;
+  background: #fff;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.btn-secondary {
+  background: #e9ecef;
+  border: none;
+  padding: 8px 16px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-bottom: 12px;
+}
+
+.btn-secondary:hover {
+  background: #dee2e6;
+}
+
+.receipt-list {
+  list-style: none;
+}
+
+.receipt-list li {
+  padding: 12px 0;
+  border-bottom: 1px solid #eee;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.receipt-list li:last-child {
+  border-bottom: none;
+}
+
+.receipt-name {
+  flex: 1;
+  font-size: 0.9rem;
+  color: #333;
+  word-break: break-all;
+}
+
+.receipt-date {
+  font-size: 0.8rem;
+  color: #999;
+  white-space: nowrap;
+}
+
+.empty-state {
+  color: #999;
+  text-align: center;
+  padding: 20px;
+  font-style: italic;
+}

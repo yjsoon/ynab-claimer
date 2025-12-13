@@ -1,0 +1,12 @@
+name = "receipt-upload"
+main = "worker/index.ts"
+compatibility_date = "2024-01-01"
+
+# R2 bucket binding - create bucket first with: wrangler r2 bucket create receipts
+[[r2_buckets]]
+binding = "RECEIPTS"
+bucket_name = "receipts"
+
+# Serve static files from src/
+[site]
+bucket = "./src"

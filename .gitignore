@@ -1,0 +1,16 @@
+# Environment
+.env
+.env.local
+
+# Dependencies
+node_modules/
+
+# Cloudflare
+.wrangler/
+.dev.vars
+
+# Build
+dist/
+
+# OS
+.DS_Store
