@@ -176,17 +176,18 @@ export default {
 
           const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
 
-          // Filter for transactions with "TODO:" in memo
+          // Filter for transactions with "TODO:" or "TODO " in memo
           // For transfers, only keep the outflow side (negative amount) to avoid duplicates
+          const todoPattern = /^TODO[:\s]/i;
           const todos: YnabTodo[] = data.data.transactions
-            .filter((t) => t.memo && t.memo.toUpperCase().startsWith('TODO:'))
+            .filter((t) => t.memo && todoPattern.test(t.memo))
             .filter((t) => !t.transfer_transaction_id || t.amount < 0)
             .map((t) => ({
               id: t.id,
               date: t.date,
               payee: t.payee_name || 'Unknown',
               amount: Math.abs(t.amount) / 1000,
-              description: t.memo!.replace(/^TODO:\s*/i, '').trim(),
+              description: t.memo!.replace(/^TODO[:\s]\s*/i, '').trim(),
             }))
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
