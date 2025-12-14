@@ -151,8 +151,13 @@ export default {
       // GET /ynab/todos - Fetch pending claims from YNAB
       if (path === '/ynab/todos' && request.method === 'GET') {
         try {
+          // Only fetch transactions from the last 6 months
+          const sixMonthsAgo = new Date();
+          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+          const sinceDate = sixMonthsAgo.toISOString().split('T')[0];
+
           const ynabResponse = await fetch(
-            `https://api.ynab.com/v1/budgets/${env.YNAB_BUDGET_ID}/transactions`,
+            `https://api.ynab.com/v1/budgets/${env.YNAB_BUDGET_ID}/transactions?since_date=${sinceDate}`,
             {
               headers: {
                 Authorization: `Bearer ${env.YNAB_API_KEY}`,

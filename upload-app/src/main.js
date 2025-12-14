@@ -1,5 +1,6 @@
 const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
+const REMEMBER_KEY = 'claim_manager_remember';
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -12,18 +13,30 @@ const todoCount = document.getElementById('todoCount');
 const authOverlay = document.getElementById('authOverlay');
 const passwordInput = document.getElementById('passwordInput');
 const authSubmit = document.getElementById('authSubmit');
+const rememberMe = document.getElementById('rememberMe');
 
 // Auth token management
 function getAuthToken() {
-  return localStorage.getItem(AUTH_KEY);
+  return localStorage.getItem(AUTH_KEY) || sessionStorage.getItem(AUTH_KEY);
 }
 
-function setAuthToken(token) {
-  localStorage.setItem(AUTH_KEY, token);
+function setAuthToken(token, remember) {
+  if (remember) {
+    localStorage.setItem(AUTH_KEY, token);
+    localStorage.setItem(REMEMBER_KEY, 'true');
+  } else {
+    sessionStorage.setItem(AUTH_KEY, token);
+    localStorage.removeItem(REMEMBER_KEY);
+  }
 }
 
 function clearAuthToken() {
   localStorage.removeItem(AUTH_KEY);
+  sessionStorage.removeItem(AUTH_KEY);
+}
+
+function shouldRemember() {
+  return localStorage.getItem(REMEMBER_KEY) === 'true';
 }
 
 function authHeaders() {
@@ -34,6 +47,7 @@ function authHeaders() {
 // Auth UI
 function showPasswordPrompt() {
   authOverlay.style.display = 'flex';
+  rememberMe.checked = shouldRemember();
   passwordInput.focus();
 }
 
@@ -67,7 +81,7 @@ async function handlePasswordSubmit() {
   const password = passwordInput.value.trim();
   if (!password) return;
 
-  setAuthToken(password);
+  setAuthToken(password, rememberMe.checked);
 
   try {
     const response = await fetch(`${API_BASE}/list`, {
@@ -272,6 +286,7 @@ passwordInput.addEventListener('keydown', (e) => {
 // Initial load with auth check
 async function init() {
   if (await checkAuth()) {
+    hidePasswordPrompt();
     loadReceipts();
     loadYnabTodos();
   }

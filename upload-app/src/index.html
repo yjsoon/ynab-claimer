@@ -7,10 +7,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <div id="authOverlay" class="auth-overlay">
+  <div id="authOverlay" class="auth-overlay" style="display: none;">
     <div class="auth-modal">
       <h2>Authentication Required</h2>
       <input type="password" id="passwordInput" placeholder="Enter password" autofocus>
+      <label class="remember-label">
+        <input type="checkbox" id="rememberMe" checked>
+        Remember me
+      </label>
       <button id="authSubmit" class="btn-primary">Submit</button>
     </div>
   </div>

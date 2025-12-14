@@ -195,13 +195,28 @@ h2 {
   color: #333;
 }
 
-.auth-modal input {
+.auth-modal input[type="password"] {
   width: 100%;
   padding: 12px;
   border: 1px solid #ccc;
   border-radius: 6px;
   font-size: 1rem;
+  margin-bottom: 12px;
+}
+
+.remember-label {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-size: 0.9rem;
+  color: #666;
   margin-bottom: 16px;
+  cursor: pointer;
+}
+
+.remember-label input {
+  cursor: pointer;
 }
 
 .btn-primary {
