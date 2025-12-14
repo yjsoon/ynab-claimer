@@ -7,6 +7,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <div id="authOverlay" class="auth-overlay">
+    <div class="auth-modal">
+      <h2>Authentication Required</h2>
+      <input type="password" id="passwordInput" placeholder="Enter password" autofocus>
+      <button id="authSubmit" class="btn-primary">Submit</button>
+    </div>
+  </div>
+
   <div class="container">
     <h1>Receipt Upload</h1>
 
@@ -22,6 +30,11 @@
       <h2>Pending Receipts <span id="count">(0)</span></h2>
       <button id="refreshBtn" class="btn-secondary">Refresh</button>
       <ul id="receiptList" class="receipt-list"></ul>
+    </div>
+
+    <div class="pending-section">
+      <h2>Pending Claims (YNAB) <span id="todoCount">(0)</span></h2>
+      <ul id="todoList" class="todo-list"></ul>
     </div>
   </div>
 

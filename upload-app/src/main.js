@@ -1,4 +1,5 @@
 const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
+const AUTH_KEY = 'claim_manager_auth';
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -6,6 +7,85 @@ const status = document.getElementById('status');
 const receiptList = document.getElementById('receiptList');
 const countSpan = document.getElementById('count');
 const refreshBtn = document.getElementById('refreshBtn');
+const todoList = document.getElementById('todoList');
+const todoCount = document.getElementById('todoCount');
+const authOverlay = document.getElementById('authOverlay');
+const passwordInput = document.getElementById('passwordInput');
+const authSubmit = document.getElementById('authSubmit');
+
+// Auth token management
+function getAuthToken() {
+  return localStorage.getItem(AUTH_KEY);
+}
+
+function setAuthToken(token) {
+  localStorage.setItem(AUTH_KEY, token);
+}
+
+function clearAuthToken() {
+  localStorage.removeItem(AUTH_KEY);
+}
+
+function authHeaders() {
+  const token = getAuthToken();
+  return token ? { 'X-Auth-Token': token } : {};
+}
+
+// Auth UI
+function showPasswordPrompt() {
+  authOverlay.style.display = 'flex';
+  passwordInput.focus();
+}
+
+function hidePasswordPrompt() {
+  authOverlay.style.display = 'none';
+}
+
+async function checkAuth() {
+  const token = getAuthToken();
+  if (!token) {
+    showPasswordPrompt();
+    return false;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/list`, {
+      headers: authHeaders(),
+    });
+    if (response.status === 401) {
+      clearAuthToken();
+      showPasswordPrompt();
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function handlePasswordSubmit() {
+  const password = passwordInput.value.trim();
+  if (!password) return;
+
+  setAuthToken(password);
+
+  try {
+    const response = await fetch(`${API_BASE}/list`, {
+      headers: authHeaders(),
+    });
+    if (response.status === 401) {
+      clearAuthToken();
+      showStatus('error', 'Invalid password');
+      passwordInput.value = '';
+      return;
+    }
+    hidePasswordPrompt();
+    loadReceipts();
+    loadYnabTodos();
+  } catch {
+    showStatus('error', 'Connection failed');
+  }
+}
 
 // Upload files
 async function uploadFiles(files) {
@@ -23,6 +103,7 @@ async function uploadFiles(files) {
 
       const response = await fetch(`${API_BASE}/upload`, {
         method: 'POST',
+        headers: authHeaders(),
         body: formData,
       });
 
@@ -50,7 +131,15 @@ async function uploadFiles(files) {
 // Load receipt list
 async function loadReceipts() {
   try {
-    const response = await fetch(`${API_BASE}/list`);
+    const response = await fetch(`${API_BASE}/list`, {
+      headers: authHeaders(),
+    });
+
+    if (response.status === 401) {
+      showPasswordPrompt();
+      return;
+    }
+
     const data = await response.json();
 
     countSpan.textContent = `(${data.receipts.length})`;
@@ -119,7 +208,71 @@ dropzone.addEventListener('drop', (e) => {
   uploadFiles(e.dataTransfer.files);
 });
 
-refreshBtn.addEventListener('click', loadReceipts);
+// Load YNAB TODOs
+async function loadYnabTodos() {
+  try {
+    const response = await fetch(`${API_BASE}/ynab/todos`, {
+      headers: authHeaders(),
+    });
 
-// Initial load
-loadReceipts();
+    if (response.status === 401) {
+      showPasswordPrompt();
+      return;
+    }
+
+    const data = await response.json();
+
+    if (data.error) {
+      todoList.innerHTML = `<li class="empty-state">Error: ${escapeHtml(data.error)}</li>`;
+      todoCount.textContent = '(error)';
+      return;
+    }
+
+    todoCount.textContent = `(${data.todos.length})`;
+
+    if (data.todos.length === 0) {
+      todoList.innerHTML = '<li class="empty-state">No pending claims</li>';
+      return;
+    }
+
+    todoList.innerHTML = data.todos
+      .map(
+        (t) => `
+        <li class="todo-item">
+          <div class="todo-main">
+            <span class="todo-payee">${escapeHtml(t.payee)}</span>
+            <span class="todo-amount">$${t.amount.toFixed(2)}</span>
+          </div>
+          <div class="todo-details">
+            <span class="todo-desc">${escapeHtml(t.description)}</span>
+            <span class="todo-date">${new Date(t.date).toLocaleDateString()}</span>
+          </div>
+        </li>
+      `
+      )
+      .join('');
+  } catch (err) {
+    console.error('Failed to load YNAB todos:', err);
+    todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
+  }
+}
+
+refreshBtn.addEventListener('click', () => {
+  loadReceipts();
+  loadYnabTodos();
+});
+
+authSubmit.addEventListener('click', handlePasswordSubmit);
+passwordInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') handlePasswordSubmit();
+});
+
+// Initial load with auth check
+async function init() {
+  if (await checkAuth()) {
+    loadReceipts();
+    loadYnabTodos();
+  }
+}
+
+init();

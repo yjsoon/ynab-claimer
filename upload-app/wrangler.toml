@@ -2,6 +2,11 @@ name = "receipt-upload"
 main = "worker/index.ts"
 compatibility_date = "2024-01-01"
 
+# Custom domain
+routes = [
+  { pattern = "receipts.soon.sg/*", zone_name = "soon.sg" }
+]
+
 # R2 bucket binding - create bucket first with: wrangler r2 bucket create receipts
 [[r2_buckets]]
 binding = "RECEIPTS"

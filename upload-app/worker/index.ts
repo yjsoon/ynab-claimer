@@ -7,6 +7,26 @@ const assetManifest = JSON.parse(manifestJSON);
 interface Env {
   RECEIPTS: R2Bucket;
   __STATIC_CONTENT: KVNamespace;
+  AUTH_PASSWORD: string;
+  YNAB_API_KEY: string;
+  YNAB_BUDGET_ID: string;
+}
+
+interface YnabTransaction {
+  id: string;
+  date: string;
+  amount: number;
+  payee_name: string | null;
+  memo: string | null;
+  transfer_transaction_id: string | null;
+}
+
+interface YnabTodo {
+  id: string;
+  date: string;
+  payee: string;
+  amount: number;
+  description: string;
 }
 
 // Generate timestamped filename
@@ -22,8 +42,14 @@ function generateKey(filename: string): string {
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
+  'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
 };
+
+// Validate auth token
+function validateAuth(request: Request, env: Env): boolean {
+  const token = request.headers.get('X-Auth-Token');
+  return token === env.AUTH_PASSWORD;
+}
 
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
@@ -33,6 +59,18 @@ export default {
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
       return new Response(null, { headers: corsHeaders });
+    }
+
+    // Check auth for API routes
+    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/'].some(
+      (route) => path === route || path.startsWith(route)
+    );
+
+    if (isApiRoute && !validateAuth(request, env)) {
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+      });
     }
 
     try {
@@ -108,6 +146,54 @@ export default {
         return new Response(JSON.stringify({ success: true, deleted: key }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
+      }
+
+      // GET /ynab/todos - Fetch pending claims from YNAB
+      if (path === '/ynab/todos' && request.method === 'GET') {
+        try {
+          const ynabResponse = await fetch(
+            `https://api.ynab.com/v1/budgets/${env.YNAB_BUDGET_ID}/transactions`,
+            {
+              headers: {
+                Authorization: `Bearer ${env.YNAB_API_KEY}`,
+              },
+            }
+          );
+
+          if (!ynabResponse.ok) {
+            const errorText = await ynabResponse.text();
+            return new Response(JSON.stringify({ error: 'YNAB API error', details: errorText }), {
+              status: ynabResponse.status,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
+
+          // Filter for transactions with "TODO:" in memo
+          // For transfers, only keep the outflow side (negative amount) to avoid duplicates
+          const todos: YnabTodo[] = data.data.transactions
+            .filter((t) => t.memo && t.memo.toUpperCase().startsWith('TODO:'))
+            .filter((t) => !t.transfer_transaction_id || t.amount < 0)
+            .map((t) => ({
+              id: t.id,
+              date: t.date,
+              payee: t.payee_name || 'Unknown',
+              amount: Math.abs(t.amount) / 1000,
+              description: t.memo!.replace(/^TODO:\s*/i, '').trim(),
+            }))
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+
+          return new Response(JSON.stringify({ todos }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Failed to fetch YNAB data';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
       }
 
       // Serve static assets for all other routes
