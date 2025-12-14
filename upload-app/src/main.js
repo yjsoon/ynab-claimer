@@ -205,7 +205,7 @@ async function loadReceipts() {
       .sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))
       .map(r => {
         const date = new Date(r.uploaded).toLocaleDateString();
-        const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_/, '');
+        const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
         return `
           <li>
             <span class="receipt-name">${escapeHtml(name)}</span>
