@@ -9,7 +9,12 @@ Process expense claims by matching YNAB transactions with uploaded receipts.
 
 ## Instructions
 
-You are helping the user process expense claims. Follow this workflow:
+You are helping the user process expense claims. Follow this workflow.
+
+**Parallelization Strategy**: Use sub-agents (Task tool) throughout to maximize speed:
+- **Downloading/identifying receipts**: Spawn parallel agents to process all receipts concurrently
+- **Post-claim cleanup**: Run cleanup tasks in background agents while showing next claim
+- This significantly speeds up claim processing, especially with many receipts
 
 ### 1. Load Configuration
 
@@ -51,9 +56,45 @@ List receipts from R2:
 curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
-### 4. Match Analysis
+### 4. Identify All Receipts
 
-Compare TODOs against uploaded receipts and show a summary:
+**Before matching, download and read ALL receipts to identify their contents.** Don't rely solely on filenames - many receipts have generic names like "Receipt-1234.pdf" or "unnamed.png".
+
+**Use sub-agents for parallel processing**: Spawn multiple Task tool agents (subagent_type="general-purpose") to download and identify receipts concurrently. Each agent handles one receipt:
+
+```
+Task 1: "Download receipt [key1] from R2, convert if HEIC, read and extract: merchant, date, amount, invoice#. Return structured summary."
+Task 2: "Download receipt [key2] from R2, convert if HEIC, read and extract: merchant, date, amount, invoice#. Return structured summary."
+...etc
+```
+
+Launch all agents in a single message (parallel tool calls) for maximum speed.
+
+For each receipt, the agent should:
+1. Download to /tmp/claims/:
+   ```bash
+   mkdir -p /tmp/claims
+   curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/receipt/[key]" -o /tmp/claims/[filename]
+   ```
+
+2. **For HEIC/image files**: Convert if needed:
+   ```bash
+   sips -Z 1500 /tmp/claims/file.heic --out /tmp/claims/file.jpg
+   ```
+
+3. **Read the receipt** using the Read tool to extract:
+   - Merchant name
+   - Date
+   - Amount
+   - Any invoice/order number
+
+4. Return structured data for the manifest.
+
+Collect all agent results and build the receipt manifest for matching.
+
+### 5. Match Analysis
+
+Compare TODOs against **identified** receipts and show a summary:
 
 **Matching criteria:**
 - Date proximity (within 3 days)
@@ -82,16 +123,34 @@ Compare TODOs against uploaded receipts and show a summary:
 1. Process ready items now?
 2. Or pause to find missing receipts first?
 
-### 5. Group Similar Items
+### 6. Group and Order Claims
 
-For items ready to process, identify groups:
-- Same merchant (e.g., multiple Cold Storage trips)
-- Same category
-- Same date range
+**Sorting strategy** (maintains claiming momentum by keeping similar items together):
 
-Ask if they want to process grouped items together or individually.
+1. **Group by merchant first** - All Cold Storage claims together, all Grab claims together, etc.
 
-### 6. Process Each Claim
+2. **Within each merchant, sub-group by description similarity** - Infer from the TODO description what type of expense it is:
+   - e.g., "groceries", "household items", "snacks" might cluster together
+   - e.g., "team lunch", "client dinner" might cluster together
+   - This lets user stay in the same mental context when filling claim forms
+
+3. **Within sub-groups, sort by date** - Chronological order within similar items
+
+**Example ordering**:
+```
+Cold Storage (5 items):
+  - Groceries: Oct 1, Oct 8, Oct 15
+  - Household: Oct 5, Oct 12
+Grab (3 items):
+  - Work commute: Oct 2, Oct 9
+  - Client meeting: Oct 7
+GitHub (1 item):
+  - Subscription: Nov 4
+```
+
+Present this grouping to user and confirm the processing order before starting.
+
+### 7. Process Each Claim
 
 For each TODO transaction:
 
@@ -148,18 +207,32 @@ For each TODO transaction:
    Folder:  file:///tmp/claims/
    ```
 
-   **Copy merchant to clipboard**: Run `echo -n "[merchant]" | pbcopy` so user can paste it easily. Use the EXACT merchant name as it appears on the receipt (e.g., "OpenAI, LLC" not "OpenAI", "Cold Storage One North 2" not "Cold Storage").
+   **Copy merchant to clipboard**: Run `echo -n "[merchant]" | pbcopy` so user can paste it easily. Use the registered company name, not the trade name:
+   - For Singapore vendors: Look for "Pte Ltd" or "LLP" (e.g., "Kap Kia Pte Ltd" not "Yeast Side")
+   - For US vendors: Look for "LLC", "Inc.", "Corp" (e.g., "OpenAI, LLC" not "OpenAI")
+   - Use the EXACT name as registered, including punctuation
 
    **Currency discrepancies**: If YNAB amount (SGD) differs from receipt amount, assume USD and calculate the exchange rate: `YNAB_SGD / Receipt_USD`. Display as: `US$X (S$Y at exchange rate of Z)`
 
 6. **Wait for user confirmation**. When user says "done":
 
-   **For speed**: Show the next claim's details FIRST, then run cleanup in parallel:
+   **For speed**: Show the next claim's details FIRST, then run cleanup via background sub-agent:
    - Present the next claim summary immediately
    - Open the next receipt
-   - In parallel/background, do the cleanup for the completed claim:
+   - **Spawn a background sub-agent** (Task tool with `run_in_background: true`) to handle cleanup for the completed claim
 
-   Cleanup tasks:
+   **Background cleanup agent prompt**:
+   ```
+   "Complete claim cleanup for transaction [TRANSACTION_ID]:
+   1. Update YNAB memo from 'TODO: X' to 'CLAIMED: X' via PUT to transactions API
+   2. Delete receipt [key] from R2 via DELETE endpoint
+   3. Delete local file /tmp/claims/[filename] using trash command
+   Credentials: YNAB_API_KEY=[key], R2_WORKER_URL=[url], R2_PASSWORD=[pwd]"
+   ```
+
+   This runs cleanup concurrently while user reviews the next claim. No need to wait for cleanup to complete before proceeding.
+
+   Cleanup tasks (for reference):
    - Update YNAB memo from "TODO: X" to "CLAIMED: X":
      ```bash
      curl -s -X PUT -H "Authorization: Bearer <YNAB_API_KEY>" \
@@ -178,18 +251,23 @@ For each TODO transaction:
 
 7. Move to the next claim.
 
-### 7. Handle Edge Cases
+### 8. Handle Edge Cases
 
 - **No matching receipt**: Flag for manual review, ask user if they want to skip or mark without receipt
 - **Multiple matches**: Show all options and let user pick
 - **Unmatched receipts**: At the end, list any receipts that weren't matched to transactions
 
-### 8. Summary
+### 9. Summary
 
-When all claims are processed, show:
-- Number of claims processed
-- Any skipped items
-- Any orphaned receipts remaining
+When all claims are processed:
+
+1. **Wait for background cleanup agents**: Use TaskOutput to verify all background cleanup tasks completed successfully. Report any failures.
+
+2. **Show summary**:
+   - Number of claims processed
+   - Any skipped items
+   - Any orphaned receipts remaining
+   - Any cleanup failures that need manual attention
 
 ---
 
