@@ -34,8 +34,9 @@ function generateKey(filename: string): string {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
   const time = now.toTimeString().split(' ')[0].replace(/:/g, '');
+  const ms = now.getMilliseconds().toString().padStart(3, '0');
   const safeName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-  return `${date}_${time}_${safeName}`;
+  return `${date}_${time}_${ms}_${safeName}`;
 }
 
 // CORS headers for cross-origin requests
