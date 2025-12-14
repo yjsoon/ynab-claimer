@@ -1,5 +1,12 @@
+import { getAssetFromKV } from '@cloudflare/kv-asset-handler';
+// @ts-ignore
+import manifestJSON from '__STATIC_CONTENT_MANIFEST';
+
+const assetManifest = JSON.parse(manifestJSON);
+
 interface Env {
   RECEIPTS: R2Bucket;
+  __STATIC_CONTENT: KVNamespace;
 }
 
 // Generate timestamped filename
@@ -19,7 +26,7 @@ const corsHeaders = {
 };
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
 
@@ -28,12 +35,8 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Serve static files for root path
-    if (path === '/' || path === '/index.html') {
-      return env.RECEIPTS ? fetch(request) : new Response('Worker ready', { status: 200 });
-    }
-
     try {
+      // API routes
       // POST /upload - Upload a receipt
       if (path === '/upload' && request.method === 'POST') {
         const formData = await request.formData();
@@ -107,11 +110,19 @@ export default {
         });
       }
 
-      return new Response(JSON.stringify({ error: 'Not found' }), {
-        status: 404,
-        headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-      });
+      // Serve static assets for all other routes
+      return await getAssetFromKV(
+        { request, waitUntil: ctx.waitUntil.bind(ctx) },
+        {
+          ASSET_NAMESPACE: env.__STATIC_CONTENT,
+          ASSET_MANIFEST: assetManifest,
+        }
+      );
     } catch (error) {
+      // If asset not found, return 404
+      if (error instanceof Error && error.message.includes('could not find')) {
+        return new Response('Not found', { status: 404 });
+      }
       const message = error instanceof Error ? error.message : 'Unknown error';
       return new Response(JSON.stringify({ error: message }), {
         status: 500,
