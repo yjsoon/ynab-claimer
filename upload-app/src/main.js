@@ -210,6 +210,8 @@ dropzone.addEventListener('drop', (e) => {
 
 // Load YNAB TODOs
 async function loadYnabTodos() {
+  todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
+
   try {
     const response = await fetch(`${API_BASE}/ynab/todos`, {
       headers: authHeaders(),
