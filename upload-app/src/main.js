@@ -102,41 +102,44 @@ async function handlePasswordSubmit() {
   }
 }
 
-// Upload files
+// Upload a single file
+async function uploadFile(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Upload failed');
+  }
+
+  return response.json();
+}
+
+// Upload files in parallel
 async function uploadFiles(files) {
   if (files.length === 0) return;
 
   showStatus('uploading', `Uploading ${files.length} file(s)...`);
 
-  let successCount = 0;
-  let errorCount = 0;
+  const results = await Promise.allSettled(Array.from(files).map(uploadFile));
 
-  for (const file of files) {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: formData,
-      });
-
-      if (response.ok) {
-        successCount++;
-      } else {
-        errorCount++;
-      }
-    } catch (err) {
-      console.error('Upload error:', err);
-      errorCount++;
-    }
-  }
+  const successCount = results.filter((r) => r.status === 'fulfilled').length;
+  const errorCount = results.filter((r) => r.status === 'rejected').length;
 
   if (errorCount === 0) {
     showStatus('success', `Uploaded ${successCount} receipt(s)`);
   } else {
-    showStatus('error', `${successCount} uploaded, ${errorCount} failed`);
+    const errors = results
+      .filter((r) => r.status === 'rejected')
+      .map((r) => r.reason.message)
+      .join(', ');
+    showStatus('error', `${successCount} uploaded, ${errorCount} failed: ${errors}`);
   }
 
   // Refresh list after upload
