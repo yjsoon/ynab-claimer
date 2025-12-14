@@ -105,10 +105,22 @@ For each TODO transaction:
    ```bash
    mkdir -p /tmp/claims
    curl -s "<R2_WORKER_URL>/receipt/[key]" -o /tmp/claims/[filename]
-   open /tmp/claims/[filename]
-   open /tmp/claims
    ```
-   Also use the Read tool to view and extract details from the receipt.
+
+   **For HEIC files**: Convert to JPEG for easier viewing, then delete the HEIC:
+   ```bash
+   sips -Z 1500 /tmp/claims/file.heic --out /tmp/claims/file.jpg
+   trash /tmp/claims/file.heic
+   ```
+
+   **Rename for clarity**: Rename the local file to a descriptive format:
+   `[claim#] - [merchant] [date] [amount].[ext]`
+
+   Example: `1 - stratechery-dithering 25-oct 150.pdf`
+
+   Then open the renamed file. Also use the Read tool to view and extract details.
+
+   **Cleanup**: After each claim, delete the processed local file immediately to keep /tmp/claims clean. Only the current claim's receipt should be in the folder.
 
 4. **Extract from receipt**:
    - Merchant name
@@ -123,16 +135,25 @@ For each TODO transaction:
    Date: [date]
    Merchant: [merchant]
    Description: [description from memo]
-   Amount (SGD): [YNAB amount]
-   Amount (USD): [receipt amount if different]
-   Exchange rate: [SGD/USD rate if applicable]
+   Amount: S$[YNAB amount]
+          (or for foreign currency: US$[receipt amount] (S$[YNAB amount] at exchange rate of [rate]))
    Tax: [tax amount if found, or "included" / "not shown"]
-   Receipt: [filename]
+   Receipt: file:///tmp/claims/[filename]
+   Folder:  file:///tmp/claims/
    ```
 
-   **Currency discrepancies**: If YNAB amount (SGD) differs from receipt amount, assume USD and calculate the exchange rate: `YNAB_SGD / Receipt_USD`. Show this to the user.
+   **Copy merchant to clipboard**: Run `echo -n "[merchant]" | pbcopy` so user can paste it easily. Use the EXACT merchant name as it appears on the receipt (e.g., "OpenAI, LLC" not "OpenAI", "Cold Storage One North 2" not "Cold Storage").
+
+   **Currency discrepancies**: If YNAB amount (SGD) differs from receipt amount, assume USD and calculate the exchange rate: `YNAB_SGD / Receipt_USD`. Display as: `US$X (S$Y at exchange rate of Z)`
 
 6. **Wait for user confirmation**. When user says "done":
+
+   **For speed**: Show the next claim's details FIRST, then run cleanup in parallel:
+   - Present the next claim summary immediately
+   - Open the next receipt
+   - In parallel/background, do the cleanup for the completed claim:
+
+   Cleanup tasks:
    - Update YNAB memo from "TODO: X" to "CLAIMED: X":
      ```bash
      curl -s -X PUT -H "Authorization: Bearer <YNAB_API_KEY>" \
@@ -144,9 +165,9 @@ For each TODO transaction:
      ```bash
      curl -s -X DELETE "<R2_WORKER_URL>/receipt/[key]"
      ```
-   - Clean up local claims folder:
+   - Delete local receipt file (keeps /tmp/claims clean for easier uploads):
      ```bash
-     rm -rf /tmp/claims/*
+     trash /tmp/claims/[filename]
      ```
 
 7. Move to the next claim.
