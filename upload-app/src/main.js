@@ -2,6 +2,10 @@ const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
 
+// Upload constraints (must match server)
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const status = document.getElementById('status');
@@ -102,6 +106,20 @@ async function handlePasswordSubmit() {
   }
 }
 
+// Validate file before upload
+function validateFile(file) {
+  if (file.size > MAX_FILE_SIZE) {
+    return `${file.name}: exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit`;
+  }
+
+  const ext = file.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    return `${file.name}: invalid type (${ext || 'no extension'})`;
+  }
+
+  return null; // Valid
+}
+
 // Upload a single file
 async function uploadFile(file) {
   const formData = new FormData();
@@ -121,19 +139,35 @@ async function uploadFile(file) {
   return response.json();
 }
 
-// Upload files in parallel
+// Upload files in parallel with pre-validation
 async function uploadFiles(files) {
   if (files.length === 0) return;
 
-  showStatus('uploading', `Uploading ${files.length} file(s)...`);
+  // Pre-validate all files
+  const fileArray = Array.from(files);
+  const validationErrors = fileArray.map(validateFile).filter(Boolean);
 
-  const results = await Promise.allSettled(Array.from(files).map(uploadFile));
+  if (validationErrors.length === fileArray.length) {
+    // All files invalid
+    showStatus('error', validationErrors.join('; '));
+    return;
+  }
+
+  // Filter to valid files only
+  const validFiles = fileArray.filter((f) => !validateFile(f));
+  const skippedCount = fileArray.length - validFiles.length;
+
+  showStatus('uploading', `Uploading ${validFiles.length} file(s)...`);
+
+  const results = await Promise.allSettled(validFiles.map(uploadFile));
 
   const successCount = results.filter((r) => r.status === 'fulfilled').length;
   const errorCount = results.filter((r) => r.status === 'rejected').length;
 
-  if (errorCount === 0) {
+  if (errorCount === 0 && skippedCount === 0) {
     showStatus('success', `Uploaded ${successCount} receipt(s)`);
+  } else if (errorCount === 0) {
+    showStatus('success', `Uploaded ${successCount}, skipped ${skippedCount} invalid`);
   } else {
     const errors = results
       .filter((r) => r.status === 'rejected')
