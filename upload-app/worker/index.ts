@@ -9,32 +9,24 @@ const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
 
 // Magic byte signatures for file type validation
-const MAGIC_BYTES: Record<string, number[][]> = {
-  'image/jpeg': [[0xff, 0xd8, 0xff]],
-  'image/png': [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
-  'image/gif': [[0x47, 0x49, 0x46, 0x38]], // GIF8
-  'image/webp': [[0x52, 0x49, 0x46, 0x46]], // RIFF (WebP starts with RIFF)
-  'application/pdf': [[0x25, 0x50, 0x44, 0x46]], // %PDF
-  // HEIC/HEIF use ftyp box - check for 'ftyp' at offset 4
-  'image/heic': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ...ftyp at bytes 4-7
-  'image/heif': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]],
+// Each entry is [offset, bytes[]] to check
+const MAGIC_BYTES: Record<string, { offset: number; bytes: number[] }> = {
+  'image/jpeg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
+  'image/png': { offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  'image/gif': { offset: 0, bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF8
+  'image/webp': { offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] }, // RIFF
+  'application/pdf': { offset: 0, bytes: [0x25, 0x50, 0x44, 0x46] }, // %PDF
+  'image/heic': { offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] }, // ftyp at offset 4
+  'image/heif': { offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] }, // ftyp at offset 4
 };
 
 // Validate file magic bytes
 function validateMagicBytes(buffer: ArrayBuffer, mimeType: string): boolean {
-  const signatures = MAGIC_BYTES[mimeType];
-  if (!signatures) return true; // No signature defined, skip check
+  const sig = MAGIC_BYTES[mimeType];
+  if (!sig) return true; // No signature defined, skip check
 
   const bytes = new Uint8Array(buffer.slice(0, 12));
-
-  // Special handling for HEIC/HEIF - check ftyp at offset 4
-  if (mimeType === 'image/heic' || mimeType === 'image/heif') {
-    const ftyp = [0x66, 0x74, 0x79, 0x70]; // 'ftyp'
-    return ftyp.every((b, i) => bytes[4 + i] === b);
-  }
-
-  // Check if any signature matches
-  return signatures.some((sig) => sig.every((b, i) => bytes[i] === b));
+  return sig.bytes.every((b, i) => bytes[sig.offset + i] === b);
 }
 
 // Validate file extension
@@ -193,7 +185,8 @@ export default {
 
       // GET /list - List receipts with optional pagination
       if (path === '/list' && request.method === 'GET') {
-        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 1000);
+        const limitParam = parseInt(url.searchParams.get('limit') || '100', 10);
+        const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 1000);
         const cursor = url.searchParams.get('cursor') || undefined;
 
         const listed = await env.RECEIPTS.list({ limit, cursor });
