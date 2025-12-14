@@ -6,15 +6,42 @@ const assetManifest = JSON.parse(manifestJSON);
 
 // Upload constraints
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
-const ALLOWED_MIME_TYPES = [
-  'image/jpeg',
-  'image/png',
-  'image/gif',
-  'image/webp',
-  'image/heic',
-  'image/heif',
-  'application/pdf',
-];
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+
+// Magic byte signatures for file type validation
+const MAGIC_BYTES: Record<string, number[][]> = {
+  'image/jpeg': [[0xff, 0xd8, 0xff]],
+  'image/png': [[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]],
+  'image/gif': [[0x47, 0x49, 0x46, 0x38]], // GIF8
+  'image/webp': [[0x52, 0x49, 0x46, 0x46]], // RIFF (WebP starts with RIFF)
+  'application/pdf': [[0x25, 0x50, 0x44, 0x46]], // %PDF
+  // HEIC/HEIF use ftyp box - check for 'ftyp' at offset 4
+  'image/heic': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]], // ...ftyp at bytes 4-7
+  'image/heif': [[0x00, 0x00, 0x00], [0x66, 0x74, 0x79, 0x70]],
+};
+
+// Validate file magic bytes
+function validateMagicBytes(buffer: ArrayBuffer, mimeType: string): boolean {
+  const signatures = MAGIC_BYTES[mimeType];
+  if (!signatures) return true; // No signature defined, skip check
+
+  const bytes = new Uint8Array(buffer.slice(0, 12));
+
+  // Special handling for HEIC/HEIF - check ftyp at offset 4
+  if (mimeType === 'image/heic' || mimeType === 'image/heif') {
+    const ftyp = [0x66, 0x74, 0x79, 0x70]; // 'ftyp'
+    return ftyp.every((b, i) => bytes[4 + i] === b);
+  }
+
+  // Check if any signature matches
+  return signatures.some((sig) => sig.every((b, i) => bytes[i] === b));
+}
+
+// Validate file extension
+function getExtension(filename: string): string {
+  const match = filename.toLowerCase().match(/\.[a-z0-9]+$/);
+  return match ? match[0] : '';
+}
 
 interface Env {
   RECEIPTS: R2Bucket;
@@ -129,16 +156,25 @@ export default {
           );
         }
 
-        // Validate MIME type
-        if (!ALLOWED_MIME_TYPES.includes(file.type)) {
+        // Validate file extension
+        const ext = getExtension(file.name);
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
           return new Response(
-            JSON.stringify({ error: `Invalid file type: ${file.type}. Allowed: images and PDFs` }),
+            JSON.stringify({ error: `Invalid file extension: ${ext}. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}` }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
 
         const key = generateKey(file.name);
         const arrayBuffer = await file.arrayBuffer();
+
+        // Validate magic bytes match claimed type
+        if (!validateMagicBytes(arrayBuffer, file.type)) {
+          return new Response(
+            JSON.stringify({ error: 'File content does not match declared type' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         await env.RECEIPTS.put(key, arrayBuffer, {
           httpMetadata: {
