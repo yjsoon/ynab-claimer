@@ -26,6 +26,7 @@ function setAuthToken(token, remember) {
     localStorage.setItem(REMEMBER_KEY, 'true');
   } else {
     sessionStorage.setItem(AUTH_KEY, token);
+    localStorage.removeItem(AUTH_KEY); // Clear any previously stored token
     localStorage.removeItem(REMEMBER_KEY);
   }
 }
