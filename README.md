@@ -68,3 +68,22 @@ Mobile/Desktop                    YNAB
      ▼                              ▼
   Cleaned up                   Marked complete
 ```
+
+## iOS Shortcut (Optional)
+
+Create an Apple Shortcut to upload receipts directly from the Share Sheet:
+
+1. Open **Shortcuts** app → tap **+** to create new shortcut
+2. Dismiss the action picker popup
+3. Tap **ⓘ** at the top → enable **Show in Share Sheet** → under "Receive", select **Images** and **Files**
+4. Tap **Done**, then add the **Get Contents of URL** action:
+   - URL: `https://your-worker-url.workers.dev/upload`
+   - Show More → Method: **POST**
+   - Request Body: **Form**
+   - Tap **Add new field** → choose **File** type first
+   - Key (left field): `file`
+   - Value: tap and choose **Shortcut Input** from the popup
+5. Add **Show Notification** action: `Receipt uploaded`
+6. Rename shortcut to "Upload Receipt"
+
+Now share any receipt image/PDF → choose **Upload Receipt** from the share sheet.
