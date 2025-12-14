@@ -1,3 +1,8 @@
+---
+name: claims
+description: Process expense claims by matching YNAB transactions with uploaded receipts. Use when the user mentions claims, expenses, reimbursements, receipts, or YNAB TODOs.
+---
+
 # Claim Processing Workflow
 
 Process expense claims by matching YNAB transactions with uploaded receipts.
@@ -12,6 +17,7 @@ Use the Read tool to read `.env` in the project root. Extract these values:
 - `YNAB_API_KEY` - API key for YNAB
 - `YNAB_BUDGET_ID` - Budget ID to query
 - `R2_WORKER_URL` - URL of the receipt upload worker
+- `R2_PASSWORD` - Password for receipt worker auth
 
 If `.env` is missing or incomplete, ask the user to set it up using `.env.example` as a template.
 
@@ -42,7 +48,7 @@ Parse the response to extract:
 List receipts from R2:
 
 ```bash
-curl -s "<R2_WORKER_URL>/list" | jq '.receipts'
+curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
 ### 4. Match Analysis
@@ -104,7 +110,7 @@ For each TODO transaction:
 3. **Download and open the receipt**:
    ```bash
    mkdir -p /tmp/claims
-   curl -s "<R2_WORKER_URL>/receipt/[key]" -o /tmp/claims/[filename]
+   curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/receipt/[key]" -o /tmp/claims/[filename]
    ```
 
    **For HEIC files**: Convert to JPEG for easier viewing, then delete the HEIC:
@@ -163,7 +169,7 @@ For each TODO transaction:
      ```
    - Delete receipt from R2:
      ```bash
-     curl -s -X DELETE "<R2_WORKER_URL>/receipt/[key]"
+     curl -s -X DELETE -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/receipt/[key]"
      ```
    - Delete local receipt file (keeps /tmp/claims clean for easier uploads):
      ```bash

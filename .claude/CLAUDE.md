@@ -5,12 +5,12 @@ Expense claim management system using YNAB + Cloudflare R2.
 ## Project Structure
 
 - `upload-app/` - Cloudflare Worker + static site for receipt uploads
-- `.claude/commands/claims.md` - Skill for processing claims interactively
+- `.claude/skills/claims/SKILL.md` - Skill for processing claims (auto-invoked)
 - `.env` - Configuration (YNAB API key, budget ID, worker URL)
 
-## Key Commands
+## Usage
 
-- `/claims` - Start interactive claim processing
+Say "help me with claims" or "process expenses" - the claims skill auto-invokes.
 
 ## Configuration
 

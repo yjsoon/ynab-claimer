@@ -43,10 +43,14 @@ Interactive claim processing workflow run via Claude Code.
 
 ```bash
 cp .env.example .env
-# Edit .env with your YNAB API key and budget ID
+# Edit .env with your values
 ```
 
-Get your YNAB API key from: https://app.ynab.com/settings/developer
+Required values:
+- `YNAB_API_KEY` - Get from https://app.ynab.com/settings/developer
+- `YNAB_BUDGET_ID` - From URL when viewing budget: `app.ynab.com/{budget_id}/...`
+- `R2_WORKER_URL` - Your deployed worker URL (e.g. `https://receipts.yourdomain.com`)
+- `R2_PASSWORD` - Same as AUTH_PASSWORD you set in worker secrets
 
 ### 2. Deploy Upload App
 
