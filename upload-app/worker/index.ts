@@ -65,6 +65,7 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
     'Access-Control-Allow-Origin': effectiveOrigin,
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
+    Vary: 'Origin', // Prevent caches from serving wrong CORS headers
   };
 }
 
