@@ -101,11 +101,14 @@ For each TODO transaction:
    - Amount match (exact or close)
    - Show top matches and let user confirm
 
-3. **Display the receipt** using the Read tool:
+3. **Download and open the receipt**:
+   ```bash
+   mkdir -p /tmp/claims
+   curl -s "<R2_WORKER_URL>/receipt/[key]" -o /tmp/claims/[filename]
+   open /tmp/claims/[filename]
+   open /tmp/claims
    ```
-   Download: curl -s "<R2_WORKER_URL>/receipt/[key]" -o /tmp/receipt_[key]
-   Then use Read tool to view the image
-   ```
+   Also use the Read tool to view and extract details from the receipt.
 
 4. **Extract from receipt**:
    - Merchant name
@@ -120,12 +123,16 @@ For each TODO transaction:
    Date: [date]
    Merchant: [merchant]
    Description: [description from memo]
-   Amount: [amount]
+   Amount (SGD): [YNAB amount]
+   Amount (USD): [receipt amount if different]
+   Exchange rate: [SGD/USD rate if applicable]
    Tax: [tax amount if found, or "included" / "not shown"]
    Receipt: [filename]
    ```
 
-6. **Wait for user confirmation**. When confirmed:
+   **Currency discrepancies**: If YNAB amount (SGD) differs from receipt amount, assume USD and calculate the exchange rate: `YNAB_SGD / Receipt_USD`. Show this to the user.
+
+6. **Wait for user confirmation**. When user says "done":
    - Update YNAB memo from "TODO: X" to "CLAIMED: X":
      ```bash
      curl -s -X PUT -H "Authorization: Bearer <YNAB_API_KEY>" \
@@ -136,6 +143,10 @@ For each TODO transaction:
    - Delete receipt from R2:
      ```bash
      curl -s -X DELETE "<R2_WORKER_URL>/receipt/[key]"
+     ```
+   - Clean up local claims folder:
+     ```bash
+     rm -rf /tmp/claims/*
      ```
 
 7. Move to the next claim.
