@@ -191,18 +191,26 @@ export default {
         });
       }
 
-      // GET /list - List all receipts
+      // GET /list - List receipts with optional pagination
       if (path === '/list' && request.method === 'GET') {
-        const listed = await env.RECEIPTS.list();
+        const limit = Math.min(parseInt(url.searchParams.get('limit') || '100', 10), 1000);
+        const cursor = url.searchParams.get('cursor') || undefined;
+
+        const listed = await env.RECEIPTS.list({ limit, cursor });
         const receipts = listed.objects.map((obj) => ({
           key: obj.key,
           size: obj.size,
           uploaded: obj.uploaded.toISOString(),
         }));
 
-        return new Response(JSON.stringify({ receipts }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({
+            receipts,
+            cursor: listed.truncated ? listed.cursor : null,
+            hasMore: listed.truncated,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
 
       // GET /receipt/:key - Download a receipt
