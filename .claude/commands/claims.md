@@ -8,21 +8,26 @@ You are helping the user process expense claims. Follow this workflow:
 
 ### 1. Load Configuration
 
-Read the `.env` file in the project root to get:
+Use the Read tool to read `.env` in the project root. Extract these values:
 - `YNAB_API_KEY` - API key for YNAB
 - `YNAB_BUDGET_ID` - Budget ID to query
 - `R2_WORKER_URL` - URL of the receipt upload worker
 
 If `.env` is missing or incomplete, ask the user to set it up using `.env.example` as a template.
 
+**Important**: When using these values in curl commands, substitute them directly into the command (don't rely on shell variable expansion from `source .env` as it doesn't handle comments well).
+
 ### 2. Fetch YNAB Transactions
 
-Use curl to fetch transactions marked with "TODO:" in the memo:
+Use curl to fetch transactions marked with "TODO" in the memo:
 
 ```bash
-curl -s -H "Authorization: Bearer $YNAB_API_KEY" \
-  "https://api.ynab.com/v1/budgets/$YNAB_BUDGET_ID/transactions" | jq '.data.transactions[] | select(.memo != null and (.memo | test("TODO:"; "i")))'
+curl -s -H "Authorization: Bearer <YNAB_API_KEY>" \
+  "https://api.ynab.com/v1/budgets/<YNAB_BUDGET_ID>/transactions" \
+  | jq '[.data.transactions[] | select(.memo) | select(.memo | ascii_downcase | contains("todo"))]'
 ```
+
+Note: Filter for `amount < 0` (outflows) to avoid duplicate transfer entries.
 
 Parse the response to extract:
 - `id` - Transaction ID (for updating later)
@@ -37,7 +42,7 @@ Parse the response to extract:
 List receipts from R2:
 
 ```bash
-curl -s "$R2_WORKER_URL/list" | jq '.receipts'
+curl -s "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
 ### 4. Analyse and Group
@@ -67,7 +72,7 @@ For each TODO transaction:
 
 3. **Display the receipt** using the Read tool:
    ```
-   Download: curl -s "$R2_WORKER_URL/receipt/[key]" -o /tmp/receipt_[key]
+   Download: curl -s "<R2_WORKER_URL>/receipt/[key]" -o /tmp/receipt_[key]
    Then use Read tool to view the image
    ```
 
@@ -92,14 +97,14 @@ For each TODO transaction:
 6. **Wait for user confirmation**. When confirmed:
    - Update YNAB memo from "TODO: X" to "CLAIMED: X":
      ```bash
-     curl -s -X PUT -H "Authorization: Bearer $YNAB_API_KEY" \
+     curl -s -X PUT -H "Authorization: Bearer <YNAB_API_KEY>" \
        -H "Content-Type: application/json" \
        -d '{"transaction": {"memo": "CLAIMED: [description]"}}' \
-       "https://api.ynab.com/v1/budgets/$YNAB_BUDGET_ID/transactions/$TRANSACTION_ID"
+       "https://api.ynab.com/v1/budgets/<YNAB_BUDGET_ID>/transactions/<TRANSACTION_ID>"
      ```
    - Delete receipt from R2:
      ```bash
-     curl -s -X DELETE "$R2_WORKER_URL/receipt/[key]"
+     curl -s -X DELETE "<R2_WORKER_URL>/receipt/[key]"
      ```
 
 7. Move to the next claim.
