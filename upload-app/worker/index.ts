@@ -42,14 +42,14 @@ interface YnabTodo {
   description: string;
 }
 
-// Generate timestamped filename
+// Generate timestamped filename with UUID to prevent collisions
 function generateKey(filename: string): string {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
   const time = now.toTimeString().split(' ')[0].replace(/:/g, '');
-  const ms = now.getMilliseconds().toString().padStart(3, '0');
+  const uuid = crypto.randomUUID().slice(0, 8); // Short UUID suffix
   const safeName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-  return `${date}_${time}_${ms}_${safeName}`;
+  return `${date}_${time}_${uuid}_${safeName}`;
 }
 
 // Build CORS headers - same-origin by default, configurable via CORS_ORIGIN env var
