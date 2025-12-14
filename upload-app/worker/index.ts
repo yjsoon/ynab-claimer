@@ -10,6 +10,7 @@ interface Env {
   AUTH_PASSWORD: string;
   YNAB_API_KEY: string;
   YNAB_BUDGET_ID: string;
+  CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
 }
 
 interface YnabTransaction {
@@ -39,12 +40,21 @@ function generateKey(filename: string): string {
   return `${date}_${time}_${ms}_${safeName}`;
 }
 
-// CORS headers for cross-origin requests
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
-};
+// Build CORS headers - same-origin by default, configurable via CORS_ORIGIN env var
+function getCorsHeaders(request: Request, env: Env): Record<string, string> {
+  const origin = request.headers.get('Origin');
+  const selfOrigin = new URL(request.url).origin;
+  const allowedOrigin = env.CORS_ORIGIN || selfOrigin;
+
+  // Allow if: no Origin header (CLI/curl), or origin matches allowed origin
+  const effectiveOrigin = !origin ? '*' : origin === allowedOrigin ? origin : '';
+
+  return {
+    'Access-Control-Allow-Origin': effectiveOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
+  };
+}
 
 // Validate auth token
 function validateAuth(request: Request, env: Env): boolean {
@@ -56,6 +66,16 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const corsHeaders = getCorsHeaders(request, env);
+
+    // Block cross-origin requests from disallowed origins
+    const origin = request.headers.get('Origin');
+    if (origin && corsHeaders['Access-Control-Allow-Origin'] === '') {
+      return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
