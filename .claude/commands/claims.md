@@ -45,16 +45,47 @@ List receipts from R2:
 curl -s "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
-### 4. Analyse and Group
+### 4. Match Analysis
 
-Look at the transactions and identify groups:
-- Same payee (e.g., multiple Grab rides)
+Compare TODOs against uploaded receipts and show a summary:
+
+**Matching criteria:**
+- Date proximity (within 3 days)
+- Amount match (exact or within 10%)
+
+**Present the overview:**
+```
+=== CLAIMS OVERVIEW ===
+
+✅ READY TO PROCESS (X items) - have matching receipts:
+   - [date] [description] $[amount]
+   ...
+
+❌ MISSING RECEIPTS (Y items) - need to find:
+   - 3x Cold Storage (~$40-60 each, Oct-Nov)
+   - 2x Grab rides (~$30-40, Nov)
+   - 1x GitHub ($133, Nov 4)
+   ...
+
+📎 UNMATCHED RECEIPTS (Z items) - uploaded but no matching TODO:
+   - [filename] [date]
+   ...
+```
+
+**Ask the user:**
+1. Process ready items now?
+2. Or pause to find missing receipts first?
+
+### 5. Group Similar Items
+
+For items ready to process, identify groups:
+- Same merchant (e.g., multiple Cold Storage trips)
 - Same category
 - Same date range
 
-Ask the user if they want to process grouped items together or individually.
+Ask if they want to process grouped items together or individually.
 
-### 5. Process Each Claim
+### 6. Process Each Claim
 
 For each TODO transaction:
 
@@ -109,13 +140,13 @@ For each TODO transaction:
 
 7. Move to the next claim.
 
-### 6. Handle Edge Cases
+### 7. Handle Edge Cases
 
 - **No matching receipt**: Flag for manual review, ask user if they want to skip or mark without receipt
 - **Multiple matches**: Show all options and let user pick
 - **Unmatched receipts**: At the end, list any receipts that weren't matched to transactions
 
-### 7. Summary
+### 8. Summary
 
 When all claims are processed, show:
 - Number of claims processed
