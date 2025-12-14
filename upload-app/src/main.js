@@ -139,41 +139,45 @@ async function uploadFile(file) {
   return response.json();
 }
 
+// Truncate error list for display
+function formatErrors(errors, max = 3) {
+  if (errors.length <= max) return errors.join(', ');
+  return errors.slice(0, max).join(', ') + ` ... and ${errors.length - max} more`;
+}
+
 // Upload files in parallel with pre-validation
 async function uploadFiles(files) {
   if (files.length === 0) return;
 
-  // Pre-validate all files
-  const fileArray = Array.from(files);
-  const validationErrors = fileArray.map(validateFile).filter(Boolean);
+  // Single-pass validation
+  const validated = Array.from(files).map((file) => ({
+    file,
+    error: validateFile(file),
+  }));
 
-  if (validationErrors.length === fileArray.length) {
-    // All files invalid
-    showStatus('error', validationErrors.join('; '));
+  const validFiles = validated.filter((v) => !v.error).map((v) => v.file);
+  const validationErrors = validated.filter((v) => v.error).map((v) => v.error);
+
+  if (validFiles.length === 0) {
+    showStatus('error', formatErrors(validationErrors));
     return;
   }
 
-  // Filter to valid files only
-  const validFiles = fileArray.filter((f) => !validateFile(f));
-  const skippedCount = fileArray.length - validFiles.length;
-
+  const skippedCount = validationErrors.length;
   showStatus('uploading', `Uploading ${validFiles.length} file(s)...`);
 
   const results = await Promise.allSettled(validFiles.map(uploadFile));
 
   const successCount = results.filter((r) => r.status === 'fulfilled').length;
-  const errorCount = results.filter((r) => r.status === 'rejected').length;
+  const failures = results.filter((r) => r.status === 'rejected');
 
-  if (errorCount === 0 && skippedCount === 0) {
+  if (failures.length === 0 && skippedCount === 0) {
     showStatus('success', `Uploaded ${successCount} receipt(s)`);
-  } else if (errorCount === 0) {
+  } else if (failures.length === 0) {
     showStatus('success', `Uploaded ${successCount}, skipped ${skippedCount} invalid`);
   } else {
-    const errors = results
-      .filter((r) => r.status === 'rejected')
-      .map((r) => r.reason.message)
-      .join(', ');
-    showStatus('error', `${successCount} uploaded, ${errorCount} failed: ${errors}`);
+    const errorMsgs = failures.map((r) => r.reason.message);
+    showStatus('error', `${successCount} uploaded, ${failures.length} failed: ${formatErrors(errorMsgs)}`);
   }
 
   // Refresh list after upload
