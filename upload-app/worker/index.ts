@@ -4,12 +4,44 @@ import manifestJSON from '__STATIC_CONTENT_MANIFEST';
 
 const assetManifest = JSON.parse(manifestJSON);
 
+// Upload constraints
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+
+// Magic byte signatures for file type validation
+// Each entry is [offset, bytes[]] to check
+const MAGIC_BYTES: Record<string, { offset: number; bytes: number[] }> = {
+  'image/jpeg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
+  'image/png': { offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
+  'image/gif': { offset: 0, bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF8
+  'image/webp': { offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] }, // RIFF
+  'application/pdf': { offset: 0, bytes: [0x25, 0x50, 0x44, 0x46] }, // %PDF
+  'image/heic': { offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] }, // ftyp at offset 4
+  'image/heif': { offset: 4, bytes: [0x66, 0x74, 0x79, 0x70] }, // ftyp at offset 4
+};
+
+// Validate file magic bytes
+function validateMagicBytes(buffer: ArrayBuffer, mimeType: string): boolean {
+  const sig = MAGIC_BYTES[mimeType];
+  if (!sig) return true; // No signature defined, skip check
+
+  const bytes = new Uint8Array(buffer.slice(0, 12));
+  return sig.bytes.every((b, i) => bytes[sig.offset + i] === b);
+}
+
+// Validate file extension
+function getExtension(filename: string): string {
+  const match = filename.toLowerCase().match(/\.[a-z0-9]+$/);
+  return match ? match[0] : '';
+}
+
 interface Env {
   RECEIPTS: R2Bucket;
   __STATIC_CONTENT: KVNamespace;
   AUTH_PASSWORD: string;
   YNAB_API_KEY: string;
   YNAB_BUDGET_ID: string;
+  CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
 }
 
 interface YnabTransaction {
@@ -29,22 +61,32 @@ interface YnabTodo {
   description: string;
 }
 
-// Generate timestamped filename
+// Generate timestamped filename with UUID to prevent collisions
 function generateKey(filename: string): string {
   const now = new Date();
   const date = now.toISOString().split('T')[0];
   const time = now.toTimeString().split(' ')[0].replace(/:/g, '');
-  const ms = now.getMilliseconds().toString().padStart(3, '0');
+  const uuid = crypto.randomUUID().slice(0, 8); // Short UUID suffix
   const safeName = filename.replace(/[^a-zA-Z0-9.-]/g, '_');
-  return `${date}_${time}_${ms}_${safeName}`;
+  return `${date}_${time}_${uuid}_${safeName}`;
 }
 
-// CORS headers for cross-origin requests
-const corsHeaders = {
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
-};
+// Build CORS headers - same-origin by default, configurable via CORS_ORIGIN env var
+function getCorsHeaders(request: Request, env: Env): Record<string, string> {
+  const origin = request.headers.get('Origin');
+  const selfOrigin = new URL(request.url).origin;
+  const allowedOrigin = env.CORS_ORIGIN || selfOrigin;
+
+  // Allow if: no Origin header (CLI/curl), or origin matches allowed origin
+  const effectiveOrigin = !origin ? '*' : origin === allowedOrigin ? origin : '';
+
+  return {
+    'Access-Control-Allow-Origin': effectiveOrigin,
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
+    Vary: 'Origin', // Prevent caches from serving wrong CORS headers
+  };
+}
 
 // Validate auth token
 function validateAuth(request: Request, env: Env): boolean {
@@ -56,6 +98,16 @@ export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
     const path = url.pathname;
+    const corsHeaders = getCorsHeaders(request, env);
+
+    // Block cross-origin requests from disallowed origins
+    const origin = request.headers.get('Origin');
+    if (origin && corsHeaders['Access-Control-Allow-Origin'] === '') {
+      return new Response(JSON.stringify({ error: 'Origin not allowed' }), {
+        status: 403,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
 
     // Handle CORS preflight
     if (request.method === 'OPTIONS') {
@@ -88,8 +140,33 @@ export default {
           });
         }
 
+        // Validate file size
+        if (file.size > MAX_FILE_SIZE) {
+          return new Response(
+            JSON.stringify({ error: `File too large. Maximum size is ${MAX_FILE_SIZE / 1024 / 1024}MB` }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
+        // Validate file extension
+        const ext = getExtension(file.name);
+        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+          return new Response(
+            JSON.stringify({ error: `Invalid file extension: ${ext}. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}` }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+
         const key = generateKey(file.name);
         const arrayBuffer = await file.arrayBuffer();
+
+        // Validate magic bytes match claimed type
+        if (!validateMagicBytes(arrayBuffer, file.type)) {
+          return new Response(
+            JSON.stringify({ error: 'File content does not match declared type' }),
+            { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
 
         await env.RECEIPTS.put(key, arrayBuffer, {
           httpMetadata: {
@@ -106,18 +183,27 @@ export default {
         });
       }
 
-      // GET /list - List all receipts
+      // GET /list - List receipts with optional pagination
       if (path === '/list' && request.method === 'GET') {
-        const listed = await env.RECEIPTS.list();
+        const limitParam = parseInt(url.searchParams.get('limit') || '100', 10);
+        const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 1000);
+        const cursor = url.searchParams.get('cursor') || undefined;
+
+        const listed = await env.RECEIPTS.list({ limit, cursor });
         const receipts = listed.objects.map((obj) => ({
           key: obj.key,
           size: obj.size,
           uploaded: obj.uploaded.toISOString(),
         }));
 
-        return new Response(JSON.stringify({ receipts }), {
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-        });
+        return new Response(
+          JSON.stringify({
+            receipts,
+            cursor: listed.truncated ? listed.cursor : null,
+            hasMore: listed.truncated,
+          }),
+          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
       }
 
       // GET /receipt/:key - Download a receipt

@@ -2,6 +2,10 @@ const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
 
+// Upload constraints (must match server)
+const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
 const status = document.getElementById('status');
@@ -26,6 +30,7 @@ function setAuthToken(token, remember) {
     localStorage.setItem(REMEMBER_KEY, 'true');
   } else {
     sessionStorage.setItem(AUTH_KEY, token);
+    localStorage.removeItem(AUTH_KEY); // Clear any previously stored token
     localStorage.removeItem(REMEMBER_KEY);
   }
 }
@@ -101,41 +106,78 @@ async function handlePasswordSubmit() {
   }
 }
 
-// Upload files
+// Validate file before upload
+function validateFile(file) {
+  if (file.size > MAX_FILE_SIZE) {
+    return `${file.name}: exceeds ${MAX_FILE_SIZE / 1024 / 1024}MB limit`;
+  }
+
+  const ext = file.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
+  if (!ALLOWED_EXTENSIONS.includes(ext)) {
+    return `${file.name}: invalid type (${ext || 'no extension'})`;
+  }
+
+  return null; // Valid
+}
+
+// Upload a single file
+async function uploadFile(file) {
+  const formData = new FormData();
+  formData.append('file', file);
+
+  const response = await fetch(`${API_BASE}/upload`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || 'Upload failed');
+  }
+
+  return response.json();
+}
+
+// Truncate error list for display
+function formatErrors(errors, max = 3) {
+  if (errors.length <= max) return errors.join(', ');
+  return errors.slice(0, max).join(', ') + ` ... and ${errors.length - max} more`;
+}
+
+// Upload files in parallel with pre-validation
 async function uploadFiles(files) {
   if (files.length === 0) return;
 
-  showStatus('uploading', `Uploading ${files.length} file(s)...`);
+  // Single-pass validation
+  const validated = Array.from(files).map((file) => ({
+    file,
+    error: validateFile(file),
+  }));
 
-  let successCount = 0;
-  let errorCount = 0;
+  const validFiles = validated.filter((v) => !v.error).map((v) => v.file);
+  const validationErrors = validated.filter((v) => v.error).map((v) => v.error);
 
-  for (const file of files) {
-    try {
-      const formData = new FormData();
-      formData.append('file', file);
-
-      const response = await fetch(`${API_BASE}/upload`, {
-        method: 'POST',
-        headers: authHeaders(),
-        body: formData,
-      });
-
-      if (response.ok) {
-        successCount++;
-      } else {
-        errorCount++;
-      }
-    } catch (err) {
-      console.error('Upload error:', err);
-      errorCount++;
-    }
+  if (validFiles.length === 0) {
+    showStatus('error', formatErrors(validationErrors));
+    return;
   }
 
-  if (errorCount === 0) {
+  const skippedCount = validationErrors.length;
+  showStatus('uploading', `Uploading ${validFiles.length} file(s)...`);
+
+  const results = await Promise.allSettled(validFiles.map(uploadFile));
+
+  const successCount = results.filter((r) => r.status === 'fulfilled').length;
+  const failures = results.filter((r) => r.status === 'rejected');
+
+  if (failures.length === 0 && skippedCount === 0) {
     showStatus('success', `Uploaded ${successCount} receipt(s)`);
+  } else if (failures.length === 0) {
+    showStatus('success', `Uploaded ${successCount}, skipped ${skippedCount} invalid`);
   } else {
-    showStatus('error', `${successCount} uploaded, ${errorCount} failed`);
+    const errorMsgs = failures.map((r) => r.reason.message);
+    showStatus('error', `${successCount} uploaded, ${failures.length} failed: ${formatErrors(errorMsgs)}`);
   }
 
   // Refresh list after upload
@@ -167,7 +209,7 @@ async function loadReceipts() {
       .sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))
       .map(r => {
         const date = new Date(r.uploaded).toLocaleDateString();
-        const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_/, '');
+        const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
         return `
           <li>
             <span class="receipt-name">${escapeHtml(name)}</span>
