@@ -103,11 +103,15 @@ h2 {
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.9rem;
-  margin-bottom: 12px;
 }
 
 .btn-secondary:hover {
   background: #dee2e6;
+}
+
+.btn-refresh {
+  display: block;
+  margin: 24px auto 0;
 }
 
 .receipt-list {
