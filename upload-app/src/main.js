@@ -19,6 +19,15 @@ const passwordInput = document.getElementById('passwordInput');
 const authSubmit = document.getElementById('authSubmit');
 const rememberMe = document.getElementById('rememberMe');
 
+// Preview modal elements
+const previewOverlay = document.getElementById('previewOverlay');
+const previewBackdrop = previewOverlay.querySelector('.preview-backdrop');
+const previewClose = document.getElementById('previewClose');
+const previewFilename = document.getElementById('previewFilename');
+const previewImage = document.getElementById('previewImage');
+const previewPdf = document.getElementById('previewPdf');
+const previewSpinner = document.getElementById('previewSpinner');
+
 // Auth token management
 function getAuthToken() {
   return localStorage.getItem(AUTH_KEY) || sessionStorage.getItem(AUTH_KEY);
@@ -205,19 +214,27 @@ async function loadReceipts() {
       return;
     }
 
-    receiptList.innerHTML = data.receipts
-      .sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded))
+    const sortedReceipts = data.receipts.sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded));
+
+    receiptList.innerHTML = sortedReceipts
       .map(r => {
         const date = new Date(r.uploaded).toLocaleDateString();
         const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
         return `
-          <li>
+          <li data-key="${escapeHtml(r.key)}" data-name="${escapeHtml(name)}">
             <span class="receipt-name">${escapeHtml(name)}</span>
             <span class="receipt-date">${date}</span>
           </li>
         `;
       })
       .join('');
+
+    // Attach click handlers for preview
+    receiptList.querySelectorAll('li[data-key]').forEach(li => {
+      li.addEventListener('click', () => {
+        openPreview(li.dataset.key, li.dataset.name);
+      });
+    });
   } catch (err) {
     console.error('Failed to load receipts:', err);
     receiptList.innerHTML = '<li class="empty-state">Failed to load receipts</li>';
@@ -242,6 +259,69 @@ function escapeHtml(str) {
   div.textContent = str;
   return div.innerHTML;
 }
+
+// Preview modal functions
+async function openPreview(key, displayName) {
+  previewFilename.textContent = displayName;
+  previewImage.classList.remove('visible');
+  previewPdf.classList.remove('visible');
+  previewSpinner.classList.add('loading');
+  previewOverlay.classList.add('active');
+  document.body.style.overflow = 'hidden';
+
+  const url = `${API_BASE}/receipt/${encodeURIComponent(key)}`;
+  const isPdf = key.toLowerCase().endsWith('.pdf');
+
+  try {
+    const response = await fetch(url, { headers: authHeaders() });
+    if (!response.ok) throw new Error('Failed to load');
+
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+
+    if (isPdf) {
+      previewPdf.src = blobUrl;
+      previewPdf.onload = () => {
+        previewSpinner.classList.remove('loading');
+        previewPdf.classList.add('visible');
+      };
+    } else {
+      previewImage.src = blobUrl;
+      previewImage.onload = () => {
+        previewSpinner.classList.remove('loading');
+        previewImage.classList.add('visible');
+      };
+    }
+  } catch (err) {
+    previewSpinner.classList.remove('loading');
+    previewFilename.textContent = `${displayName} (failed to load)`;
+    console.error('Preview failed:', err);
+  }
+}
+
+function closePreview() {
+  previewOverlay.classList.remove('active');
+  document.body.style.overflow = '';
+  // Clean up after animation
+  setTimeout(() => {
+    // Revoke blob URLs to free memory
+    if (previewImage.src.startsWith('blob:')) URL.revokeObjectURL(previewImage.src);
+    if (previewPdf.src.startsWith('blob:')) URL.revokeObjectURL(previewPdf.src);
+    previewImage.src = '';
+    previewPdf.src = '';
+    previewImage.classList.remove('visible');
+    previewPdf.classList.remove('visible');
+  }, 250);
+}
+
+// Preview event listeners
+previewClose.addEventListener('click', closePreview);
+previewBackdrop.addEventListener('click', closePreview);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && previewOverlay.classList.contains('active')) {
+    closePreview();
+  }
+});
 
 // Event listeners
 fileInput.addEventListener('change', (e) => {
