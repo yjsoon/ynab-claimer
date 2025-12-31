@@ -290,29 +290,37 @@ When all claims are processed:
 
 ---
 
-## Volopay Browser Automation (Optional)
+## Volopay Form Automation (Playwright)
 
-If user requests browser automation for Volopay claims, use Claude in Chrome tools.
+Use the Playwright script in `scripts/volopay-submit.ts` to automate Volopay claim submission.
 
-### Setup
-1. Check browser connection: `mcp__claude-in-chrome__tabs_context_mcp`
-2. Navigate to: `https://tinkertanker.volopay.co/my-volopay/reimbursement/claims?createReimbursement=true`
-3. User must be logged in (use Google SSO if needed)
+### Usage
 
-### Form Fields
+```bash
+cd scripts
+npm run submit -- claim.json
+```
 
-| Field | Value | Notes |
-|-------|-------|-------|
-| Merchant | From receipt | Type in combobox |
-| Amount | YNAB amount / 1000 | Number field |
-| Currency | SGD | Default |
-| Volopay category | "Software" for subscriptions | Select from dropdown |
-| Transaction date | Receipt/YNAB date | Date picker |
-| Receipt | Local file path | **User must upload manually** |
-| Memo | Description from TODO | Click to reveal textbox |
-| Xero category | "Computer Software (463)" for SaaS | Search in dropdown |
-| Xero tax codes | See below | Based on GST presence |
-| Xero Biz Unit | "Classes" | Always this value |
+Or pipe JSON directly:
+```bash
+echo '{"merchant":"...","amount":99.99,...}' | npm run submit
+```
+
+### Claim JSON Format
+
+```json
+{
+  "merchant": "Lovable Labs Incorporated",
+  "amount": 33.39,
+  "date": "2025-12-20",
+  "volopayCategory": "Software",
+  "memo": "Lovable AI subscription",
+  "xeroCategory": "Computer Software (463)",
+  "xeroTaxCode": "OPINPUT:Out Of Scope Purchases",
+  "xeroBizUnit": "Classes",
+  "receiptPath": "/tmp/claims/receipt.pdf"
+}
+```
 
 ### Tax Code Logic
 
@@ -322,15 +330,26 @@ If user requests browser automation for Volopay claims, use Claude in Chrome too
 | No GST + Foreign currency (USD) | OPINPUT:Out Of Scope Purchases |
 | No GST + SGD | NRINPUT:Purchases from Non-GST Registered Suppliers |
 
-### Automation Flow
+### Xero Category Mapping
 
-1. Use `read_page` to get element refs
-2. Use `form_input` or `computer` tool to fill fields
-3. Type in comboboxes to search, then click matching option
-4. User uploads receipt manually (browser security limitation)
-5. Click "Continue" to submit
+| Expense Type | Xero Category |
+|--------------|---------------|
+| Software/SaaS | Computer Software (463) |
+| Hardware | Computer Hardware & Accessories (464) |
+| Books | Books, Magazines, Journals (460) |
+| Transport (local) | Local Public Transport (incl Taxi) (451) |
+| Transport (overseas) | Overseas Transport (452) |
+| Phone/Internet | Telephone & Internet (467) |
+| Cost of sales | Cost of Sales (320) |
 
-See `.claude/skills/volopay-claim/SKILL.md` for detailed automation guide.
+### Script Behaviour
+
+1. Opens headed Chromium browser
+2. Auto-login via Google SSO (saves session for reuse)
+3. Fills all form fields automatically
+4. Uploads receipt file
+5. **Pauses for review** before submit - user clicks Continue manually
+6. Saves auth state for future runs
 
 ---
 
