@@ -5,7 +5,9 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 ## Features
 
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
+- **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
+- **Volopay Automation**: Playwright script auto-fills Volopay claim forms
 - **Password Protection**: Simple auth gate for the web app and API
 - **iOS Shortcut**: Upload receipts directly from the Share Sheet
 - **Claude Code Skill**: Interactive claim processing via `/claims` command
@@ -20,14 +22,27 @@ Web app for uploading receipts and viewing pending YNAB claims.
 
 **Endpoints**:
 - `POST /upload` - Upload receipt file
-- `GET /list` - List pending receipts
+- `GET /list` - List pending receipts (includes link metadata)
 - `GET /ynab/todos` - Fetch pending claims from YNAB
 - `GET /receipt/:key` - Download receipt
 - `DELETE /receipt/:key` - Delete receipt
+- `PUT /receipt/:key/link` - Link receipt to a YNAB transaction
 
 All endpoints require `X-Auth-Token` header.
 
-### 2. Claude Code Skill (`/claims`)
+### 2. Volopay Automation (`scripts/`)
+
+Playwright script to auto-fill Volopay expense claim forms.
+
+```bash
+cd scripts
+npm install
+npm run submit -- claim.json
+```
+
+The script fills all form fields and pauses for review before submit. If a dropdown option isn't found, it shows an alert and pauses for manual selection.
+
+### 3. Claude Code Skill (`/claims`)
 
 Interactive claim processing workflow run via Claude Code.
 
