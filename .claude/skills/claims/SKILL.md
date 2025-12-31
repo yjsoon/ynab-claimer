@@ -56,6 +56,20 @@ List receipts from R2:
 curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
+**Response includes link metadata** (if user pre-linked via web UI):
+```json
+{
+  "key": "2025-01-01_120000_abc12345_receipt.pdf",
+  "size": 12345,
+  "uploaded": "2025-01-01T12:00:00.000Z",
+  "originalName": "receipt.pdf",
+  "linkedClaimId": "ynab-transaction-id",      // If pre-linked
+  "linkedClaimDescription": "ChatGPT"          // Claim description
+}
+```
+
+**Pre-linked receipts**: When `linkedClaimId` is present, auto-match this receipt to the corresponding YNAB TODO - skip manual matching for these.
+
 ### 4. Identify All Receipts
 
 **Before matching, download and read ALL receipts to identify their contents.** Don't rely solely on filenames - many receipts have generic names like "Receipt-1234.pdf" or "unnamed.png".
@@ -96,13 +110,18 @@ Collect all agent results and build the receipt manifest for matching.
 
 Compare TODOs against **identified** receipts and show a summary:
 
-**Matching criteria:**
-- Date proximity (within 3 days)
-- Amount match (exact or within 10%)
+**Matching priority:**
+1. **Pre-linked receipts** - If `linkedClaimId` matches a TODO's transaction ID, use that receipt (highest priority)
+2. **Date proximity** - Within 3 days
+3. **Amount match** - Exact or within 10%
 
 **Present the overview:**
 ```
 === CLAIMS OVERVIEW ===
+
+🔗 PRE-LINKED (X items) - user already matched via web UI:
+   - [date] [description] $[amount] ← [receipt name]
+   ...
 
 ✅ READY TO PROCESS (X items) - have matching receipts:
    - [date] [description] $[amount]
@@ -161,9 +180,9 @@ For each TODO transaction:
    - Description: [memo without "TODO:" prefix]
    - Category: [category_name]
 
-2. **Find matching receipt(s)** by:
-   - Date proximity (within 3 days)
-   - Amount match (exact or close)
+2. **Find matching receipt(s)**:
+   - **Pre-linked**: If receipt has `linkedClaimId` matching this transaction, use it automatically (skip manual matching)
+   - Otherwise, match by: date proximity (within 3 days), amount match (exact or close)
    - Show top matches and let user confirm
 
 3. **Download and open the receipt**:
@@ -271,6 +290,50 @@ When all claims are processed:
 
 ---
 
+## Volopay Browser Automation (Optional)
+
+If user requests browser automation for Volopay claims, use Claude in Chrome tools.
+
+### Setup
+1. Check browser connection: `mcp__claude-in-chrome__tabs_context_mcp`
+2. Navigate to: `https://tinkertanker.volopay.co/my-volopay/reimbursement/claims?createReimbursement=true`
+3. User must be logged in (use Google SSO if needed)
+
+### Form Fields
+
+| Field | Value | Notes |
+|-------|-------|-------|
+| Merchant | From receipt | Type in combobox |
+| Amount | YNAB amount / 1000 | Number field |
+| Currency | SGD | Default |
+| Volopay category | "Software" for subscriptions | Select from dropdown |
+| Transaction date | Receipt/YNAB date | Date picker |
+| Receipt | Local file path | **User must upload manually** |
+| Memo | Description from TODO | Click to reveal textbox |
+| Xero category | "Computer Software (463)" for SaaS | Search in dropdown |
+| Xero tax codes | See below | Based on GST presence |
+| Xero Biz Unit | "Classes" | Always this value |
+
+### Tax Code Logic
+
+| Condition | Tax Code |
+|-----------|----------|
+| Receipt shows GST | INPUTY24:Standard-Rated Purchases |
+| No GST + Foreign currency (USD) | OPINPUT:Out Of Scope Purchases |
+| No GST + SGD | NRINPUT:Purchases from Non-GST Registered Suppliers |
+
+### Automation Flow
+
+1. Use `read_page` to get element refs
+2. Use `form_input` or `computer` tool to fill fields
+3. Type in comboboxes to search, then click matching option
+4. User uploads receipt manually (browser security limitation)
+5. Click "Continue" to submit
+
+See `.claude/skills/volopay-claim/SKILL.md` for detailed automation guide.
+
+---
+
 ## Quick Reference
 
 **YNAB API**: https://api.ynab.com/v1/
@@ -279,3 +342,4 @@ When all claims are processed:
 **Positive amounts**: Inflows
 
 **Receipt filename format**: `YYYY-MM-DD_HHMMSS_originalname.ext`
+**Volopay URL**: https://tinkertanker.volopay.co/my-volopay/reimbursement/claims?createReimbursement=true
