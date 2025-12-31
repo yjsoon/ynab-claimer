@@ -82,7 +82,7 @@ function getCorsHeaders(request: Request, env: Env): Record<string, string> {
 
   return {
     'Access-Control-Allow-Origin': effectiveOrigin,
-    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-Auth-Token',
     Vary: 'Origin', // Prevent caches from serving wrong CORS headers
   };
@@ -190,11 +190,21 @@ export default {
         const cursor = url.searchParams.get('cursor') || undefined;
 
         const listed = await env.RECEIPTS.list({ limit, cursor });
-        const receipts = listed.objects.map((obj) => ({
-          key: obj.key,
-          size: obj.size,
-          uploaded: obj.uploaded.toISOString(),
-        }));
+
+        // Fetch metadata for each receipt (R2 list() doesn't return customMetadata)
+        const receipts = await Promise.all(
+          listed.objects.map(async (obj) => {
+            const head = await env.RECEIPTS.head(obj.key);
+            return {
+              key: obj.key,
+              size: obj.size,
+              uploaded: obj.uploaded.toISOString(),
+              originalName: head?.customMetadata?.originalName,
+              linkedClaimId: head?.customMetadata?.linkedClaimId,
+              linkedClaimDescription: head?.customMetadata?.linkedClaimDescription,
+            };
+          })
+        );
 
         return new Response(
           JSON.stringify({
@@ -226,11 +236,75 @@ export default {
       }
 
       // DELETE /receipt/:key - Delete a receipt
-      if (path.startsWith('/receipt/') && request.method === 'DELETE') {
+      if (path.startsWith('/receipt/') && request.method === 'DELETE' && !path.endsWith('/link')) {
         const key = decodeURIComponent(path.replace('/receipt/', ''));
         await env.RECEIPTS.delete(key);
 
         return new Response(JSON.stringify({ success: true, deleted: key }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // PATCH /receipt/:key/link - Link a receipt to a YNAB claim
+      if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'PATCH') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
+        const body = (await request.json()) as {
+          linkedClaimId: string;
+          linkedClaimDescription: string;
+          linkedClaimAmount?: number;
+          linkedClaimDate?: string;
+        };
+
+        // Get existing object
+        const existing = await env.RECEIPTS.get(key);
+        if (!existing) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Re-put with updated metadata (must consume body first)
+        const content = await existing.arrayBuffer();
+        await env.RECEIPTS.put(key, content, {
+          httpMetadata: existing.httpMetadata,
+          customMetadata: {
+            ...existing.customMetadata,
+            linkedClaimId: body.linkedClaimId,
+            linkedClaimDescription: body.linkedClaimDescription,
+            linkedClaimAmount: body.linkedClaimAmount ? String(body.linkedClaimAmount) : undefined,
+            linkedClaimDate: body.linkedClaimDate,
+          },
+        });
+
+        return new Response(JSON.stringify({ success: true, key }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // DELETE /receipt/:key/link - Unlink a receipt from a claim
+      if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'DELETE') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
+
+        // Get existing object
+        const existing = await env.RECEIPTS.get(key);
+        if (!existing) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        // Re-put without link metadata
+        const content = await existing.arrayBuffer();
+        const { linkedClaimId, linkedClaimDescription, linkedClaimAmount, linkedClaimDate, ...keepMetadata } =
+          existing.customMetadata || {};
+        await env.RECEIPTS.put(key, content, {
+          httpMetadata: existing.httpMetadata,
+          customMetadata: keepMetadata,
+        });
+
+        return new Response(JSON.stringify({ success: true, key }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

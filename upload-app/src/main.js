@@ -19,6 +19,21 @@ const passwordInput = document.getElementById('passwordInput');
 const authSubmit = document.getElementById('authSubmit');
 const rememberMe = document.getElementById('rememberMe');
 
+// Linking elements
+const actionBar = document.getElementById('actionBar');
+const actionText = document.getElementById('actionText');
+const cancelSelection = document.getElementById('cancelSelection');
+const tabBtns = document.querySelectorAll('.tab-btn');
+const receiptsColumn = document.getElementById('receiptsColumn');
+const claimsColumn = document.getElementById('claimsColumn');
+const receiptBadge = document.getElementById('receiptBadge');
+const claimBadge = document.getElementById('claimBadge');
+
+// Linking state
+let selectedReceiptKey = null;
+let receiptsData = [];
+let claimsData = [];
+
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
 const previewBackdrop = previewOverlay.querySelector('.preview-backdrop');
@@ -206,34 +221,67 @@ async function loadReceipts() {
     }
 
     const data = await response.json();
+    // Sort: unlinked first (by date desc), then linked (by date desc)
+    receiptsData = data.receipts.sort((a, b) => {
+      const aLinked = !!a.linkedClaimId;
+      const bLinked = !!b.linkedClaimId;
+      if (aLinked !== bLinked) return aLinked ? 1 : -1;
+      return new Date(b.uploaded) - new Date(a.uploaded);
+    });
 
-    countSpan.textContent = `(${data.receipts.length})`;
+    countSpan.textContent = `(${receiptsData.length})`;
+    receiptBadge.textContent = receiptsData.length || '';
 
-    if (data.receipts.length === 0) {
+    if (receiptsData.length === 0) {
       receiptList.innerHTML = '<li class="empty-state">No pending receipts</li>';
       return;
     }
 
-    const sortedReceipts = data.receipts.sort((a, b) => new Date(b.uploaded) - new Date(a.uploaded));
-
-    receiptList.innerHTML = sortedReceipts
+    receiptList.innerHTML = receiptsData
       .map(r => {
         const date = new Date(r.uploaded).toLocaleDateString();
-        const name = r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
+        const name = r.originalName || r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
+        const isLinked = !!r.linkedClaimId;
+        const linkedClass = isLinked ? 'linked' : '';
+        const linkBtnIcon = isLinked
+          ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 6L6 18M6 6l12 12"/>
+            </svg>`
+          : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>`;
+        const linkIndicator = isLinked
+          ? `<div class="link-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+              ${escapeHtml(r.linkedClaimDescription || 'Linked')}
+            </div>`
+          : '';
         return `
-          <li data-key="${escapeHtml(r.key)}" data-name="${escapeHtml(name)}">
-            <span class="receipt-name">${escapeHtml(name)}</span>
-            <span class="receipt-date">${date}</span>
+          <li data-key="${escapeHtml(r.key)}" data-name="${escapeHtml(name)}"
+              data-linked="${r.linkedClaimId || ''}" class="${linkedClass}">
+            <div class="receipt-info">
+              <span class="receipt-name">${escapeHtml(name)}</span>
+              ${linkIndicator}
+            </div>
+            <div class="receipt-actions">
+              <span class="receipt-date">${date}</span>
+              <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
+                ${linkBtnIcon}
+              </button>
+            </div>
           </li>
         `;
       })
       .join('');
 
-    // Attach click handlers for preview
+    // Attach click handlers
     receiptList.querySelectorAll('li[data-key]').forEach(li => {
-      li.addEventListener('click', () => {
-        openPreview(li.dataset.key, li.dataset.name);
-      });
+      li.addEventListener('click', (e) => handleReceiptClick(e, li));
+      li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
     });
   } catch (err) {
     console.error('Failed to load receipts:', err);
@@ -366,29 +414,66 @@ async function loadYnabTodos() {
       return;
     }
 
-    todoCount.textContent = `(${data.todos.length})`;
+    claimsData = data.todos;
+    todoCount.textContent = `(${claimsData.length})`;
+    claimBadge.textContent = claimsData.length || '';
 
-    if (data.todos.length === 0) {
+    if (claimsData.length === 0) {
       todoList.innerHTML = '<li class="empty-state">No pending claims</li>';
       return;
     }
 
-    todoList.innerHTML = data.todos
-      .map(
-        (t) => `
-        <li class="todo-item">
+    // Find which claims have linked receipts
+    const linkedClaimIds = new Set(
+      receiptsData.filter(r => r.linkedClaimId).map(r => r.linkedClaimId)
+    );
+
+    // Sort: unlinked first (by date desc), then linked (by date desc)
+    claimsData.sort((a, b) => {
+      const aLinked = linkedClaimIds.has(a.id);
+      const bLinked = linkedClaimIds.has(b.id);
+      if (aLinked !== bLinked) return aLinked ? 1 : -1;
+      return new Date(b.date) - new Date(a.date);
+    });
+
+    todoList.innerHTML = claimsData
+      .map((t) => {
+        const isLinked = linkedClaimIds.has(t.id);
+        const linkedClass = isLinked ? 'linked' : '';
+        const linkedReceipt = isLinked
+          ? receiptsData.find(r => r.linkedClaimId === t.id)
+          : null;
+        const linkIndicator = isLinked && linkedReceipt
+          ? `<div class="link-indicator">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+              </svg>
+              ${escapeHtml(linkedReceipt.originalName || 'Receipt')}
+            </div>`
+          : '';
+        return `
+        <li class="todo-item ${linkedClass}" data-claim-id="${escapeHtml(t.id)}"
+            data-amount="${t.amount}" data-description="${escapeHtml(t.description)}"
+            data-date="${t.date}">
           <div class="todo-main">
-            <span class="todo-payee">${escapeHtml(t.payee)}</span>
+            <span class="todo-payee">${escapeHtml(t.description)}</span>
             <span class="todo-amount">$${t.amount.toFixed(2)}</span>
           </div>
           <div class="todo-details">
-            <span class="todo-desc">${escapeHtml(t.description)}</span>
+            <span class="todo-desc">${escapeHtml(t.payee)}</span>
             <span class="todo-date">${new Date(t.date).toLocaleDateString()}</span>
           </div>
+          ${linkIndicator}
         </li>
-      `
-      )
+      `;
+      })
       .join('');
+
+    // Attach click handlers for linking
+    todoList.querySelectorAll('.todo-item[data-claim-id]').forEach(li => {
+      li.addEventListener('click', (e) => handleClaimClick(e, li));
+    });
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
     todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
@@ -403,6 +488,173 @@ refreshBtn.addEventListener('click', () => {
 authSubmit.addEventListener('click', handlePasswordSubmit);
 passwordInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') handlePasswordSubmit();
+});
+
+// ===== Receipt-Claim Linking =====
+
+// Handle receipt click - open preview (unless clicking link button)
+function handleReceiptClick(e, li) {
+  // If clicking the link/unlink button, don't open preview
+  if (e.target.closest('.link-btn')) {
+    return;
+  }
+
+  const key = li.dataset.key;
+  const name = li.dataset.name;
+
+  // If already selected, deselect
+  if (selectedReceiptKey === key) {
+    clearSelection();
+    return;
+  }
+
+  // Open preview
+  openPreview(key, name);
+}
+
+// Handle link button click
+function handleLinkBtnClick(e, li) {
+  e.stopPropagation();
+  const key = li.dataset.key;
+  const isLinked = li.dataset.linked;
+
+  if (isLinked) {
+    if (confirm('Unlink this receipt from its claim?')) {
+      unlinkReceipt(key);
+    }
+  } else {
+    selectReceipt(key);
+  }
+}
+
+// Handle claim click - link if receipt selected, or show details
+function handleClaimClick(e, li) {
+  const claimId = li.dataset.claimId;
+
+  // If a receipt is selected, link it to this claim
+  if (selectedReceiptKey) {
+    const claim = {
+      id: claimId,
+      description: li.dataset.description,
+      amount: parseFloat(li.dataset.amount),
+      date: li.dataset.date,
+    };
+    linkReceiptToClaim(selectedReceiptKey, claim);
+    return;
+  }
+
+  // Check if this claim already has a linked receipt - offer to unlink
+  const linkedReceipt = receiptsData.find(r => r.linkedClaimId === claimId);
+  if (linkedReceipt) {
+    if (confirm(`Unlink receipt "${linkedReceipt.originalName}" from this claim?`)) {
+      unlinkReceipt(linkedReceipt.key);
+    }
+  }
+}
+
+// Select a receipt for linking
+function selectReceipt(key) {
+  selectedReceiptKey = key;
+  document.body.classList.add('selecting');
+
+  // Update visual selection
+  receiptList.querySelectorAll('li').forEach(li => {
+    li.classList.toggle('selected', li.dataset.key === key);
+  });
+
+  // Show action bar
+  actionBar.classList.add('visible');
+  actionText.textContent = 'Now select a claim to link';
+
+  // On mobile, switch to claims tab
+  if (window.innerWidth <= 700) {
+    switchTab('claims');
+  }
+}
+
+// Clear selection
+function clearSelection() {
+  selectedReceiptKey = null;
+  document.body.classList.remove('selecting');
+
+  // Remove visual selection
+  receiptList.querySelectorAll('li').forEach(li => {
+    li.classList.remove('selected');
+  });
+
+  // Hide action bar
+  actionBar.classList.remove('visible');
+}
+
+// Link a receipt to a claim via API
+async function linkReceiptToClaim(receiptKey, claim) {
+  try {
+    const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
+      method: 'PATCH',
+      headers: {
+        ...authHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        linkedClaimId: claim.id,
+        linkedClaimDescription: claim.description,
+        linkedClaimAmount: claim.amount,
+        linkedClaimDate: claim.date,
+      }),
+    });
+
+    if (response.ok) {
+      showStatus('success', 'Receipt linked to claim');
+      clearSelection();
+      loadReceipts().then(() => loadYnabTodos());
+    } else {
+      const data = await response.json();
+      showStatus('error', data.error || 'Failed to link');
+    }
+  } catch (err) {
+    console.error('Link failed:', err);
+    showStatus('error', 'Failed to link receipt');
+  }
+}
+
+// Unlink a receipt from its claim
+async function unlinkReceipt(receiptKey) {
+  try {
+    const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+
+    if (response.ok) {
+      showStatus('success', 'Receipt unlinked');
+      loadReceipts().then(() => loadYnabTodos());
+    } else {
+      const data = await response.json();
+      showStatus('error', data.error || 'Failed to unlink');
+    }
+  } catch (err) {
+    console.error('Unlink failed:', err);
+    showStatus('error', 'Failed to unlink receipt');
+  }
+}
+
+// Cancel selection button
+cancelSelection.addEventListener('click', clearSelection);
+
+// ===== Mobile Tab Toggle =====
+
+function switchTab(tab) {
+  tabBtns.forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+  receiptsColumn.classList.toggle('active', tab === 'receipts');
+  claimsColumn.classList.toggle('active', tab === 'claims');
+}
+
+tabBtns.forEach(btn => {
+  btn.addEventListener('click', () => {
+    switchTab(btn.dataset.tab);
+  });
 });
 
 // Initial load with auth check
