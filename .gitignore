@@ -14,3 +14,7 @@ dist/
 
 # OS
 .DS_Store
+
+# Playwright
+.volopay-auth.json
+error-screenshot.png

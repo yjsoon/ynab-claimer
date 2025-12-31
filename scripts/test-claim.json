@@ -1,0 +1,11 @@
+{
+  "merchant": "Lovable",
+  "amount": 33.39,
+  "date": "2025-12-20",
+  "volopayCategory": "Software",
+  "memo": "Lovable AI subscription",
+  "xeroCategory": "Computer Software (463)",
+  "xeroTaxCode": "OPINPUT:Out Of Scope Purchases",
+  "xeroBizUnit": "Classes",
+  "receiptPath": "/tmp/claims/lovable-receipt.pdf"
+}
