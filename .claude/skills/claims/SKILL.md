@@ -324,23 +324,37 @@ echo '{"merchant":"...","amount":99.99,...}' | npm run submit
 
 ### Tax Code Logic
 
+**CRITICAL: Only use INPUTY24 if the receipt explicitly shows a GST line item with amount. Never assume GST.**
+
 | Condition | Tax Code |
 |-----------|----------|
-| Receipt shows GST | INPUTY24:Standard-Rated Purchases |
-| No GST + Foreign currency (USD) | OPINPUT:Out Of Scope Purchases |
-| No GST + SGD | NRINPUT:Purchases from Non-GST Registered Suppliers |
+| Receipt shows explicit GST amount (e.g., "GST 9%: $X.XX") | INPUTY24:Standard-Rated Purchases |
+| No GST breakdown + Foreign currency (USD) | OPINPUT:Out Of Scope Purchases |
+| No GST breakdown + SGD | NRINPUT:Purchases from Non-GST Registered Suppliers |
+
+**WARNING**: "Inclusive of taxes" does NOT mean GST is shown. You must see an actual GST line item to use INPUTY24.
+
+### Volopay Category Mapping
+
+| Expense Type | Volopay Category |
+|--------------|------------------|
+| Software/SaaS | Software |
+| Hardware/Equipment | Equipment & hardware |
+| Food/Meals | Entertainment |
 
 ### Xero Category Mapping
 
 | Expense Type | Xero Category |
 |--------------|---------------|
 | Software/SaaS | Computer Software (463) |
+| Software for class (IMDA VIBE, "for class") | Cost of Sales (320) |
 | Hardware | Computer Hardware & Accessories (464) |
 | Books | Books, Magazines, Journals (460) |
 | Transport (local) | Local Public Transport (incl Taxi) (451) |
 | Transport (overseas) | Overseas Transport (452) |
 | Phone/Internet | Telephone & Internet (467) |
-| Cost of sales | Cost of Sales (320) |
+
+**Note**: Most software uses "Computer Software (463)". Only use "Cost of Sales (320)" when the YNAB memo explicitly mentions IMDA VIBE or "for class".
 
 ### Script Behaviour
 

@@ -110,8 +110,14 @@ async function submitClaim(page: Page, claim: ClaimData) {
   // Click the dropdown chevron (SVG icon) - it's the 3rd SVG on the form
   await page.locator('svg').nth(3).click();
   await page.waitForTimeout(500);
-  // Select by exact text
-  await page.getByText(category, { exact: true }).click();
+  // Select by exact text - pause if not found
+  try {
+    await page.getByText(category, { exact: true }).click({ timeout: 5000 });
+  } catch {
+    console.log(`  ⚠️  Category "${category}" not found - please select manually`);
+    await page.evaluate((cat) => alert(`Category "${cat}" not found - please select manually, then click Resume in Playwright`), category);
+    await page.pause();
+  }
   await page.waitForTimeout(300);
 
   // === TRANSACTION DATE ===
@@ -149,7 +155,13 @@ async function submitClaim(page: Page, claim: ClaimData) {
   console.log('  Selecting Xero category...');
   await page.locator('.flex > div > .grow > .react-select > .vp-input-select__control').first().click();
   await page.waitForTimeout(300);
-  await page.getByText(claim.xeroCategory, { exact: true }).click();
+  try {
+    await page.getByText(claim.xeroCategory, { exact: true }).click({ timeout: 5000 });
+  } catch {
+    console.log(`  ⚠️  Xero category "${claim.xeroCategory}" not found - please select manually`);
+    await page.evaluate((cat) => alert(`Xero category "${cat}" not found - please select manually, then click Resume`), claim.xeroCategory);
+    await page.pause();
+  }
   await page.waitForTimeout(300);
 
   // === XERO TAX CODE ===
@@ -157,7 +169,13 @@ async function submitClaim(page: Page, claim: ClaimData) {
   // Click the tax code dropdown (2nd in the Xero section)
   await page.locator('div:nth-child(2) > .grow > .react-select > .vp-input-select__control > .vp-input-select__indicators > .vp-input-select__indicator').click();
   await page.waitForTimeout(300);
-  await page.getByText(claim.xeroTaxCode, { exact: true }).click();
+  try {
+    await page.getByText(claim.xeroTaxCode, { exact: true }).click({ timeout: 5000 });
+  } catch {
+    console.log(`  ⚠️  Tax code "${claim.xeroTaxCode}" not found - please select manually`);
+    await page.evaluate((code) => alert(`Tax code "${code}" not found - please select manually, then click Resume`), claim.xeroTaxCode);
+    await page.pause();
+  }
   await page.waitForTimeout(300);
 
   // === XERO BIZ UNIT ===
