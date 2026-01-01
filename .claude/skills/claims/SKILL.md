@@ -375,4 +375,4 @@ echo '{"merchant":"...","amount":99.99,...}' | npm run submit
 **Positive amounts**: Inflows
 
 **Receipt filename format**: `YYYY-MM-DD_HHMMSS_originalname.ext`
-**Volopay URL**: https://tinkertanker.volopay.co/my-volopay/reimbursement/claims?createReimbursement=true
+**Volopay URL**: `${VOLOPAY_URL}/my-volopay/reimbursement/claims?createReimbursement=true` (configured in .env)

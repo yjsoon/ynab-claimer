@@ -3,9 +3,15 @@
 import { chromium, type Page } from 'playwright';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
+import { config } from 'dotenv';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// Load .env from parent directory
+config({ path: resolve(__dirname, '../.env') });
+
+const VOLOPAY_BASE_URL = process.env.VOLOPAY_URL || 'https://yourcompany.volopay.co';
 
 interface ClaimData {
   merchant: string;
@@ -20,8 +26,7 @@ interface ClaimData {
   receiptPath: string; // local file path
 }
 
-const VOLOPAY_URL =
-  'https://tinkertanker.volopay.co/my-volopay/reimbursement/claims?createReimbursement=true';
+const VOLOPAY_URL = `${VOLOPAY_BASE_URL}/my-volopay/reimbursement/claims?createReimbursement=true`;
 const AUTH_FILE = resolve(__dirname, '.volopay-auth.json');
 
 async function submitClaim(page: Page, claim: ClaimData) {

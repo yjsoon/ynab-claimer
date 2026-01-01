@@ -6,6 +6,7 @@
     "submit": "npx tsx volopay-submit.ts"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
     "playwright": "^1.49.0",
     "tsx": "^4.19.0"
   }
