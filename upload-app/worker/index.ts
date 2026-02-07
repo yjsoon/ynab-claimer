@@ -7,6 +7,9 @@ const assetManifest = JSON.parse(manifestJSON);
 // Upload constraints
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
+const DEFAULT_AMOUNT_TAG_BATCH = 3;
+const MAX_AMOUNT_TAG_BATCH = 8;
 
 // Magic byte signatures for file type validation
 // Each entry is [offset, bytes[]] to check
@@ -41,6 +44,8 @@ interface Env {
   AUTH_PASSWORD: string;
   YNAB_API_KEY: string;
   YNAB_BUDGET_ID: string;
+  GEMINI_API_KEY?: string;
+  GEMINI_MODEL?: string;
   CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
 }
 
@@ -59,6 +64,270 @@ interface YnabTodo {
   payee: string;
   amount: number;
   description: string;
+}
+
+interface GeminiAmountResult {
+  amount: number | null;
+  confidence: number;
+  currency: string;
+  model: string;
+}
+
+interface AmountTagResult {
+  key: string;
+  status: 'tagged' | 'skipped' | 'failed';
+  amount?: number;
+  reason?: string;
+}
+
+function toBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+  let binary = '';
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+
+  return btoa(binary);
+}
+
+function parseMetadataNumber(value?: string): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function cleanError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/g, ' ').slice(0, 180);
+}
+
+function parseGeminiJson(rawText: string): { amount: number | null; confidence: number; currency: string } | null {
+  const trimmed = rawText.trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const jsonText = fencedMatch?.[1]?.trim() || trimmed;
+
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      amount?: number | string | null;
+      confidence?: number | string;
+      currency?: string;
+    };
+
+    let amount: number | null = null;
+    if (parsed.amount !== null && parsed.amount !== undefined && parsed.amount !== '') {
+      const parsedAmount = typeof parsed.amount === 'number' ? parsed.amount : Number.parseFloat(String(parsed.amount));
+      if (Number.isFinite(parsedAmount) && parsedAmount >= 0) {
+        amount = Math.round(parsedAmount * 100) / 100;
+      }
+    }
+
+    const parsedConfidence =
+      typeof parsed.confidence === 'number'
+        ? parsed.confidence
+        : Number.parseFloat(String(parsed.confidence ?? '0'));
+    const confidence = Number.isFinite(parsedConfidence)
+      ? Math.max(0, Math.min(1, parsedConfidence))
+      : 0;
+    const currency = String(parsed.currency || 'UNKNOWN').toUpperCase().slice(0, 12);
+
+    return { amount, confidence, currency };
+  } catch {
+    return null;
+  }
+}
+
+async function patchReceiptMetadata(
+  env: Env,
+  key: string,
+  metadataPatch: Record<string, string | undefined>
+): Promise<boolean> {
+  const existing = await env.RECEIPTS.get(key);
+  if (!existing) return false;
+
+  const content = await existing.arrayBuffer();
+  const mergedMetadata: Record<string, string> = {
+    ...(existing.customMetadata || {}),
+  };
+
+  Object.entries(metadataPatch).forEach(([metaKey, value]) => {
+    if (value === undefined) {
+      delete mergedMetadata[metaKey];
+      return;
+    }
+    mergedMetadata[metaKey] = value;
+  });
+
+  await env.RECEIPTS.put(key, content, {
+    httpMetadata: existing.httpMetadata,
+    customMetadata: mergedMetadata,
+  });
+
+  return true;
+}
+
+async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+  if (!env.GEMINI_API_KEY) {
+    throw new Error('Missing GEMINI_API_KEY');
+  }
+
+  const model = env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
+  const prompt = [
+    'Extract the final payable total amount from this receipt.',
+    'Return strict JSON only with this schema:',
+    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number}',
+    'Rules:',
+    '- amount must be the final charged total, no currency symbols.',
+    '- use null if the amount is unreadable or ambiguous.',
+    '- confidence must be between 0 and 1.',
+  ].join('\n');
+
+  const geminiResponse = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              { text: prompt },
+              {
+                inline_data: {
+                  mime_type: mimeType || 'application/octet-stream',
+                  data: toBase64(fileBuffer),
+                },
+              },
+            ],
+          },
+        ],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: 'application/json',
+        },
+      }),
+    }
+  );
+
+  if (!geminiResponse.ok) {
+    const details = (await geminiResponse.text()).slice(0, 300);
+    throw new Error(`Gemini API ${geminiResponse.status}: ${details}`);
+  }
+
+  const payload = (await geminiResponse.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const textOutput = payload.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('\n').trim();
+
+  if (!textOutput) {
+    throw new Error('Gemini response did not contain text output');
+  }
+
+  const parsed = parseGeminiJson(textOutput);
+  if (!parsed) {
+    throw new Error('Gemini response was not valid JSON');
+  }
+
+  return {
+    ...parsed,
+    model,
+  };
+}
+
+async function tagReceiptAmount(env: Env, key: string): Promise<AmountTagResult> {
+  if (!env.GEMINI_API_KEY) {
+    return { key, status: 'skipped', reason: 'missing_gemini_api_key' };
+  }
+
+  const object = await env.RECEIPTS.get(key);
+  if (!object) {
+    return { key, status: 'failed', reason: 'receipt_not_found' };
+  }
+
+  const metadata = object.customMetadata || {};
+  if (metadata.linkedClaimId) {
+    return { key, status: 'skipped', reason: 'already_linked' };
+  }
+  if (metadata.taggedStatus === 'ok' && metadata.taggedAmount) {
+    return { key, status: 'skipped', reason: 'already_tagged' };
+  }
+
+  const fileBuffer = await object.arrayBuffer();
+  const mimeType = object.httpMetadata?.contentType || 'application/octet-stream';
+
+  try {
+    const gemini = await extractAmountWithGemini(env, fileBuffer, mimeType);
+    const status = gemini.amount === null ? 'missing' : 'ok';
+    await patchReceiptMetadata(env, key, {
+      taggedStatus: status,
+      taggedAmount: gemini.amount === null ? undefined : gemini.amount.toFixed(2),
+      taggedCurrency: gemini.currency,
+      taggedConfidence: gemini.confidence.toFixed(2),
+      taggedModel: gemini.model,
+      taggedAt: new Date().toISOString(),
+      taggedError: undefined,
+    });
+
+    if (gemini.amount === null) {
+      return { key, status: 'skipped', reason: 'amount_not_found' };
+    }
+
+    return {
+      key,
+      status: 'tagged',
+      amount: gemini.amount,
+    };
+  } catch (error) {
+    const reason = cleanError(error);
+    await patchReceiptMetadata(env, key, {
+      taggedStatus: 'error',
+      taggedAt: new Date().toISOString(),
+      taggedError: reason,
+    });
+    return { key, status: 'failed', reason };
+  }
+}
+
+async function tagPendingReceipts(env: Env, limit: number): Promise<{
+  requested: number;
+  processed: number;
+  tagged: number;
+  skipped: number;
+  failed: number;
+  results: AmountTagResult[];
+}> {
+  const scanLimit = Math.min(Math.max(limit * 4, limit), 200);
+  const listed = await env.RECEIPTS.list({ limit: scanLimit });
+  const candidateKeys: string[] = [];
+
+  for (const object of listed.objects) {
+    const head = await env.RECEIPTS.head(object.key);
+    const metadata = head?.customMetadata || {};
+    if (metadata.linkedClaimId) continue;
+    if (metadata.taggedStatus === 'ok' || metadata.taggedStatus === 'missing') continue;
+    candidateKeys.push(object.key);
+    if (candidateKeys.length >= limit) break;
+  }
+
+  const results: AmountTagResult[] = [];
+  for (const key of candidateKeys) {
+    // Process sequentially to avoid hitting Gemini rate limits.
+    const result = await tagReceiptAmount(env, key);
+    results.push(result);
+  }
+
+  return {
+    requested: limit,
+    processed: results.length,
+    tagged: results.filter((r) => r.status === 'tagged').length,
+    skipped: results.filter((r) => r.status === 'skipped').length,
+    failed: results.filter((r) => r.status === 'failed').length,
+    results,
+  };
 }
 
 // Generate timestamped filename with UUID to prevent collisions
@@ -115,7 +384,7 @@ export default {
     }
 
     // Check auth for API routes
-    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/'].some(
+    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/'].some(
       (route) => path === route || path.startsWith(route)
     );
 
@@ -178,6 +447,9 @@ export default {
           },
         });
 
+        // Tag amount in background for newly uploaded receipts.
+        ctx.waitUntil(tagReceiptAmount(env, key));
+
         return new Response(JSON.stringify({ success: true, key }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
@@ -202,6 +474,13 @@ export default {
               originalName: head?.customMetadata?.originalName,
               linkedClaimId: head?.customMetadata?.linkedClaimId,
               linkedClaimDescription: head?.customMetadata?.linkedClaimDescription,
+              taggedAmount: parseMetadataNumber(head?.customMetadata?.taggedAmount),
+              taggedCurrency: head?.customMetadata?.taggedCurrency,
+              taggedConfidence: parseMetadataNumber(head?.customMetadata?.taggedConfidence),
+              taggedStatus: head?.customMetadata?.taggedStatus,
+              taggedModel: head?.customMetadata?.taggedModel,
+              taggedAt: head?.customMetadata?.taggedAt,
+              taggedError: head?.customMetadata?.taggedError,
             };
           })
         );
@@ -214,6 +493,39 @@ export default {
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
+      }
+
+      // POST /amount-tags/pending - Tag a batch of untagged, unlinked pending receipts
+      if (path === '/amount-tags/pending' && request.method === 'POST') {
+        if (!env.GEMINI_API_KEY) {
+          return new Response(JSON.stringify({ error: 'GEMINI_API_KEY is not configured' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const requestedLimit = parseInt(url.searchParams.get('limit') || String(DEFAULT_AMOUNT_TAG_BATCH), 10);
+        const limit = Math.min(
+          Math.max(Number.isNaN(requestedLimit) ? DEFAULT_AMOUNT_TAG_BATCH : requestedLimit, 1),
+          MAX_AMOUNT_TAG_BATCH
+        );
+
+        const result = await tagPendingReceipts(env, limit);
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // POST /receipt/:key/tag-amount - Tag amount for one receipt
+      if (path.startsWith('/receipt/') && path.endsWith('/tag-amount') && request.method === 'POST') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/tag-amount', ''));
+        const result = await tagReceiptAmount(env, key);
+        const statusCode = result.status === 'failed' ? 500 : 200;
+
+        return new Response(JSON.stringify(result), {
+          status: statusCode,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
       }
 
       // GET /receipt/:key - Download a receipt
@@ -255,27 +567,18 @@ export default {
           linkedClaimDate?: string;
         };
 
-        // Get existing object
-        const existing = await env.RECEIPTS.get(key);
-        if (!existing) {
+        const updated = await patchReceiptMetadata(env, key, {
+          linkedClaimId: body.linkedClaimId,
+          linkedClaimDescription: body.linkedClaimDescription,
+          linkedClaimAmount: body.linkedClaimAmount ? String(body.linkedClaimAmount) : undefined,
+          linkedClaimDate: body.linkedClaimDate,
+        });
+        if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
-
-        // Re-put with updated metadata (must consume body first)
-        const content = await existing.arrayBuffer();
-        await env.RECEIPTS.put(key, content, {
-          httpMetadata: existing.httpMetadata,
-          customMetadata: {
-            ...existing.customMetadata,
-            linkedClaimId: body.linkedClaimId,
-            linkedClaimDescription: body.linkedClaimDescription,
-            linkedClaimAmount: body.linkedClaimAmount ? String(body.linkedClaimAmount) : undefined,
-            linkedClaimDate: body.linkedClaimDate,
-          },
-        });
 
         return new Response(JSON.stringify({ success: true, key }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -286,23 +589,18 @@ export default {
       if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'DELETE') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
 
-        // Get existing object
-        const existing = await env.RECEIPTS.get(key);
-        if (!existing) {
+        const updated = await patchReceiptMetadata(env, key, {
+          linkedClaimId: undefined,
+          linkedClaimDescription: undefined,
+          linkedClaimAmount: undefined,
+          linkedClaimDate: undefined,
+        });
+        if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
-
-        // Re-put without link metadata
-        const content = await existing.arrayBuffer();
-        const { linkedClaimId, linkedClaimDescription, linkedClaimAmount, linkedClaimDate, ...keepMetadata } =
-          existing.customMetadata || {};
-        await env.RECEIPTS.put(key, content, {
-          httpMetadata: existing.httpMetadata,
-          customMetadata: keepMetadata,
-        });
 
         return new Response(JSON.stringify({ success: true, key }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },

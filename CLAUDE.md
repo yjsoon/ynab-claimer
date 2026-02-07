@@ -32,9 +32,18 @@ curl -H "X-Auth-Token: $R2_PASSWORD" "https://receipts.yourdomain.com/list"
 
 The password is stored in `.env` as `R2_PASSWORD` and must match the worker's `AUTH_PASSWORD` secret.
 
+### Gemini Amount Tagging
+
+Receipt amount tagging uses Google Gemini via Worker secret `GEMINI_API_KEY`.
+
+- Default model: `gemini-3-flash-preview`
+- Optional override: Worker secret `GEMINI_MODEL`
+- Batch backfill endpoint: `POST /amount-tags/pending?limit=3`
+
 ### Common Pitfalls
 
 1. **Auth header name**: Use `X-Auth-Token`, not `Authorization` or `X-Auth-Password`
 2. **Worker URL**: Read from `.env` - don't hardcode; user may have custom domain
 3. **YNAB amounts**: In milliunits - divide by 1000 for actual dollars
 4. **Transfer duplicates**: Filter for `amount < 0` to avoid counting transfers twice
+5. **Gemini model name**: Use `gemini-3-flash-preview` (hyphenated), not dotted/underscored variants

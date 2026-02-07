@@ -5,6 +5,7 @@ const REMEMBER_KEY = 'claim_manager_remember';
 // Upload constraints (must match server)
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+const AMOUNT_TAG_COOLDOWN_MS = 20000;
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -33,6 +34,8 @@ const claimBadge = document.getElementById('claimBadge');
 let selectedReceiptKey = null;
 let receiptsData = [];
 let claimsData = [];
+let amountTaggingInFlight = false;
+let lastAmountTagAttempt = 0;
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -242,6 +245,15 @@ async function loadReceipts() {
         const date = new Date(r.uploaded).toLocaleDateString();
         const name = r.originalName || r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
         const isLinked = !!r.linkedClaimId;
+        const parsedTaggedAmount = Number(r.taggedAmount);
+        const taggedAmount = Number.isFinite(parsedTaggedAmount) ? parsedTaggedAmount : null;
+        const amountBadge = taggedAmount !== null
+          ? `<span class="receipt-ai-tag ok">AI $${taggedAmount.toFixed(2)}</span>`
+          : r.taggedStatus === 'missing'
+            ? '<span class="receipt-ai-tag missing">AI no total</span>'
+            : r.taggedStatus === 'error'
+              ? `<span class="receipt-ai-tag error" title="${escapeHtml(r.taggedError || 'Tagging failed')}">AI failed</span>`
+              : '<span class="receipt-ai-tag pending">AI pending</span>';
         const linkedClass = isLinked ? 'linked' : '';
         const linkBtnIcon = isLinked
           ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -268,7 +280,10 @@ async function loadReceipts() {
               ${linkIndicator}
             </div>
             <div class="receipt-actions">
-              <span class="receipt-date">${date}</span>
+              <div class="receipt-meta">
+                <span class="receipt-date">${date}</span>
+                ${amountBadge}
+              </div>
               <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
                 ${linkBtnIcon}
               </button>
@@ -283,9 +298,42 @@ async function loadReceipts() {
       li.addEventListener('click', (e) => handleReceiptClick(e, li));
       li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
     });
+
+    triggerPendingAmountTagging();
   } catch (err) {
     console.error('Failed to load receipts:', err);
     receiptList.innerHTML = '<li class="empty-state">Failed to load receipts</li>';
+  }
+}
+
+async function triggerPendingAmountTagging() {
+  if (amountTaggingInFlight) return;
+  if (Date.now() - lastAmountTagAttempt < AMOUNT_TAG_COOLDOWN_MS) return;
+
+  const needsTagging = receiptsData.some((receipt) => !receipt.linkedClaimId && !receipt.taggedStatus);
+  if (!needsTagging) return;
+
+  amountTaggingInFlight = true;
+  lastAmountTagAttempt = Date.now();
+
+  try {
+    const response = await fetch(`${API_BASE}/amount-tags/pending?limit=3`, {
+      method: 'POST',
+      headers: authHeaders(),
+    });
+
+    if (!response.ok || response.status === 401) {
+      return;
+    }
+
+    const result = await response.json().catch(() => null);
+    if (result && result.tagged > 0) {
+      await loadReceipts();
+    }
+  } catch (error) {
+    console.warn('Amount tagging trigger failed:', error);
+  } finally {
+    amountTaggingInFlight = false;
   }
 }
 

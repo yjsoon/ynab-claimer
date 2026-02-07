@@ -6,6 +6,7 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
 - **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing
+- **AI Amount Tagging**: Gemini auto-tags receipt totals for pending receipts
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
 - **Volopay Automation**: Playwright script auto-fills Volopay claim forms
 - **Password Protection**: Simple auth gate for the web app and API
@@ -26,7 +27,9 @@ Web app for uploading receipts and viewing pending YNAB claims.
 - `GET /ynab/todos` - Fetch pending claims from YNAB
 - `GET /receipt/:key` - Download receipt
 - `DELETE /receipt/:key` - Delete receipt
-- `PUT /receipt/:key/link` - Link receipt to a YNAB transaction
+- `PATCH /receipt/:key/link` - Link receipt to a YNAB transaction
+- `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
+- `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
 
 All endpoints require `X-Auth-Token` header.
 
@@ -64,6 +67,7 @@ cp .env.example .env
 Required values:
 - `YNAB_API_KEY` - Get from https://app.ynab.com/settings/developer
 - `YNAB_BUDGET_ID` - From URL when viewing budget: `app.ynab.com/{budget_id}/...`
+- `GEMINI_API_KEY` - Gemini API key for AI amount tagging
 - `R2_WORKER_URL` - Your deployed worker URL (e.g. `https://receipts.yourdomain.com`)
 - `R2_PASSWORD` - Same as AUTH_PASSWORD you set in worker secrets
 
@@ -93,6 +97,11 @@ wrangler secret put AUTH_PASSWORD
 # Set YNAB credentials (copy from .env)
 wrangler secret put YNAB_API_KEY
 wrangler secret put YNAB_BUDGET_ID
+
+# Optional but recommended: enable AI amount tagging
+wrangler secret put GEMINI_API_KEY
+# Optional model override (defaults to gemini-3-flash-preview)
+wrangler secret put GEMINI_MODEL
 ```
 
 ### 4. Custom Domain (Optional)
