@@ -474,6 +474,15 @@ export default {
               originalName: head?.customMetadata?.originalName,
               linkedClaimId: head?.customMetadata?.linkedClaimId,
               linkedClaimDescription: head?.customMetadata?.linkedClaimDescription,
+              receiptDate:
+                head?.customMetadata?.receiptDate ||
+                head?.customMetadata?.extractedDate ||
+                head?.customMetadata?.detectedDate,
+              extractedDate: head?.customMetadata?.extractedDate,
+              detectedDate: head?.customMetadata?.detectedDate,
+              taggedDate: head?.customMetadata?.taggedDate,
+              ocrDate: head?.customMetadata?.ocrDate,
+              documentDate: head?.customMetadata?.documentDate,
               taggedAmount: parseMetadataNumber(head?.customMetadata?.taggedAmount),
               taggedCurrency: head?.customMetadata?.taggedCurrency,
               taggedConfidence: parseMetadataNumber(head?.customMetadata?.taggedConfidence),

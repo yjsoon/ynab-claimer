@@ -5,8 +5,9 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 ## Features
 
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
-- **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing
+- **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing, including claim-first multi-select linking
 - **AI Amount Tagging**: Gemini auto-tags receipt totals for pending receipts
+- **Smart Match Highlighting**: During linking, the UI highlights exact and near matches by amount and date
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
 - **Volopay Automation**: Playwright script auto-fills Volopay claim forms
 - **Password Protection**: Simple auth gate for the web app and API
