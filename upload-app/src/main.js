@@ -816,7 +816,7 @@ function handleLinkBtnClick(e, li) {
 function handleClaimLinkBtnClick(e, li) {
   e.stopPropagation();
   const claimId = li.dataset.claimId;
-  selectClaimForMultiReceiptLink(claimId);
+  selectClaimForMultiReceiptLink(claimId, selectedReceiptKey);
 }
 
 // Handle claim click - link selected receipt, or start claim-first mode
@@ -829,7 +829,7 @@ function handleClaimClick(_e, li) {
   };
 
   if (linkingMode === 'receipt-to-claim' && selectedReceiptKey) {
-    linkReceiptToClaim(selectedReceiptKey, claim);
+    selectClaimForMultiReceiptLink(claim.id, selectedReceiptKey);
     return;
   }
 
@@ -852,11 +852,15 @@ function selectReceiptForSingleLink(key) {
 }
 
 // Select one claim, then many receipts
-function selectClaimForMultiReceiptLink(claimId) {
+function selectClaimForMultiReceiptLink(claimId, seedReceiptKey = null) {
+  const initialReceiptKey = seedReceiptKey || selectedReceiptKey;
   linkingMode = 'claim-to-receipts';
   selectedClaimId = claimId;
   selectedReceiptKey = null;
   selectedReceiptKeys.clear();
+  if (initialReceiptKey) {
+    selectedReceiptKeys.add(initialReceiptKey);
+  }
   document.body.classList.add('selecting');
   updateActionBar();
   applyLinkingHighlights();
