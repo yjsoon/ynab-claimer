@@ -144,8 +144,13 @@ h2 {
   white-space: nowrap;
 }
 
-.receipt-date-extracted {
+.receipt-date-ai {
   color: #0f766e;
+  font-weight: 600;
+}
+
+.receipt-date-manual {
+  color: #4c1d95;
   font-weight: 600;
 }
 
@@ -182,6 +187,36 @@ h2 {
 .receipt-ai-tag.error {
   background: #ffebee;
   color: #c62828;
+}
+
+.receipt-fx-tag {
+  font-size: 0.7rem;
+  color: #0f4c81;
+  background: #e6f2fb;
+  border-radius: 999px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+
+.receipt-fx-tag.surcharge {
+  color: #7a3e00;
+  background: #fff1e6;
+}
+
+.date-btn {
+  border: 1px solid #d6d6d6;
+  background: #fff;
+  border-radius: 6px;
+  color: #4a5568;
+  font-size: 0.72rem;
+  padding: 6px 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.date-btn:hover {
+  background: #f4f7fb;
+  border-color: #b9c5d3;
 }
 
 .empty-state {

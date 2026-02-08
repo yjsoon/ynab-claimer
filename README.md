@@ -6,7 +6,8 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
 - **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing, including claim-first multi-select linking
-- **AI Amount Tagging**: Gemini auto-tags receipt totals for pending receipts
+- **AI Amount + Date Tagging**: Gemini auto-tags receipt totals and receipt dates for pending receipts
+- **USD Matching Assist**: For USD receipts, the app shows approximate SGD values at day rate and day rate + 3.25%
 - **Smart Match Highlighting**: During linking, the UI highlights exact and near matches by amount and date
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
 - **Volopay Automation**: Playwright script auto-fills Volopay claim forms
@@ -29,6 +30,7 @@ Web app for uploading receipts and viewing pending YNAB claims.
 - `GET /receipt/:key` - Download receipt
 - `DELETE /receipt/:key` - Delete receipt
 - `PATCH /receipt/:key/link` - Link receipt to a YNAB transaction
+- `PATCH /receipt/:key/receipt-date` - Set/clear manual receipt date override (`YYYY-MM-DD`)
 - `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
 - `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
 

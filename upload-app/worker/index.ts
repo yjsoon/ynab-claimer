@@ -10,6 +10,10 @@ const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '
 const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
 const DEFAULT_AMOUNT_TAG_BATCH = 3;
 const MAX_AMOUNT_TAG_BATCH = 8;
+const FX_API_BASE = 'https://api.frankfurter.dev/v1';
+const USD_SURCHARGE_RATE = 0.0325;
+const FX_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 // Magic byte signatures for file type validation
 // Each entry is [offset, bytes[]] to check
@@ -70,6 +74,8 @@ interface GeminiAmountResult {
   amount: number | null;
   confidence: number;
   currency: string;
+  receiptDate: string | null;
+  receiptDateConfidence: number;
   model: string;
 }
 
@@ -79,6 +85,13 @@ interface AmountTagResult {
   amount?: number;
   reason?: string;
 }
+
+interface FxRateResult {
+  rate: number;
+  dateUsed: string;
+}
+
+const fxRateCache = new Map<string, { value: FxRateResult; expiresAt: number }>();
 
 function toBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
@@ -98,12 +111,41 @@ function parseMetadataNumber(value?: string): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+function roundMoney(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
+function parseConfidence(value: number | string | null | undefined): number {
+  const parsed = typeof value === 'number' ? value : Number.parseFloat(String(value ?? '0'));
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(1, parsed));
+}
+
+function extractIsoDate(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (ISO_DATE_RE.test(trimmed)) return trimmed;
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
+function getDateFromIsoDateTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  if (ISO_DATE_RE.test(value)) return value;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed.toISOString().slice(0, 10);
+}
+
 function cleanError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/\s+/g, ' ').slice(0, 180);
 }
 
-function parseGeminiJson(rawText: string): { amount: number | null; confidence: number; currency: string } | null {
+function parseGeminiJson(
+  rawText: string
+): { amount: number | null; confidence: number; currency: string; receiptDate: string | null; receiptDateConfidence: number } | null {
   const trimmed = rawText.trim();
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const jsonText = fencedMatch?.[1]?.trim() || trimmed;
@@ -113,6 +155,8 @@ function parseGeminiJson(rawText: string): { amount: number | null; confidence: 
       amount?: number | string | null;
       confidence?: number | string;
       currency?: string;
+      receiptDate?: string | null;
+      receiptDateConfidence?: number | string;
     };
 
     let amount: number | null = null;
@@ -123,19 +167,47 @@ function parseGeminiJson(rawText: string): { amount: number | null; confidence: 
       }
     }
 
-    const parsedConfidence =
-      typeof parsed.confidence === 'number'
-        ? parsed.confidence
-        : Number.parseFloat(String(parsed.confidence ?? '0'));
-    const confidence = Number.isFinite(parsedConfidence)
-      ? Math.max(0, Math.min(1, parsedConfidence))
-      : 0;
+    const confidence = parseConfidence(parsed.confidence);
     const currency = String(parsed.currency || 'UNKNOWN').toUpperCase().slice(0, 12);
+    const receiptDate = extractIsoDate(parsed.receiptDate);
+    const receiptDateConfidence = parseConfidence(parsed.receiptDateConfidence);
 
-    return { amount, confidence, currency };
+    return { amount, confidence, currency, receiptDate, receiptDateConfidence };
   } catch {
     return null;
   }
+}
+
+async function getUsdSgdRate(date: string): Promise<FxRateResult> {
+  const cached = fxRateCache.get(date);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.value;
+  }
+
+  const response = await fetch(`${FX_API_BASE}/${encodeURIComponent(date)}?base=USD&symbols=SGD`);
+  if (!response.ok) {
+    const details = (await response.text()).slice(0, 180);
+    throw new Error(`FX API ${response.status}: ${details}`);
+  }
+
+  const payload = (await response.json()) as {
+    date?: string;
+    rates?: Record<string, number>;
+  };
+  const rate = payload.rates?.SGD;
+  const dateUsed = extractIsoDate(payload.date) || date;
+
+  if (rate === undefined || !Number.isFinite(rate) || rate <= 0) {
+    throw new Error('FX API returned invalid SGD rate');
+  }
+
+  const safeRate = Number(rate);
+  const result = { rate: safeRate, dateUsed };
+  fxRateCache.set(date, {
+    value: result,
+    expiresAt: Date.now() + FX_CACHE_TTL_MS,
+  });
+  return result;
 }
 
 async function patchReceiptMetadata(
@@ -174,13 +246,16 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
 
   const model = env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
   const prompt = [
-    'Extract the final payable total amount from this receipt.',
+    'Extract the final payable total amount and receipt date from this receipt.',
     'Return strict JSON only with this schema:',
-    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number}',
+    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number}',
     'Rules:',
     '- amount must be the final charged total, no currency symbols.',
     '- use null if the amount is unreadable or ambiguous.',
+    '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
+    '- use null for receiptDate if date is unreadable/ambiguous.',
     '- confidence must be between 0 and 1.',
+    '- receiptDateConfidence must be between 0 and 1.',
   ].join('\n');
 
   const geminiResponse = await fetch(
@@ -238,7 +313,7 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
   };
 }
 
-async function tagReceiptAmount(env: Env, key: string): Promise<AmountTagResult> {
+async function tagReceiptAmount(env: Env, key: string, options: { force?: boolean } = {}): Promise<AmountTagResult> {
   if (!env.GEMINI_API_KEY) {
     return { key, status: 'skipped', reason: 'missing_gemini_api_key' };
   }
@@ -252,7 +327,7 @@ async function tagReceiptAmount(env: Env, key: string): Promise<AmountTagResult>
   if (metadata.linkedClaimId) {
     return { key, status: 'skipped', reason: 'already_linked' };
   }
-  if (metadata.taggedStatus === 'ok' && metadata.taggedAmount) {
+  if (!options.force && metadata.taggedStatus === 'ok' && metadata.taggedAmount) {
     return { key, status: 'skipped', reason: 'already_tagged' };
   }
 
@@ -262,13 +337,60 @@ async function tagReceiptAmount(env: Env, key: string): Promise<AmountTagResult>
   try {
     const gemini = await extractAmountWithGemini(env, fileBuffer, mimeType);
     const status = gemini.amount === null ? 'missing' : 'ok';
+    const detectedReceiptDate = gemini.receiptDate;
+    const hasManualDateOverride = metadata.receiptDateSource === 'manual' && !!metadata.receiptDate;
+
+    const nextReceiptDate = hasManualDateOverride
+      ? metadata.receiptDate
+      : detectedReceiptDate || metadata.receiptDate;
+    const nextReceiptDateSource = hasManualDateOverride ? 'manual' : nextReceiptDate ? 'ai' : undefined;
+
+    const fxBaseDate =
+      nextReceiptDate || getDateFromIsoDateTime(metadata.uploadedAt) || new Date().toISOString().slice(0, 10);
+
+    let fxStatus: string | undefined;
+    let fxDateUsed: string | undefined;
+    let fxRate: string | undefined;
+    let fxApprox: string | undefined;
+    let fxApproxPlus325: string | undefined;
+    let fxError: string | undefined;
+
+    if (gemini.amount !== null && gemini.currency === 'USD') {
+      try {
+        const fx = await getUsdSgdRate(fxBaseDate);
+        const sgdApprox = roundMoney(gemini.amount * fx.rate);
+        const sgdApproxWithFee = roundMoney(sgdApprox * (1 + USD_SURCHARGE_RATE));
+        fxStatus = 'ok';
+        fxDateUsed = fx.dateUsed;
+        fxRate = fx.rate.toFixed(6);
+        fxApprox = sgdApprox.toFixed(2);
+        fxApproxPlus325 = sgdApproxWithFee.toFixed(2);
+      } catch (error) {
+        fxStatus = 'error';
+        fxError = cleanError(error);
+      }
+    } else if (gemini.amount !== null) {
+      fxStatus = 'not_usd';
+    }
+
     await patchReceiptMetadata(env, key, {
       taggedStatus: status,
       taggedAmount: gemini.amount === null ? undefined : gemini.amount.toFixed(2),
       taggedCurrency: gemini.currency,
       taggedConfidence: gemini.confidence.toFixed(2),
+      detectedReceiptDate: detectedReceiptDate || undefined,
+      detectedReceiptDateConfidence: gemini.receiptDateConfidence.toFixed(2),
+      receiptDate: nextReceiptDate || undefined,
+      receiptDateSource: nextReceiptDateSource,
       taggedModel: gemini.model,
       taggedAt: new Date().toISOString(),
+      taggedFxBaseDate: gemini.amount === null ? undefined : fxBaseDate,
+      taggedFxDateUsed: fxDateUsed,
+      taggedFxRateUsdSgd: fxRate,
+      taggedFxStatus: fxStatus,
+      taggedFxError: fxError,
+      taggedAmountSgdApprox: fxApprox,
+      taggedAmountSgdApproxPlus325: fxApproxPlus325,
       taggedError: undefined,
     });
 
@@ -286,6 +408,13 @@ async function tagReceiptAmount(env: Env, key: string): Promise<AmountTagResult>
     await patchReceiptMetadata(env, key, {
       taggedStatus: 'error',
       taggedAt: new Date().toISOString(),
+      taggedFxStatus: 'error',
+      taggedFxError: reason,
+      taggedAmountSgdApprox: undefined,
+      taggedAmountSgdApproxPlus325: undefined,
+      taggedFxRateUsdSgd: undefined,
+      taggedFxDateUsed: undefined,
+      taggedFxBaseDate: undefined,
       taggedError: reason,
     });
     return { key, status: 'failed', reason };
@@ -467,29 +596,34 @@ export default {
         const receipts = await Promise.all(
           listed.objects.map(async (obj) => {
             const head = await env.RECEIPTS.head(obj.key);
+            const metadata = head?.customMetadata || {};
             return {
               key: obj.key,
               size: obj.size,
-              uploaded: obj.uploaded.toISOString(),
-              originalName: head?.customMetadata?.originalName,
-              linkedClaimId: head?.customMetadata?.linkedClaimId,
-              linkedClaimDescription: head?.customMetadata?.linkedClaimDescription,
-              receiptDate:
-                head?.customMetadata?.receiptDate ||
-                head?.customMetadata?.extractedDate ||
-                head?.customMetadata?.detectedDate,
-              extractedDate: head?.customMetadata?.extractedDate,
-              detectedDate: head?.customMetadata?.detectedDate,
-              taggedDate: head?.customMetadata?.taggedDate,
-              ocrDate: head?.customMetadata?.ocrDate,
-              documentDate: head?.customMetadata?.documentDate,
-              taggedAmount: parseMetadataNumber(head?.customMetadata?.taggedAmount),
-              taggedCurrency: head?.customMetadata?.taggedCurrency,
-              taggedConfidence: parseMetadataNumber(head?.customMetadata?.taggedConfidence),
-              taggedStatus: head?.customMetadata?.taggedStatus,
-              taggedModel: head?.customMetadata?.taggedModel,
-              taggedAt: head?.customMetadata?.taggedAt,
-              taggedError: head?.customMetadata?.taggedError,
+              // Keep original upload time stable even when metadata is updated.
+              uploaded: metadata.uploadedAt || obj.uploaded.toISOString(),
+              storageUploaded: obj.uploaded.toISOString(),
+              originalName: metadata.originalName,
+              linkedClaimId: metadata.linkedClaimId,
+              linkedClaimDescription: metadata.linkedClaimDescription,
+              receiptDate: metadata.receiptDate,
+              receiptDateSource: metadata.receiptDateSource,
+              detectedReceiptDate: metadata.detectedReceiptDate,
+              detectedReceiptDateConfidence: parseMetadataNumber(metadata.detectedReceiptDateConfidence),
+              taggedAmount: parseMetadataNumber(metadata.taggedAmount),
+              taggedCurrency: metadata.taggedCurrency,
+              taggedConfidence: parseMetadataNumber(metadata.taggedConfidence),
+              taggedStatus: metadata.taggedStatus,
+              taggedModel: metadata.taggedModel,
+              taggedAt: metadata.taggedAt,
+              taggedError: metadata.taggedError,
+              taggedFxStatus: metadata.taggedFxStatus,
+              taggedFxError: metadata.taggedFxError,
+              taggedFxBaseDate: metadata.taggedFxBaseDate,
+              taggedFxDateUsed: metadata.taggedFxDateUsed,
+              taggedFxRateUsdSgd: parseMetadataNumber(metadata.taggedFxRateUsdSgd),
+              taggedAmountSgdApprox: parseMetadataNumber(metadata.taggedAmountSgdApprox),
+              taggedAmountSgdApproxPlus325: parseMetadataNumber(metadata.taggedAmountSgdApproxPlus325),
             };
           })
         );
@@ -528,13 +662,62 @@ export default {
       // POST /receipt/:key/tag-amount - Tag amount for one receipt
       if (path.startsWith('/receipt/') && path.endsWith('/tag-amount') && request.method === 'POST') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/tag-amount', ''));
-        const result = await tagReceiptAmount(env, key);
+        const result = await tagReceiptAmount(env, key, { force: true });
         const statusCode = result.status === 'failed' ? 500 : 200;
 
         return new Response(JSON.stringify(result), {
           status: statusCode,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
+      }
+
+      // PATCH /receipt/:key/receipt-date - Manually override receipt date
+      if (path.startsWith('/receipt/') && path.endsWith('/receipt-date') && request.method === 'PATCH') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/receipt-date', ''));
+        const body = (await request.json()) as { receiptDate?: string | null };
+        const manualDate = body.receiptDate ? extractIsoDate(body.receiptDate) : null;
+
+        if (body.receiptDate && !manualDate) {
+          return new Response(JSON.stringify({ error: 'receiptDate must be YYYY-MM-DD' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const head = await env.RECEIPTS.head(key);
+        if (!head) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const detectedDate = extractIsoDate(head.customMetadata?.detectedReceiptDate);
+        const fallbackDate = detectedDate || undefined;
+        const fallbackSource = detectedDate ? 'ai' : undefined;
+
+        const updated = await patchReceiptMetadata(env, key, {
+          receiptDate: manualDate || fallbackDate,
+          receiptDateSource: manualDate ? 'manual' : fallbackSource,
+        });
+        if (!updated) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(
+          JSON.stringify({
+            success: true,
+            key,
+            receiptDate: manualDate || fallbackDate || null,
+            receiptDateSource: manualDate ? 'manual' : fallbackSource || null,
+          }),
+          {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          }
+        );
       }
 
       // GET /receipt/:key - Download a receipt

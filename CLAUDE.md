@@ -39,6 +39,10 @@ Receipt amount tagging uses Google Gemini via Worker secret `GEMINI_API_KEY`.
 - Default model: `gemini-3-flash-preview`
 - Optional override: Worker secret `GEMINI_MODEL`
 - Batch backfill endpoint: `POST /amount-tags/pending?limit=3`
+- Manual receipt date override endpoint: `PATCH /receipt/:key/receipt-date`
+- For USD receipts, store SGD approximations:
+  - day-rate conversion
+  - day-rate conversion plus 3.25%
 
 ### Common Pitfalls
 

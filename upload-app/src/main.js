@@ -8,6 +8,7 @@ const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '
 const AMOUNT_TAG_COOLDOWN_MS = 20000;
 const AMOUNT_MATCH_TOLERANCE = 0.01;
 const DATE_NEAR_THRESHOLD_DAYS = 2;
+const RECEIPT_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');
@@ -254,13 +255,29 @@ async function loadReceipts() {
         const isLinked = !!r.linkedClaimId;
         const parsedTaggedAmount = Number(r.taggedAmount);
         const taggedAmount = Number.isFinite(parsedTaggedAmount) ? parsedTaggedAmount : null;
+        const currencyLabel = (r.taggedCurrency || '').toUpperCase();
+        const parsedFxApprox = Number(r.taggedAmountSgdApprox);
+        const taggedSgdApprox = Number.isFinite(parsedFxApprox) ? parsedFxApprox : null;
+        const parsedFxApproxPlus = Number(r.taggedAmountSgdApproxPlus325);
+        const taggedSgdApproxPlus325 = Number.isFinite(parsedFxApproxPlus) ? parsedFxApproxPlus : null;
         const amountBadge = taggedAmount !== null
-          ? `<span class="receipt-ai-tag ok">AI $${taggedAmount.toFixed(2)}</span>`
+          ? `<span class="receipt-ai-tag ok">AI ${currencyLabel ? `${escapeHtml(currencyLabel)} ` : ''}${taggedAmount.toFixed(2)}</span>`
           : r.taggedStatus === 'missing'
             ? '<span class="receipt-ai-tag missing">AI no total</span>'
             : r.taggedStatus === 'error'
               ? `<span class="receipt-ai-tag error" title="${escapeHtml(r.taggedError || 'Tagging failed')}">AI failed</span>`
               : '<span class="receipt-ai-tag pending">AI pending</span>';
+        const fxHints =
+          r.taggedCurrency === 'USD' && taggedSgdApprox !== null
+            ? `
+              <span class="receipt-fx-tag">~SGD ${taggedSgdApprox.toFixed(2)}${r.taggedFxDateUsed ? ` @ ${escapeHtml(r.taggedFxDateUsed)}` : ''}</span>
+              ${
+                taggedSgdApproxPlus325 !== null
+                  ? `<span class="receipt-fx-tag surcharge">~SGD ${taggedSgdApproxPlus325.toFixed(2)} (+3.25%)</span>`
+                  : ''
+              }
+            `
+            : '';
         const linkedClass = isLinked ? 'linked' : '';
         const linkBtnIcon = isLinked
           ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -288,9 +305,13 @@ async function loadReceipts() {
             </div>
             <div class="receipt-actions">
               <div class="receipt-meta">
-                <span class="receipt-date ${dateDisplay.className}" title="${dateDisplay.className ? 'Date extracted from receipt content' : 'Upload date'}">${dateDisplay.text}</span>
+                <span class="receipt-date ${dateDisplay.className}" title="${escapeHtml(dateDisplay.title)}">${dateDisplay.text}</span>
                 ${amountBadge}
+                ${fxHints}
               </div>
+              <button class="date-btn" title="Set receipt date (manual override)">
+                Date
+              </button>
               <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
                 ${linkBtnIcon}
               </button>
@@ -303,6 +324,7 @@ async function loadReceipts() {
     // Attach click handlers
     receiptList.querySelectorAll('li[data-key]').forEach(li => {
       li.addEventListener('click', (e) => handleReceiptClick(e, li));
+      li.querySelector('.date-btn').addEventListener('click', (e) => handleDateOverrideClick(e, li));
       li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
     });
 
@@ -366,7 +388,8 @@ function escapeHtml(str) {
 
 function parseDateOnly(value) {
   if (!value) return null;
-  const parsed = new Date(value);
+  const normalised = RECEIPT_DATE_RE.test(value) ? `${value}T00:00:00Z` : value;
+  const parsed = new Date(normalised);
   if (Number.isNaN(parsed.getTime())) return null;
   return new Date(Date.UTC(parsed.getUTCFullYear(), parsed.getUTCMonth(), parsed.getUTCDate()));
 }
@@ -378,23 +401,20 @@ function daysBetween(dateA, dateB) {
 }
 
 function getReceiptMatchDate(receipt) {
-  const receiptDateCandidates = [
-    receipt.receiptDate,
-    receipt.extractedDate,
-    receipt.detectedDate,
-    receipt.taggedDate,
-    receipt.ocrDate,
-    receipt.documentDate,
-  ];
+  const explicitDate = parseDateOnly(receipt.receiptDate);
+  if (explicitDate) {
+    return {
+      date: explicitDate,
+      source: receipt.receiptDateSource || 'manual',
+    };
+  }
 
-  for (const candidate of receiptDateCandidates) {
-    const parsed = parseDateOnly(candidate);
-    if (parsed) {
-      return {
-        date: parsed,
-        source: 'receipt',
-      };
-    }
+  const detectedDate = parseDateOnly(receipt.detectedReceiptDate);
+  if (detectedDate) {
+    return {
+      date: detectedDate,
+      source: 'ai',
+    };
   }
 
   const uploadedDate = parseDateOnly(receipt.uploaded);
@@ -411,24 +431,55 @@ function getReceiptMatchDate(receipt) {
 function formatReceiptDateLabel(receipt) {
   const matchDate = getReceiptMatchDate(receipt);
   if (!matchDate.date) {
-    return { text: 'Unknown date', className: '' };
+    return { text: 'Unknown date', className: '', title: 'No date available' };
   }
 
   const formatted = matchDate.date.toLocaleDateString();
-  if (matchDate.source === 'receipt') {
-    return { text: `Receipt ${formatted}`, className: 'receipt-date-extracted' };
+  if (matchDate.source === 'manual') {
+    return {
+      text: `Manual ${formatted}`,
+      className: 'receipt-date-manual',
+      title: 'Manually overridden receipt date',
+    };
   }
-  return { text: formatted, className: '' };
+  if (matchDate.source === 'ai') {
+    return {
+      text: `AI ${formatted}`,
+      className: 'receipt-date-ai',
+      title: 'AI detected receipt date',
+    };
+  }
+
+  return { text: formatted, className: '', title: 'Upload date fallback' };
+}
+
+function getComparableReceiptAmounts(receipt) {
+  const baseAmount = Number(receipt.taggedAmount);
+  const fxAmount = Number(receipt.taggedAmountSgdApprox);
+  const fxAmountPlus325 = Number(receipt.taggedAmountSgdApproxPlus325);
+  const values = [];
+
+  if (Number.isFinite(baseAmount)) {
+    values.push({ value: baseAmount, kind: 'base' });
+  }
+  if (Number.isFinite(fxAmount)) {
+    values.push({ value: fxAmount, kind: 'fx' });
+  }
+  if (Number.isFinite(fxAmountPlus325)) {
+    values.push({ value: fxAmountPlus325, kind: 'fx-plus' });
+  }
+
+  return values;
 }
 
 function scoreReceiptClaimMatch(receipt, claim) {
   const claimAmount = Number(claim.amount);
-  const receiptAmount = Number(receipt.taggedAmount);
   const hasClaimAmount = Number.isFinite(claimAmount);
-  const hasReceiptAmount = Number.isFinite(receiptAmount);
-  const amountMatch = hasClaimAmount && hasReceiptAmount
-    ? Math.abs(claimAmount - receiptAmount) <= AMOUNT_MATCH_TOLERANCE
-    : false;
+  const comparableAmounts = getComparableReceiptAmounts(receipt);
+  const matchedAmount = hasClaimAmount
+    ? comparableAmounts.find((candidate) => Math.abs(claimAmount - candidate.value) <= AMOUNT_MATCH_TOLERANCE)
+    : null;
+  const amountMatch = Boolean(matchedAmount);
 
   const claimDate = parseDateOnly(claim.date);
   const receiptDateInfo = getReceiptMatchDate(receipt);
@@ -437,10 +488,16 @@ function scoreReceiptClaimMatch(receipt, claim) {
   const isNearDate = dayDiff !== null && dayDiff >= 1 && dayDiff <= DATE_NEAR_THRESHOLD_DAYS;
 
   if (amountMatch && (isExactDate || isNearDate)) {
-    return { className: 'match-best', label: 'Best match' };
+    return {
+      className: 'match-best',
+      label: matchedAmount && matchedAmount.kind.startsWith('fx') ? 'Best FX match' : 'Best match',
+    };
   }
   if (amountMatch) {
-    return { className: 'match-amount', label: 'Amount match' };
+    return {
+      className: 'match-amount',
+      label: matchedAmount && matchedAmount.kind.startsWith('fx') ? 'FX amount match' : 'Amount match',
+    };
   }
   if (isExactDate) {
     return { className: 'match-date', label: 'Date match' };
@@ -763,7 +820,7 @@ passwordInput.addEventListener('keydown', (e) => {
 
 // Handle receipt click - preview by default, toggle multi-select in claim-first mode
 function handleReceiptClick(e, li) {
-  if (e.target.closest('.link-btn')) return;
+  if (e.target.closest('.link-btn') || e.target.closest('.date-btn')) return;
 
   const key = li.dataset.key;
   const name = li.dataset.name;
@@ -785,6 +842,51 @@ function handleReceiptClick(e, li) {
   }
 
   openPreview(key, name);
+}
+
+async function handleDateOverrideClick(e, li) {
+  e.stopPropagation();
+  const receiptKey = li.dataset.key;
+  const receipt = receiptsData.find((item) => item.key === receiptKey);
+  if (!receipt) return;
+
+  const suggestedValue =
+    receipt.receiptDateSource === 'manual'
+      ? receipt.receiptDate || ''
+      : receipt.receiptDate || receipt.detectedReceiptDate || '';
+  const entered = window.prompt('Set receipt date (YYYY-MM-DD). Leave empty to clear manual override.', suggestedValue);
+  if (entered === null) return;
+
+  const nextValue = entered.trim();
+  if (nextValue && !RECEIPT_DATE_RE.test(nextValue)) {
+    showStatus('error', 'Date must be in YYYY-MM-DD format');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/receipt-date`, {
+      method: 'PATCH',
+      headers: {
+        ...authHeaders(),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        receiptDate: nextValue || null,
+      }),
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      showStatus('error', data.error || 'Failed to update receipt date');
+      return;
+    }
+
+    showStatus('success', nextValue ? 'Receipt date updated' : 'Manual date override cleared');
+    loadReceipts().then(() => loadYnabTodos());
+  } catch (error) {
+    console.error('Date override failed:', error);
+    showStatus('error', 'Failed to update receipt date');
+  }
 }
 
 // Handle receipt link button click
