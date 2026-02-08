@@ -37,9 +37,8 @@ const claimBadge = document.getElementById('claimBadge');
 // Linking state
 let selectedReceiptKey = null;
 let selectedClaimId = null;
-let selectedTargetClaimId = null;
 let selectedReceiptKeys = new Set();
-let linkingMode = null; // 'receipt-to-claim' | 'claim-to-receipts'
+let linkingMode = null; // 'claim-to-receipts'
 let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
@@ -552,16 +551,11 @@ function updateActionBar() {
 
   actionBar.classList.add('visible');
 
-  if (linkingMode === 'receipt-to-claim') {
-    if (!selectedTargetClaimId) {
-      actionText.textContent = 'Receipt selected. Choose a claim, then link';
-      confirmSelection.hidden = true;
-      return;
-    }
-
-    actionText.textContent = 'Receipt and claim selected. Ready to link';
-    confirmSelection.textContent = 'Link 1';
-    confirmSelection.hidden = false;
+  if (!selectedClaimId) {
+    const selectionCount = selectedReceiptKeys.size;
+    actionText.textContent = `${selectionCount} receipt${selectionCount === 1 ? '' : 's'} selected. Choose a claim, then link`;
+    confirmSelection.hidden = true;
+    confirmSelection.disabled = true;
     return;
   }
 
@@ -569,38 +563,40 @@ function updateActionBar() {
   if (selectionCount === 0) {
     actionText.textContent = 'Claim selected. Choose one or more receipts, then link';
     confirmSelection.hidden = true;
+    confirmSelection.disabled = true;
     return;
   }
 
   actionText.textContent = `Claim selected. ${selectionCount} receipt${selectionCount === 1 ? '' : 's'} selected`;
   confirmSelection.textContent = `Link ${selectionCount}`;
   confirmSelection.hidden = false;
+  confirmSelection.disabled = false;
 }
 
 function applyLinkingHighlights() {
-  if (selectedReceiptKey && !receiptsData.some((receipt) => receipt.key === selectedReceiptKey)) {
-    selectedReceiptKey = null;
-    selectedTargetClaimId = null;
-    if (linkingMode === 'receipt-to-claim') {
-      linkingMode = null;
-    }
-  }
-
   if (selectedClaimId && !claimsData.some((claim) => claim.id === selectedClaimId)) {
     selectedClaimId = null;
-    selectedReceiptKeys.clear();
-    if (linkingMode === 'claim-to-receipts') {
-      linkingMode = null;
-    }
-  }
-
-  if (selectedTargetClaimId && !claimsData.some((claim) => claim.id === selectedTargetClaimId)) {
-    selectedTargetClaimId = null;
   }
 
   selectedReceiptKeys = new Set(
     Array.from(selectedReceiptKeys).filter((key) => receiptsData.some((receipt) => receipt.key === key))
   );
+
+  if (selectedReceiptKey && !selectedReceiptKeys.has(selectedReceiptKey)) {
+    selectedReceiptKey = null;
+  }
+
+  if (!selectedClaimId && !selectedReceiptKey && selectedReceiptKeys.size > 0) {
+    selectedReceiptKey = Array.from(selectedReceiptKeys)[0];
+  }
+
+  if (selectedClaimId) {
+    selectedReceiptKey = null;
+  }
+
+  if (linkingMode === 'claim-to-receipts' && selectedReceiptKeys.size === 0 && !selectedClaimId) {
+    linkingMode = null;
+  }
 
   if (!linkingMode) {
     document.body.classList.remove('selecting');
@@ -613,15 +609,12 @@ function applyLinkingHighlights() {
   clearMatchDecorations(todoList);
 
   receiptList.querySelectorAll('li[data-key]').forEach((li) => {
-    const isSelectedReceipt = linkingMode === 'receipt-to-claim' && selectedReceiptKey && li.dataset.key === selectedReceiptKey;
-    const isSelectedForClaim = linkingMode === 'claim-to-receipts' && selectedReceiptKeys.has(li.dataset.key);
-    li.classList.toggle('selected', Boolean(isSelectedReceipt || isSelectedForClaim));
+    const isSelectedReceipt = linkingMode === 'claim-to-receipts' && selectedReceiptKeys.has(li.dataset.key);
+    li.classList.toggle('selected', Boolean(isSelectedReceipt));
   });
 
   todoList.querySelectorAll('.todo-item[data-claim-id]').forEach((li) => {
-    const isSelectedClaim =
-      (linkingMode === 'claim-to-receipts' && selectedClaimId === li.dataset.claimId) ||
-      (linkingMode === 'receipt-to-claim' && selectedTargetClaimId === li.dataset.claimId);
+    const isSelectedClaim = linkingMode === 'claim-to-receipts' && selectedClaimId === li.dataset.claimId;
     li.classList.toggle('selected', isSelectedClaim);
   });
 
@@ -639,7 +632,7 @@ function applyLinkingHighlights() {
     });
   }
 
-  if (linkingMode === 'receipt-to-claim' && selectedReceiptKey) {
+  if (linkingMode === 'claim-to-receipts' && !selectedClaimId && selectedReceiptKey) {
     const selectedReceipt = receiptsData.find((receipt) => receipt.key === selectedReceiptKey);
     if (!selectedReceipt) return;
 
@@ -854,25 +847,25 @@ passwordInput.addEventListener('keydown', (e) => {
 
 // ===== Receipt-Claim Linking =====
 
-// Handle receipt click - preview by default, toggle multi-select in claim-link mode
+// Handle receipt click - preview by default, toggle multi-select while linking
 function handleReceiptClick(e, li) {
-  if (e.target.closest('.link-btn') || e.target.closest('.receipt-date')) return;
+  if (e.target.closest('.link-btn') || e.target.closest('.date-btn') || e.target.closest('.receipt-date')) return;
 
   const key = li.dataset.key;
   const name = li.dataset.name;
 
-  if (linkingMode === 'claim-to-receipts' && selectedClaimId) {
+  if (linkingMode === 'claim-to-receipts') {
     if (selectedReceiptKeys.has(key)) {
       selectedReceiptKeys.delete(key);
     } else {
       selectedReceiptKeys.add(key);
     }
-    updateActionBar();
+    if (!selectedClaimId) {
+      selectedReceiptKey = selectedReceiptKeys.has(key)
+        ? key
+        : Array.from(selectedReceiptKeys)[0] || null;
+    }
     applyLinkingHighlights();
-    return;
-  }
-
-  if (linkingMode === 'receipt-to-claim') {
     return;
   }
 
@@ -937,6 +930,21 @@ function handleLinkBtnClick(e, li) {
     return;
   }
 
+  if (linkingMode === 'claim-to-receipts') {
+    if (selectedReceiptKeys.has(key)) {
+      selectedReceiptKeys.delete(key);
+    } else {
+      selectedReceiptKeys.add(key);
+    }
+    if (!selectedClaimId) {
+      selectedReceiptKey = selectedReceiptKeys.has(key)
+        ? key
+        : Array.from(selectedReceiptKeys)[0] || null;
+    }
+    applyLinkingHighlights();
+    return;
+  }
+
   startReceiptLinkFlow(key);
 }
 
@@ -946,21 +954,23 @@ function handleClaimLinkBtnClick(e, li) {
   startClaimLinkFlow(claimId);
 }
 
-// Handle claim click - select target claim only when receipt-link mode is active
+// Handle claim click - choose claim target while linking
 function handleClaimClick(_e, li) {
-  if (linkingMode === 'receipt-to-claim' && selectedReceiptKey) {
-    selectedTargetClaimId = li.dataset.claimId;
+  if (linkingMode === 'claim-to-receipts') {
+    selectedClaimId = li.dataset.claimId;
+    if (window.innerWidth <= 700) {
+      switchTab('receipts');
+    }
     applyLinkingHighlights();
   }
 }
 
-// Step 1 from receipt side: choose one receipt as source
+// Step 1 from receipt side: seed one receipt, then choose claim
 function startReceiptLinkFlow(key) {
-  linkingMode = 'receipt-to-claim';
+  linkingMode = 'claim-to-receipts';
   selectedReceiptKey = key;
   selectedClaimId = null;
-  selectedTargetClaimId = null;
-  selectedReceiptKeys.clear();
+  selectedReceiptKeys = new Set([key]);
   document.body.classList.add('selecting');
   updateActionBar();
   applyLinkingHighlights();
@@ -975,7 +985,6 @@ function startClaimLinkFlow(claimId) {
   linkingMode = 'claim-to-receipts';
   selectedClaimId = claimId;
   selectedReceiptKey = null;
-  selectedTargetClaimId = null;
   selectedReceiptKeys.clear();
   document.body.classList.add('selecting');
   updateActionBar();
@@ -991,7 +1000,6 @@ function clearSelection() {
   linkingMode = null;
   selectedReceiptKey = null;
   selectedClaimId = null;
-  selectedTargetClaimId = null;
   selectedReceiptKeys.clear();
   document.body.classList.remove('selecting');
   updateActionBar();
@@ -1024,33 +1032,6 @@ async function patchReceiptLink(receiptKey, claim) {
     console.error('Link failed:', err);
     return { ok: false, error: 'Failed to link receipt' };
   }
-}
-
-// Link a single receipt to one claim via API
-async function linkReceiptToClaim(receiptKey, claim) {
-  const result = await patchReceiptLink(receiptKey, claim);
-  if (result.ok) {
-    showStatus('success', 'Receipt linked to claim');
-    clearSelection();
-    loadReceipts().then(() => loadYnabTodos());
-    return;
-  }
-  showStatus('error', result.error || 'Failed to link');
-}
-
-async function linkSelectedClaimToReceipt() {
-  if (linkingMode !== 'receipt-to-claim' || !selectedReceiptKey || !selectedTargetClaimId) {
-    return;
-  }
-
-  const claim = claimsData.find((item) => item.id === selectedTargetClaimId);
-  if (!claim) {
-    showStatus('error', 'Selected claim not found');
-    return;
-  }
-
-  showStatus('uploading', 'Linking receipt...');
-  await linkReceiptToClaim(selectedReceiptKey, claim);
 }
 
 async function linkSelectedReceiptsToClaim() {
@@ -1090,10 +1071,6 @@ async function linkSelectedReceiptsToClaim() {
 }
 
 function handleConfirmSelection() {
-  if (linkingMode === 'receipt-to-claim') {
-    linkSelectedClaimToReceipt();
-    return;
-  }
   if (linkingMode === 'claim-to-receipts') {
     linkSelectedReceiptsToClaim();
   }
