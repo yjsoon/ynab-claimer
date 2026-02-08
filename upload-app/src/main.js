@@ -262,7 +262,7 @@ async function loadReceipts() {
         const parsedFxApproxPlus = Number(r.taggedAmountSgdApproxPlus325);
         const taggedSgdApproxPlus325 = Number.isFinite(parsedFxApproxPlus) ? parsedFxApproxPlus : null;
         const amountBadge = taggedAmount !== null
-          ? `<span class="receipt-ai-tag ok">AI ${currencyLabel ? `${escapeHtml(currencyLabel)} ` : ''}${taggedAmount.toFixed(2)}</span>`
+          ? `<span class="receipt-ai-tag ok">${currencyLabel ? `${escapeHtml(currencyLabel)} ` : ''}${taggedAmount.toFixed(2)}</span>`
           : r.taggedStatus === 'missing'
             ? '<span class="receipt-ai-tag missing">AI no total</span>'
             : r.taggedStatus === 'error'
@@ -270,14 +270,9 @@ async function loadReceipts() {
               : '<span class="receipt-ai-tag pending">AI pending</span>';
         const fxHints =
           r.taggedCurrency === 'USD' && taggedSgdApprox !== null
-            ? `
-              <span class="receipt-fx-tag">~SGD ${taggedSgdApprox.toFixed(2)}${r.taggedFxDateUsed ? ` @ ${escapeHtml(r.taggedFxDateUsed)}` : ''}</span>
-              ${
-                taggedSgdApproxPlus325 !== null
-                  ? `<span class="receipt-fx-tag surcharge">~SGD ${taggedSgdApproxPlus325.toFixed(2)} (+3.25%)</span>`
-                  : ''
-              }
-            `
+            ? `<span class="receipt-fx-tag">S$${taggedSgdApprox.toFixed(2)}${
+                taggedSgdApproxPlus325 !== null ? ` (S$${taggedSgdApproxPlus325.toFixed(2)})` : ''
+              }</span>`
             : '';
         const linkedClass = isLinked ? 'linked' : '';
         const linkBtnIcon = isLinked
@@ -310,9 +305,6 @@ async function loadReceipts() {
                 ${amountBadge}
                 ${fxHints}
               </div>
-              <button class="date-btn" title="Set receipt date (manual override)">
-                Date
-              </button>
               <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
                 ${linkBtnIcon}
               </button>
@@ -325,7 +317,7 @@ async function loadReceipts() {
     // Attach click handlers
     receiptList.querySelectorAll('li[data-key]').forEach(li => {
       li.addEventListener('click', (e) => handleReceiptClick(e, li));
-      li.querySelector('.date-btn').addEventListener('click', (e) => handleDateOverrideClick(e, li));
+      li.querySelector('.receipt-date').addEventListener('click', (e) => handleDateOverrideClick(e, li));
       li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
     });
 
@@ -842,7 +834,7 @@ passwordInput.addEventListener('keydown', (e) => {
 
 // Handle receipt click - preview by default, toggle multi-select in claim-link mode
 function handleReceiptClick(e, li) {
-  if (e.target.closest('.link-btn') || e.target.closest('.date-btn')) return;
+  if (e.target.closest('.link-btn') || e.target.closest('.receipt-date')) return;
 
   const key = li.dataset.key;
   const name = li.dataset.name;
