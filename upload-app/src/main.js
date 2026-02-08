@@ -272,6 +272,9 @@ async function loadReceipts() {
         const taggedSgdApprox = Number.isFinite(parsedFxApprox) ? parsedFxApprox : null;
         const parsedFxApproxPlus = Number(r.taggedAmountSgdApproxPlus325);
         const taggedSgdApproxPlus325 = Number.isFinite(parsedFxApproxPlus) ? parsedFxApproxPlus : null;
+        const vendor = (r.taggedVendor || '').trim();
+        const purpose = (r.taggedPurpose || '').trim();
+        const titleLabel = vendor && purpose ? `${vendor} - ${purpose}` : (vendor || purpose);
         const sgdLabel = taggedSgdApprox !== null
           ? `S$${taggedSgdApprox.toFixed(2)}${taggedSgdApproxPlus325 !== null ? ` (S$${taggedSgdApproxPlus325.toFixed(2)})` : ''}`
           : '';
@@ -290,6 +293,9 @@ async function loadReceipts() {
 
         const usdUnderName = r.taggedCurrency === 'USD' && taggedAmount !== null && !isLinked
           ? `<span class="receipt-usd-tag">${escapeHtml(formatCurrencyAmount('USD', taggedAmount))}</span>`
+          : '';
+        const titleUnderName = titleLabel
+          ? `<span class="receipt-title-tag">${escapeHtml(titleLabel)}</span>`
           : '';
         const linkedClass = isLinked ? 'linked' : '';
         const linkBtnIcon = isLinked
@@ -327,6 +333,7 @@ async function loadReceipts() {
             </span>
             <div class="receipt-info">
               <span class="receipt-name">${escapeHtml(name)}</span>
+              ${titleUnderName}
               ${usdUnderName}
               ${linkIndicator}
             </div>
@@ -414,10 +421,12 @@ function escapeHtml(str) {
 }
 
 function formatDateForLocale(date) {
-  const day = String(date.getUTCDate()).padStart(2, '0');
-  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
-  const year = String(date.getUTCFullYear());
-  return `${day}/${month}/${year}`;
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(date);
 }
 
 function formatCurrencyAmount(currency, amount) {

@@ -76,6 +76,8 @@ interface GeminiAmountResult {
   currency: string;
   receiptDate: string | null;
   receiptDateConfidence: number;
+  vendor: string | null;
+  purpose: string | null;
   model: string;
 }
 
@@ -116,6 +118,16 @@ function parseMetadataNumber(value?: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function sanitiseLabel(value: string | null | undefined, maxLength = 80): string | null {
+  if (!value) return null;
+  const cleaned = value
+    .trim()
+    .replace(/\s+/g, ' ')
+    .replace(/[^\w\s&.,'()\-\/]/g, '')
+    .slice(0, maxLength);
+  return cleaned.length > 0 ? cleaned : null;
 }
 
 function parseLinkedClaimIds(
@@ -180,7 +192,15 @@ function cleanError(error: unknown): string {
 
 function parseGeminiJson(
   rawText: string
-): { amount: number | null; confidence: number; currency: string; receiptDate: string | null; receiptDateConfidence: number } | null {
+): {
+  amount: number | null;
+  confidence: number;
+  currency: string;
+  receiptDate: string | null;
+  receiptDateConfidence: number;
+  vendor: string | null;
+  purpose: string | null;
+} | null {
   const trimmed = rawText.trim();
   const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const jsonText = fencedMatch?.[1]?.trim() || trimmed;
@@ -192,6 +212,8 @@ function parseGeminiJson(
       currency?: string;
       receiptDate?: string | null;
       receiptDateConfidence?: number | string;
+      vendor?: string | null;
+      purpose?: string | null;
     };
 
     let amount: number | null = null;
@@ -206,8 +228,10 @@ function parseGeminiJson(
     const currency = String(parsed.currency || 'UNKNOWN').toUpperCase().slice(0, 12);
     const receiptDate = extractIsoDate(parsed.receiptDate);
     const receiptDateConfidence = parseConfidence(parsed.receiptDateConfidence);
+    const vendor = sanitiseLabel(parsed.vendor, 60);
+    const purpose = sanitiseLabel(parsed.purpose, 100);
 
-    return { amount, confidence, currency, receiptDate, receiptDateConfidence };
+    return { amount, confidence, currency, receiptDate, receiptDateConfidence, vendor, purpose };
   } catch {
     return null;
   }
@@ -281,14 +305,16 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
 
   const model = env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
   const prompt = [
-    'Extract the final payable total amount and receipt date from this receipt.',
+    'Extract the final payable total amount, receipt date, vendor, and purpose from this receipt.',
     'Return strict JSON only with this schema:',
-    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number}',
+    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number, "vendor": string|null, "purpose": string|null}',
     'Rules:',
     '- amount must be the final charged total, no currency symbols.',
     '- use null if the amount is unreadable or ambiguous.',
     '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
     '- use null for receiptDate if date is unreadable/ambiguous.',
+    '- vendor should be merchant/vendor name only.',
+    '- purpose should be a short label (2-6 words) for what this expense is for.',
     '- confidence must be between 0 and 1.',
     '- receiptDateConfidence must be between 0 and 1.',
   ].join('\n');
@@ -359,10 +385,11 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
   }
 
   const metadata = object.customMetadata || {};
-  if (metadata.linkedClaimId) {
+  const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
+  if (linkedClaimIds.length > 0) {
     return { key, status: 'skipped', reason: 'already_linked' };
   }
-  if (!options.force && metadata.taggedStatus === 'ok' && metadata.taggedAmount) {
+  if (!options.force && (metadata.taggedStatus === 'ok' || metadata.taggedStatus === 'missing')) {
     return { key, status: 'skipped', reason: 'already_tagged' };
   }
 
@@ -417,6 +444,8 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
       detectedReceiptDateConfidence: gemini.receiptDateConfidence.toFixed(2),
       receiptDate: nextReceiptDate || undefined,
       receiptDateSource: nextReceiptDateSource,
+      taggedVendor: gemini.vendor || undefined,
+      taggedPurpose: gemini.purpose || undefined,
       taggedModel: gemini.model,
       taggedAt: new Date().toISOString(),
       taggedFxBaseDate: gemini.amount === null ? undefined : fxBaseDate,
@@ -471,7 +500,8 @@ async function tagPendingReceipts(env: Env, limit: number): Promise<{
   for (const object of listed.objects) {
     const head = await env.RECEIPTS.head(object.key);
     const metadata = head?.customMetadata || {};
-    if (metadata.linkedClaimId) continue;
+    const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
+    if (linkedClaimIds.length > 0) continue;
     if (metadata.taggedStatus === 'ok' || metadata.taggedStatus === 'missing') continue;
     candidateKeys.push(object.key);
     if (candidateKeys.length >= limit) break;
@@ -651,6 +681,8 @@ export default {
               taggedAmount: parseMetadataNumber(metadata.taggedAmount),
               taggedCurrency: metadata.taggedCurrency,
               taggedConfidence: parseMetadataNumber(metadata.taggedConfidence),
+              taggedVendor: metadata.taggedVendor,
+              taggedPurpose: metadata.taggedPurpose,
               taggedStatus: metadata.taggedStatus,
               taggedModel: metadata.taggedModel,
               taggedAt: metadata.taggedAt,

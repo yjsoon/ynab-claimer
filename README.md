@@ -7,6 +7,7 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
 - **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing, including claim-first multi-select linking
 - **AI Amount + Date Tagging**: Gemini auto-tags receipt totals and receipt dates for pending receipts
+- **AI Vendor + Purpose Label**: Gemini adds best-effort vendor and short purpose labels for faster scanning
 - **USD Matching Assist**: For USD receipts, the app shows approximate SGD values at day rate and day rate + 3.25%
 - **Smart Match Highlighting**: During linking, the UI highlights exact and near matches by amount and date
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
