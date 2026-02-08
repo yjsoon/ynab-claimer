@@ -231,12 +231,22 @@ async function loadReceipts() {
     }
 
     const data = await response.json();
-    // Sort: unlinked first (by date desc), then linked (by date desc)
+    // Sort: unlinked first, then linked.
+    // Unlinked receipts use effective receipt date (manual/AI/upload fallback) descending.
     receiptsData = data.receipts.sort((a, b) => {
       const aLinked = !!a.linkedClaimId;
       const bLinked = !!b.linkedClaimId;
       if (aLinked !== bLinked) return aLinked ? 1 : -1;
-      return new Date(b.uploaded) - new Date(a.uploaded);
+
+      if (!aLinked && !bLinked) {
+        const aDate = getReceiptMatchDate(a).date;
+        const bDate = getReceiptMatchDate(b).date;
+        const aTime = aDate ? aDate.getTime() : 0;
+        const bTime = bDate ? bDate.getTime() : 0;
+        if (aTime !== bTime) return bTime - aTime;
+      }
+
+      return new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime();
     });
 
     countSpan.textContent = `(${receiptsData.length})`;
@@ -396,12 +406,10 @@ function escapeHtml(str) {
 }
 
 function formatDateForLocale(date) {
-  return new Intl.DateTimeFormat(undefined, {
-    year: 'numeric',
-    month: 'numeric',
-    day: 'numeric',
-    timeZone: 'UTC',
-  }).format(date);
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const year = String(date.getUTCFullYear());
+  return `${day}/${month}/${year}`;
 }
 
 function formatCurrencyAmount(currency, amount) {
