@@ -854,11 +854,17 @@ function selectReceiptForSingleLink(key) {
 // Select one claim, then many receipts
 function selectClaimForMultiReceiptLink(claimId, seedReceiptKey = null) {
   const initialReceiptKey = seedReceiptKey || selectedReceiptKey;
+  const shouldPreserveCurrentSelection =
+    linkingMode === 'claim-to-receipts' && !seedReceiptKey && selectedReceiptKeys.size > 0;
+  const nextSelectedReceiptKeys = shouldPreserveCurrentSelection
+    ? new Set(selectedReceiptKeys)
+    : new Set();
+
   linkingMode = 'claim-to-receipts';
   selectedClaimId = claimId;
   selectedReceiptKey = null;
-  selectedReceiptKeys.clear();
-  if (initialReceiptKey) {
+  selectedReceiptKeys = nextSelectedReceiptKeys;
+  if (!shouldPreserveCurrentSelection && initialReceiptKey) {
     selectedReceiptKeys.add(initialReceiptKey);
   }
   document.body.classList.add('selecting');
