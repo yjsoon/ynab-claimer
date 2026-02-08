@@ -261,19 +261,25 @@ async function loadReceipts() {
         const taggedSgdApprox = Number.isFinite(parsedFxApprox) ? parsedFxApprox : null;
         const parsedFxApproxPlus = Number(r.taggedAmountSgdApproxPlus325);
         const taggedSgdApproxPlus325 = Number.isFinite(parsedFxApproxPlus) ? parsedFxApproxPlus : null;
-        const amountBadge = taggedAmount !== null
-          ? `<span class="receipt-ai-tag ok">${currencyLabel ? `${escapeHtml(currencyLabel)} ` : ''}${taggedAmount.toFixed(2)}</span>`
+        const sgdLabel = taggedSgdApprox !== null
+          ? `S$${taggedSgdApprox.toFixed(2)}${taggedSgdApproxPlus325 !== null ? ` (S$${taggedSgdApproxPlus325.toFixed(2)})` : ''}`
+          : '';
+
+        const primaryAmountBadge = taggedAmount !== null
+          ? r.taggedCurrency === 'USD'
+            ? sgdLabel
+              ? `<span class="receipt-sgd-tag">${sgdLabel}</span>`
+              : '<span class="receipt-ai-tag pending">SGD pending</span>'
+            : `<span class="receipt-sgd-tag">${escapeHtml(formatCurrencyAmount(currencyLabel, taggedAmount))}</span>`
           : r.taggedStatus === 'missing'
-            ? '<span class="receipt-ai-tag missing">AI no total</span>'
+            ? '<span class="receipt-ai-tag missing">No total</span>'
             : r.taggedStatus === 'error'
-              ? `<span class="receipt-ai-tag error" title="${escapeHtml(r.taggedError || 'Tagging failed')}">AI failed</span>`
-              : '<span class="receipt-ai-tag pending">AI pending</span>';
-        const fxHints =
-          r.taggedCurrency === 'USD' && taggedSgdApprox !== null
-            ? `<span class="receipt-fx-tag">S$${taggedSgdApprox.toFixed(2)}${
-                taggedSgdApproxPlus325 !== null ? ` (S$${taggedSgdApproxPlus325.toFixed(2)})` : ''
-              }</span>`
-            : '';
+              ? `<span class="receipt-ai-tag error" title="${escapeHtml(r.taggedError || 'Tagging failed')}">Failed</span>`
+              : '<span class="receipt-ai-tag pending">Pending</span>';
+
+        const usdUnderName = r.taggedCurrency === 'USD' && taggedAmount !== null && !isLinked
+          ? `<span class="receipt-usd-tag">${escapeHtml(formatCurrencyAmount('USD', taggedAmount))}</span>`
+          : '';
         const linkedClass = isLinked ? 'linked' : '';
         const linkBtnIcon = isLinked
           ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -297,13 +303,13 @@ async function loadReceipts() {
               data-linked="${r.linkedClaimId || ''}" class="${linkedClass}">
             <div class="receipt-info">
               <span class="receipt-name">${escapeHtml(name)}</span>
+              ${usdUnderName}
               ${linkIndicator}
             </div>
             <div class="receipt-actions">
               <div class="receipt-meta">
                 <span class="receipt-date ${dateDisplay.className}" title="${escapeHtml(dateDisplay.title)}">${dateDisplay.text}</span>
-                ${amountBadge}
-                ${fxHints}
+                ${primaryAmountBadge}
               </div>
               <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
                 ${linkBtnIcon}
@@ -379,6 +385,22 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function formatDateForLocale(date) {
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: 'numeric',
+    day: 'numeric',
+    timeZone: 'UTC',
+  }).format(date);
+}
+
+function formatCurrencyAmount(currency, amount) {
+  if (!Number.isFinite(amount)) return '';
+  if (currency === 'SGD') return `S$${amount.toFixed(2)}`;
+  if (currency) return `${currency} ${amount.toFixed(2)}`;
+  return amount.toFixed(2);
+}
+
 function parseDateOnly(value) {
   if (!value) return null;
   const normalised = RECEIPT_DATE_RE.test(value) ? `${value}T00:00:00Z` : value;
@@ -427,7 +449,7 @@ function formatReceiptDateLabel(receipt) {
     return { text: 'Unknown date', className: '', title: 'No date available' };
   }
 
-  const formatted = matchDate.date.toLocaleDateString();
+  const formatted = formatDateForLocale(matchDate.date);
   if (matchDate.source === 'manual') {
     return {
       text: `Manual ${formatted}`,
@@ -437,7 +459,7 @@ function formatReceiptDateLabel(receipt) {
   }
   if (matchDate.source === 'ai') {
     return {
-      text: `AI ${formatted}`,
+      text: formatted,
       className: 'receipt-date-ai',
       title: 'AI detected receipt date',
     };
@@ -796,7 +818,7 @@ async function loadYnabTodos() {
             </div>
             <div class="todo-details">
               <span class="todo-desc">${escapeHtml(t.payee)}</span>
-              <span class="todo-date">${new Date(t.date).toLocaleDateString()}</span>
+              <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
             </div>
             ${linkIndicator}
           </div>
