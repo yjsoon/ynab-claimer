@@ -315,7 +315,7 @@ h2 {
 .todo-item {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 10px;
   padding: 12px 0;
   border-bottom: 1px solid #eee;
@@ -619,6 +619,52 @@ h2 {
   50% { box-shadow: 0 0 0 8px rgba(33, 150, 243, 0); }
 }
 
+.select-indicator {
+  width: 20px;
+  height: 20px;
+  border: 2px solid #c9ced6;
+  border-radius: 999px;
+  background: #fff;
+  color: #fff;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  pointer-events: none;
+}
+
+.select-indicator .checkmark {
+  opacity: 0;
+  transform: scale(0.8);
+  transition: opacity 0.12s ease, transform 0.12s ease;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.receipt-list li.show-selector .receipt-selector,
+.todo-item.show-selector .claim-selector {
+  display: inline-flex;
+}
+
+.receipt-list li.checked .select-indicator,
+.todo-item.checked .select-indicator {
+  background: #007aff;
+  border-color: #007aff;
+}
+
+.receipt-list li.checked .select-indicator .checkmark,
+.todo-item.checked .select-indicator .checkmark {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.receipt-list li.source-selected,
+.todo-item.source-selected {
+  background: #eef6ff;
+  outline: 2px solid #64b5f6;
+  outline-offset: -2px;
+}
+
 /* Linked states */
 .receipt-list li.linked,
 .todo-item.linked {
@@ -691,8 +737,9 @@ h2 {
 /* Receipt item layout */
 .receipt-list li {
   display: flex;
-  justify-content: space-between;
+  justify-content: flex-start;
   align-items: center;
+  gap: 10px;
 }
 
 .receipt-info {
@@ -708,6 +755,7 @@ h2 {
   align-items: center;
   gap: 8px;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 /* Link button */
@@ -770,6 +818,7 @@ h2 {
 
 .claim-link-btn {
   margin-top: 2px;
+  margin-left: auto;
 }
 
 /* Match states shown only while linking */

@@ -91,6 +91,13 @@ interface FxRateResult {
   dateUsed: string;
 }
 
+interface LinkedClaimPayload {
+  id: string;
+  description: string;
+  amount?: number;
+  date?: string;
+}
+
 const fxRateCache = new Map<string, { value: FxRateResult; expiresAt: number }>();
 
 function toBase64(buffer: ArrayBuffer): string {
@@ -109,6 +116,34 @@ function parseMetadataNumber(value?: string): number | undefined {
   if (!value) return undefined;
   const parsed = Number.parseFloat(value);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function parseLinkedClaimIds(
+  linkedClaimIdsValue: string | undefined,
+  linkedClaimIdValue: string | undefined
+): string[] {
+  const parsed: string[] = [];
+
+  if (linkedClaimIdsValue) {
+    try {
+      const json = JSON.parse(linkedClaimIdsValue);
+      if (Array.isArray(json)) {
+        json.forEach((value) => {
+          if (typeof value === 'string' && value.trim().length > 0) {
+            parsed.push(value.trim());
+          }
+        });
+      }
+    } catch {
+      // Ignore malformed legacy metadata and fall back to single-link field.
+    }
+  }
+
+  if (linkedClaimIdValue && linkedClaimIdValue.trim().length > 0) {
+    parsed.unshift(linkedClaimIdValue.trim());
+  }
+
+  return Array.from(new Set(parsed));
 }
 
 function roundMoney(value: number): number {
@@ -597,6 +632,8 @@ export default {
           listed.objects.map(async (obj) => {
             const head = await env.RECEIPTS.head(obj.key);
             const metadata = head?.customMetadata || {};
+            const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
+            const primaryLinkedClaimId = linkedClaimIds[0];
             return {
               key: obj.key,
               size: obj.size,
@@ -604,7 +641,8 @@ export default {
               uploaded: metadata.uploadedAt || obj.uploaded.toISOString(),
               storageUploaded: obj.uploaded.toISOString(),
               originalName: metadata.originalName,
-              linkedClaimId: metadata.linkedClaimId,
+              linkedClaimId: primaryLinkedClaimId,
+              linkedClaimIds,
               linkedClaimDescription: metadata.linkedClaimDescription,
               receiptDate: metadata.receiptDate,
               receiptDateSource: metadata.receiptDateSource,
@@ -753,17 +791,57 @@ export default {
       if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'PATCH') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
         const body = (await request.json()) as {
-          linkedClaimId: string;
-          linkedClaimDescription: string;
+          linkedClaimId?: string;
+          linkedClaimDescription?: string;
           linkedClaimAmount?: number;
           linkedClaimDate?: string;
+          linkedClaims?: LinkedClaimPayload[];
         };
 
+        const linkedClaims = Array.isArray(body.linkedClaims) && body.linkedClaims.length > 0
+          ? body.linkedClaims
+          : body.linkedClaimId && body.linkedClaimDescription
+            ? [
+                {
+                  id: body.linkedClaimId,
+                  description: body.linkedClaimDescription,
+                  amount: body.linkedClaimAmount,
+                  date: body.linkedClaimDate,
+                },
+              ]
+            : [];
+
+        const normalisedClaims = linkedClaims
+          .map((claim) => ({
+            id: String(claim.id || '').trim(),
+            description: String(claim.description || '').trim(),
+            amount: Number.isFinite(claim.amount) ? Number(claim.amount) : undefined,
+            date: extractIsoDate(claim.date || undefined) || undefined,
+          }))
+          .filter((claim) => claim.id && claim.description);
+
+        if (normalisedClaims.length === 0) {
+          return new Response(JSON.stringify({ error: 'At least one claim is required' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const dedupedClaims = Array.from(
+          new Map(normalisedClaims.map((claim) => [claim.id, claim])).values()
+        );
+        const primaryClaim = dedupedClaims[0];
+        const linkedClaimDescription = dedupedClaims.length === 1
+          ? primaryClaim.description
+          : `${dedupedClaims.length} claims linked`;
+
         const updated = await patchReceiptMetadata(env, key, {
-          linkedClaimId: body.linkedClaimId,
-          linkedClaimDescription: body.linkedClaimDescription,
-          linkedClaimAmount: body.linkedClaimAmount ? String(body.linkedClaimAmount) : undefined,
-          linkedClaimDate: body.linkedClaimDate,
+          linkedClaimId: primaryClaim.id,
+          linkedClaimIds: JSON.stringify(dedupedClaims.map((claim) => claim.id)),
+          linkedClaimDescription,
+          linkedClaimAmount:
+            typeof primaryClaim.amount === 'number' ? String(primaryClaim.amount) : undefined,
+          linkedClaimDate: primaryClaim.date,
         });
         if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
@@ -783,6 +861,7 @@ export default {
 
         const updated = await patchReceiptMetadata(env, key, {
           linkedClaimId: undefined,
+          linkedClaimIds: undefined,
           linkedClaimDescription: undefined,
           linkedClaimAmount: undefined,
           linkedClaimDate: undefined,
