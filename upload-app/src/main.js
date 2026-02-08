@@ -545,12 +545,12 @@ function updateActionBar() {
 
   const selectionCount = selectedReceiptKeys.size;
   if (selectionCount === 0) {
-    actionText.textContent = 'Select one or more receipts to link';
+    actionText.textContent = 'Claim selected. Select one or more receipts to link';
     confirmSelection.hidden = true;
     return;
   }
 
-  actionText.textContent = `${selectionCount} receipt${selectionCount === 1 ? '' : 's'} selected`;
+  actionText.textContent = `Claim selected. ${selectionCount} receipt${selectionCount === 1 ? '' : 's'} selected (tap receipts to add/remove)`;
   confirmSelection.textContent = `Link ${selectionCount}`;
   confirmSelection.hidden = false;
 }
@@ -1034,7 +1034,8 @@ async function linkSelectedReceiptsToClaim() {
     return;
   }
 
-  const claim = claimsData.find((item) => item.id === selectedClaimId);
+  const claimId = selectedClaimId;
+  const claim = claimsData.find((item) => item.id === claimId);
   if (!claim) {
     showStatus('error', 'Selected claim not found');
     return;
@@ -1060,7 +1061,13 @@ async function linkSelectedReceiptsToClaim() {
     );
   }
 
-  clearSelection();
+  // Keep claim context active so user can continue linking more receipts quickly.
+  linkingMode = 'claim-to-receipts';
+  selectedClaimId = claimId;
+  selectedReceiptKey = null;
+  selectedReceiptKeys.clear();
+  document.body.classList.add('selecting');
+  updateActionBar();
   loadReceipts().then(() => loadYnabTodos());
 }
 
