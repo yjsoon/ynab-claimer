@@ -130,11 +130,35 @@ async function submitClaim(page: Page, claim: ClaimData) {
   // Click the date button to open picker
   await page.getByRole('button', { name: /Transaction date/i }).click();
   await page.waitForTimeout(500);
-  // The date picker shows a calendar grid - click the day number
+
   const dateObj = new Date(claim.date + 'T00:00:00');
+  const targetMonth = dateObj.getMonth(); // 0-indexed
+  const targetYear = dateObj.getFullYear();
   const dayNum = dateObj.getDate();
-  // Find the day in the calendar grid (use getByText with exact match)
-  await page.getByText(String(dayNum), { exact: true }).click();
+
+  // Navigate to the correct month by clicking prev/next arrows
+  // The calendar header typically shows "Month Year" text
+  const maxNav = 24; // safety limit
+  for (let i = 0; i < maxNav; i++) {
+    const headerText = await page.locator('.react-datepicker__current-month').textContent() ?? '';
+    // Parse "January 2026" style header
+    const parsed = new Date(headerText + ' 1');
+    if (!isNaN(parsed.getTime()) && parsed.getMonth() === targetMonth && parsed.getFullYear() === targetYear) {
+      break;
+    }
+    // Determine direction: go back if target is before current
+    const currentTime = parsed.getTime();
+    const targetTime = new Date(targetYear, targetMonth, 1).getTime();
+    if (targetTime < currentTime) {
+      await page.locator('.react-datepicker__navigation--previous').click();
+    } else {
+      await page.locator('.react-datepicker__navigation--next').click();
+    }
+    await page.waitForTimeout(300);
+  }
+
+  // Click the day number in the calendar grid
+  await page.locator(`.react-datepicker__day:not(.react-datepicker__day--outside-month)`).getByText(String(dayNum), { exact: true }).click();
   await page.waitForTimeout(300);
 
   // === RECEIPT UPLOAD ===
