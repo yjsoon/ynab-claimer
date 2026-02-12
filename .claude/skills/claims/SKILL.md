@@ -275,6 +275,12 @@ For each TODO transaction:
 - **No matching receipt**: Flag for manual review, ask user if they want to skip or mark without receipt
 - **Multiple matches**: Show all options and let user pick
 - **Unmatched receipts**: At the end, list any receipts that weren't matched to transactions
+- **Multiple YNAB transactions per receipt** (e.g. `linkedClaimDescription: "2 claims linked"`): Sometimes the user splits one ride/expense into two YNAB transactions but has only one receipt. In this case:
+  1. Present both transactions together, showing their combined total matches the receipt
+  2. Ask user if they want to submit one combined Volopay claim for the receipt total
+  3. If combined: submit one claim for the full amount, then mark BOTH YNAB transactions as CLAIMED
+  4. Only delete the R2 receipt after all related transactions are marked CLAIMED
+  5. Do NOT attempt to submit two separate Volopay claims with the same receipt amount split
 
 ### 9. Summary
 
