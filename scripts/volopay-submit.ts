@@ -108,7 +108,7 @@ async function submitClaim(page: Page, claim: ClaimData) {
 
   // === VOLOPAY CATEGORY ===
   console.log('  Selecting Volopay category...');
-  const category = claim.volopayCategory || 'Software';
+  const category = claim.volopayCategory || 'Other';
   // Scroll to make category visible
   await page.mouse.wheel(0, 200);
   await page.waitForTimeout(300);
@@ -191,7 +191,7 @@ async function submitClaim(page: Page, claim: ClaimData) {
   // Find the hidden file input element
   try {
     const fileInput = page.locator('input[type="file"]').first();
-    await fileInput.setInputFiles(receiptPath, { timeout: 10000 });
+    await fileInput.setInputFiles(receiptPath, { timeout: 5000 });
     await page.waitForTimeout(1500); // Wait for upload
   } catch {
     // Date picker hang: save draft, reopen, then retry upload
