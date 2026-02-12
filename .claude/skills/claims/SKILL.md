@@ -40,6 +40,13 @@ curl -s -H "Authorization: Bearer <YNAB_API_KEY>" \
 
 Note: Filter for `amount < 0` (outflows) to avoid duplicate transfer entries.
 
+**Important: Subtransactions / Split Transactions**
+Some TODO claims live inside split transactions as subtransactions. The top-level memo filter won't catch these. To find them:
+1. Also search subtransaction memos: `select(.subtransactions[] | .memo | ascii_downcase | contains("todo"))`
+2. Subtransaction IDs have format `{parent_id}_st_{index}_{date}` — fetching them as regular transactions returns null
+3. EZ-Link transfers and credit card payments may show positive amounts (inflows on the receiving account) — use absolute value for claiming
+4. When the web UI / R2 receipts show `linkedClaimId` that doesn't match any top-level TODO, check if it's a subtransaction ID
+
 Parse the response to extract:
 - `id` - Transaction ID (for updating later)
 - `date` - Transaction date
