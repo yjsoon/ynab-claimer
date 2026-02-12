@@ -135,39 +135,76 @@ async function submitClaim(page: Page, claim: ClaimData) {
   const targetMonth = dateObj.getMonth(); // 0-indexed
   const targetYear = dateObj.getFullYear();
   const dayNum = dateObj.getDate();
+  const monthNames = ['January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'];
 
-  // Navigate to the correct month by clicking prev/next arrows
-  // The calendar header typically shows "Month Year" text
-  const maxNav = 24; // safety limit
-  for (let i = 0; i < maxNav; i++) {
-    const headerText = await page.locator('.react-datepicker__current-month').textContent() ?? '';
-    // Parse "January 2026" style header
-    const parsed = new Date(headerText + ' 1');
-    if (!isNaN(parsed.getTime()) && parsed.getMonth() === targetMonth && parsed.getFullYear() === targetYear) {
-      break;
+  // Try to navigate calendar to correct month
+  // Look for any visible calendar header showing month/year
+  try {
+    const maxNav = 24;
+    for (let i = 0; i < maxNav; i++) {
+      // Try multiple selectors for the calendar month header
+      let headerText = '';
+      for (const sel of ['.react-datepicker__current-month', '[class*="month-header"]', '[class*="calendar"] [class*="header"]', '[class*="datepicker"] [class*="month"]']) {
+        const el = page.locator(sel).first();
+        if (await el.isVisible({ timeout: 500 }).catch(() => false)) {
+          headerText = await el.textContent() ?? '';
+          break;
+        }
+      }
+      if (!headerText) break; // Can't find header, fall through to day click
+
+      const parsed = new Date(headerText + ' 1');
+      if (!isNaN(parsed.getTime()) && parsed.getMonth() === targetMonth && parsed.getFullYear() === targetYear) {
+        break;
+      }
+
+      // Click prev/next arrow
+      const targetTime = new Date(targetYear, targetMonth, 1).getTime();
+      const goBack = targetTime < parsed.getTime();
+      const navSels = goBack
+        ? ['[class*="navigation--previous"]', '[class*="prev"]', '[aria-label*="prev" i]']
+        : ['[class*="navigation--next"]', '[class*="next"]', '[aria-label*="next" i]'];
+      let clicked = false;
+      for (const navSel of navSels) {
+        const navEl = page.locator(navSel).first();
+        if (await navEl.isVisible({ timeout: 500 }).catch(() => false)) {
+          await navEl.click();
+          clicked = true;
+          break;
+        }
+      }
+      if (!clicked) break;
+      await page.waitForTimeout(300);
     }
-    // Determine direction: go back if target is before current
-    const currentTime = parsed.getTime();
-    const targetTime = new Date(targetYear, targetMonth, 1).getTime();
-    if (targetTime < currentTime) {
-      await page.locator('.react-datepicker__navigation--previous').click();
-    } else {
-      await page.locator('.react-datepicker__navigation--next').click();
-    }
-    await page.waitForTimeout(300);
+  } catch {
+    console.log('  ⚠️  Could not navigate calendar months - clicking day in current view');
   }
 
-  // Click the day number in the calendar grid
-  await page.locator(`.react-datepicker__day:not(.react-datepicker__day--outside-month)`).getByText(String(dayNum), { exact: true }).click();
+  // Click the day number in the calendar grid (exclude outside-month days to avoid duplicates)
+  await page.locator('.react-datepicker__day:not(.react-datepicker__day--outside-month)').getByText(String(dayNum), { exact: true }).click();
   await page.waitForTimeout(300);
 
   // === RECEIPT UPLOAD ===
   console.log('  Uploading receipt...');
   const receiptPath = resolve(claim.receiptPath);
   // Find the hidden file input element
-  const fileInput = page.locator('input[type="file"]').first();
-  await fileInput.setInputFiles(receiptPath);
-  await page.waitForTimeout(1500); // Wait for upload
+  try {
+    const fileInput = page.locator('input[type="file"]').first();
+    await fileInput.setInputFiles(receiptPath, { timeout: 10000 });
+    await page.waitForTimeout(1500); // Wait for upload
+  } catch {
+    // Date picker hang: save draft, reopen, then retry upload
+    console.log('  ⚠️  Upload timed out (date picker hang). Saving draft and reopening...');
+    await page.getByRole('button', { name: 'Save as draft' }).click();
+    await page.waitForTimeout(2000);
+    await page.getByRole('cell', { name: claim.merchant }).first().click();
+    await page.waitForTimeout(2000);
+    console.log('  Draft reopened. Retrying upload...');
+    const fileInput = page.locator('input[type="file"]').first();
+    await fileInput.setInputFiles(receiptPath);
+    await page.waitForTimeout(1500);
+  }
 
   // === MEMO ===
   console.log('  Filling memo...');
