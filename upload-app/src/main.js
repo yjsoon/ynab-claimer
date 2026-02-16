@@ -582,7 +582,7 @@ function appendMatchBadge(li, label, listType) {
   badge.textContent = label;
   const container = listType === 'receipt'
     ? li.querySelector('.receipt-meta')
-    : li.querySelector('.todo-details');
+    : li.querySelector('.todo-meta');
   if (container) {
     container.appendChild(badge);
   }
@@ -886,22 +886,20 @@ async function loadYnabTodos() {
             <span class="checkmark">✓</span>
           </span>
           <div class="todo-content">
-            <div class="todo-main">
-              <span class="todo-payee">${escapeHtml(t.description)}</span>
-              <span class="todo-amount">$${t.amount.toFixed(2)}</span>
-            </div>
-            <div class="todo-details">
-              <span class="todo-meta">
-                <span class="todo-desc">${escapeHtml(t.payee)}</span>
-                <span class="todo-account">Account: ${escapeHtml(accountLabel)}</span>
-              </span>
-              <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
-            </div>
+            <span class="todo-payee">${escapeHtml(t.description)}</span>
+            <span class="todo-desc">${escapeHtml(t.payee)}</span>
+            <span class="todo-account">Account: ${escapeHtml(accountLabel)}</span>
             ${linkIndicator}
           </div>
-          <button class="link-btn claim-link-btn" title="Link receipts to this claim">
-            ${linkBtnIcon}
-          </button>
+          <div class="todo-actions">
+            <div class="todo-meta">
+              <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
+              <span class="todo-amount">$${t.amount.toFixed(2)}</span>
+            </div>
+            <button class="link-btn claim-link-btn" title="Link receipts to this claim">
+              ${linkBtnIcon}
+            </button>
+          </div>
         </li>
       `;
       })
