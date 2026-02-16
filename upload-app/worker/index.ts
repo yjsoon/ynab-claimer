@@ -57,6 +57,7 @@ interface YnabTransaction {
   id: string;
   date: string;
   amount: number;
+  account_name: string | null;
   payee_name: string | null;
   memo: string | null;
   transfer_transaction_id: string | null;
@@ -68,6 +69,7 @@ interface YnabTodo {
   payee: string;
   amount: number;
   description: string;
+  accountName: string;
 }
 
 interface GeminiAmountResult {
@@ -949,6 +951,7 @@ export default {
               payee: t.payee_name || 'Unknown',
               amount: Math.abs(t.amount) / 1000,
               description: t.memo!.replace(/^TODO[:\s]\s*/i, '').trim(),
+              accountName: t.account_name || 'Unknown account',
             }))
             .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 

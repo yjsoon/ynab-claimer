@@ -4,11 +4,28 @@
   padding: 0;
 }
 
+:root {
+  --font-family-ui: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-size-title: 1.05rem;
+  --font-size-body: 0.92rem;
+  --font-size-meta: 0.82rem;
+  --font-size-chip: 0.76rem;
+}
+
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-family-ui);
+  line-height: 1.4;
+  color: #1f2937;
   background: #f5f5f5;
   min-height: 100vh;
   padding: 20px;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
 }
 
 .container {
@@ -133,20 +150,23 @@ h2 {
 
 .receipt-name {
   flex: 1;
-  font-size: 0.9rem;
-  color: #333;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: #1f2937;
+  line-height: 1.25;
   word-break: break-all;
 }
 
 .receipt-title-tag {
-  font-size: 0.75rem;
+  font-size: var(--font-size-body);
   color: #4b5563;
-  line-height: 1.3;
+  line-height: 1.35;
   word-break: break-word;
 }
 
 .receipt-usd-tag {
-  font-size: 0.72rem;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
   color: #0f4c81;
   background: #e6f2fb;
   border-radius: 999px;
@@ -157,8 +177,10 @@ h2 {
 }
 
 .receipt-date {
-  font-size: 0.8rem;
+  font-size: var(--font-size-meta);
   color: #999;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
   cursor: pointer;
   text-decoration: underline;
@@ -184,7 +206,8 @@ h2 {
 }
 
 .receipt-sgd-tag {
-  font-size: 0.72rem;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
   color: #2e7d32;
   background: #e8f5e9;
   border-radius: 999px;
@@ -194,7 +217,8 @@ h2 {
 }
 
 .receipt-ai-tag {
-  font-size: 0.72rem;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
   border-radius: 999px;
   padding: 2px 8px;
   line-height: 1.3;
@@ -342,32 +366,57 @@ h2 {
   justify-content: space-between;
   align-items: center;
   margin-bottom: 4px;
+  gap: 12px;
 }
 
 .todo-payee {
-  font-weight: 500;
-  color: #333;
+  font-size: var(--font-size-title);
+  font-weight: 600;
+  color: #1f2937;
+  line-height: 1.25;
 }
 
 .todo-amount {
+  font-size: var(--font-size-title);
   font-weight: 600;
   color: #28a745;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 .todo-details {
   display: flex;
   justify-content: space-between;
-  font-size: 0.85rem;
+  align-items: baseline;
+  gap: 8px;
+  font-size: var(--font-size-body);
+}
+
+.todo-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
 }
 
 .todo-desc {
   color: #666;
-  flex: 1;
+  min-width: 0;
+}
+
+.todo-account {
+  color: #4b5563;
+  font-size: var(--font-size-meta);
 }
 
 .todo-date {
   color: #999;
   margin-left: 12px;
+  font-size: var(--font-size-meta);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Receipt list - clickable items */
@@ -684,7 +733,8 @@ h2 {
   display: flex;
   align-items: center;
   gap: 4px;
-  font-size: 0.75rem;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
   color: #4caf50;
   margin-top: 4px;
 }
@@ -866,7 +916,8 @@ h2 {
   margin-top: 4px;
   border-radius: 999px;
   padding: 2px 8px;
-  font-size: 0.7rem;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
   line-height: 1.3;
   background: rgba(0, 0, 0, 0.08);
   color: #374151;

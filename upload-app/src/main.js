@@ -863,6 +863,8 @@ async function loadYnabTodos() {
         const linkedReceipts = linkedReceiptsByClaimId.get(t.id) || [];
         const isLinked = linkedReceipts.length > 0;
         const linkedClass = isLinked ? 'linked' : '';
+        const accountName = (t.accountName || '').trim();
+        const accountLabel = accountName || 'Unknown account';
         const linkIndicator = isLinked
           ? `<div class="link-indicator">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -889,7 +891,10 @@ async function loadYnabTodos() {
               <span class="todo-amount">$${t.amount.toFixed(2)}</span>
             </div>
             <div class="todo-details">
-              <span class="todo-desc">${escapeHtml(t.payee)}</span>
+              <span class="todo-meta">
+                <span class="todo-desc">${escapeHtml(t.payee)}</span>
+                <span class="todo-account">Account: ${escapeHtml(accountLabel)}</span>
+              </span>
               <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
             </div>
             ${linkIndicator}
