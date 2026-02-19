@@ -44,6 +44,8 @@ let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let linkedJumpHighlightTimer = null;
+let activeLinkedJumpItem = null;
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -324,6 +326,20 @@ async function loadReceipts() {
               ${escapeHtml(linkIndicatorLabel)}
             </div>`
           : '';
+        const linkedClaimList = isLinked
+          ? `<div class="linked-claim-list">
+              ${linkedClaimIds
+                .map((claimId, index) => {
+                  const label = getLinkedClaimJumpLabel(r, claimId, index);
+                  return `<button type="button" class="linked-claim-chip"
+                      data-claim-id="${escapeHtml(claimId)}"
+                      title="Highlight linked claim">
+                    ${escapeHtml(label)}
+                  </button>`;
+                })
+                .join('')}
+            </div>`
+          : '';
         return `
           <li data-key="${escapeHtml(r.key)}" data-name="${escapeHtml(name)}"
               data-linked="${escapeHtml(linkedClaimIds.join(','))}" class="${linkedClass}">
@@ -335,6 +351,7 @@ async function loadReceipts() {
               ${titleUnderName}
               ${usdUnderName}
               ${linkIndicator}
+              ${linkedClaimList}
             </div>
             <div class="receipt-actions">
               <div class="receipt-meta">
@@ -359,6 +376,14 @@ async function loadReceipts() {
       li.querySelector('.receipt-date').addEventListener('click', (e) => handleDateOverrideClick(e, li));
       li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
       li.querySelector('.delete-btn').addEventListener('click', (e) => handleDeleteBtnClick(e, li));
+    });
+    receiptList.querySelectorAll('.linked-claim-chip').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const claimId = btn.dataset.claimId;
+        if (!claimId) return;
+        highlightClaimLinkTarget(claimId);
+      });
     });
 
     applyLinkingHighlights();
@@ -493,6 +518,94 @@ function getReceiptDisplayName(receipt) {
   if (originalName) return originalName;
   const keyWithoutPrefix = key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
   return keyWithoutPrefix || key || 'Receipt';
+}
+
+function getReceiptJumpLabel(receipt) {
+  const vendor = typeof receipt.taggedVendor === 'string' ? receipt.taggedVendor.trim() : '';
+  const purpose = typeof receipt.taggedPurpose === 'string' ? receipt.taggedPurpose.trim() : '';
+  const title = vendor && purpose ? `${vendor} - ${purpose}` : (vendor || purpose);
+  const amount = Number(receipt.taggedAmount);
+  const currency = typeof receipt.taggedCurrency === 'string' ? receipt.taggedCurrency.toUpperCase() : '';
+  const amountLabel = Number.isFinite(amount) ? formatCurrencyAmount(currency, amount) : '';
+
+  if (title && amountLabel) return `${title} · ${amountLabel}`;
+  if (title) return title;
+  if (amountLabel) return amountLabel;
+
+  return getReceiptDisplayName(receipt);
+}
+
+function getLinkedClaimJumpLabel(receipt, claimId, index = 0) {
+  const linkedClaim = claimsData.find((claim) => claim.id === claimId);
+  if (linkedClaim) {
+    const description = (linkedClaim.description || '').trim();
+    if (description) return description;
+    const payee = (linkedClaim.payee || '').trim();
+    if (payee) return payee;
+  }
+
+  const linkedClaimIds = getLinkedClaimIds(receipt);
+  const fallbackDescription = (receipt.linkedClaimDescription || '').trim();
+  if (fallbackDescription && linkedClaimIds.length === 1) {
+    return fallbackDescription;
+  }
+
+  const shortId = typeof claimId === 'string' && claimId.length >= 6
+    ? claimId.slice(-6)
+    : `${index + 1}`;
+  return `Claim ${shortId}`;
+}
+
+function highlightLinkedListItem(item, tab) {
+  if (!item) return;
+
+  if (window.innerWidth <= 700) {
+    switchTab(tab);
+  }
+
+  if (linkedJumpHighlightTimer) {
+    clearTimeout(linkedJumpHighlightTimer);
+    linkedJumpHighlightTimer = null;
+  }
+
+  if (activeLinkedJumpItem && activeLinkedJumpItem !== item) {
+    activeLinkedJumpItem.classList.remove('cross-link-highlight');
+  }
+
+  item.classList.remove('cross-link-highlight');
+  // Force reflow so repeated clicks retrigger the highlight animation.
+  void item.offsetWidth;
+  item.classList.add('cross-link-highlight');
+  item.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  activeLinkedJumpItem = item;
+
+  linkedJumpHighlightTimer = window.setTimeout(() => {
+    if (activeLinkedJumpItem === item) {
+      item.classList.remove('cross-link-highlight');
+      activeLinkedJumpItem = null;
+    }
+    linkedJumpHighlightTimer = null;
+  }, 2200);
+}
+
+function highlightReceiptLinkTarget(receiptKey) {
+  const receiptItem = Array.from(receiptList.querySelectorAll('li[data-key]'))
+    .find((item) => item.dataset.key === receiptKey);
+  if (!receiptItem) {
+    showStatus('error', 'Linked receipt is not in pending receipts');
+    return;
+  }
+  highlightLinkedListItem(receiptItem, 'receipts');
+}
+
+function highlightClaimLinkTarget(claimId) {
+  const claimItem = Array.from(todoList.querySelectorAll('.todo-item[data-claim-id]'))
+    .find((item) => item.dataset.claimId === claimId);
+  if (!claimItem) {
+    showStatus('error', 'Linked claim is not in pending claims');
+    return;
+  }
+  highlightLinkedListItem(claimItem, 'claims');
 }
 
 function formatReceiptDateLabel(receipt) {
@@ -885,12 +998,11 @@ async function loadYnabTodos() {
           ? `<div class="linked-receipt-list">
               ${linkedReceipts
                 .map((receipt) => {
-                  const name = getReceiptDisplayName(receipt);
+                  const label = getReceiptJumpLabel(receipt);
                   return `<button type="button" class="linked-receipt-chip"
                       data-receipt-key="${escapeHtml(receipt.key)}"
-                      data-receipt-name="${escapeHtml(name)}"
-                      title="Preview linked receipt">
-                    ${escapeHtml(name)}
+                      title="Highlight linked receipt">
+                    ${escapeHtml(label)}
                   </button>`;
                 })
                 .join('')}
@@ -938,7 +1050,7 @@ async function loadYnabTodos() {
         e.stopPropagation();
         const receiptKey = btn.dataset.receiptKey;
         if (!receiptKey) return;
-        openPreview(receiptKey, btn.dataset.receiptName || receiptKey);
+        highlightReceiptLinkTarget(receiptKey);
       });
     });
     applyLinkingHighlights();
