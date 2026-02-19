@@ -134,8 +134,7 @@ async function handlePasswordSubmit() {
       return;
     }
     hidePasswordPrompt();
-    loadReceipts();
-    loadYnabTodos();
+    loadReceipts().then(() => loadYnabTodos());
   } catch {
     showStatus('error', 'Connection failed');
   }
@@ -262,7 +261,7 @@ async function loadReceipts() {
     receiptList.innerHTML = receiptsData
       .map(r => {
         const dateDisplay = formatReceiptDateLabel(r);
-        const name = r.originalName || r.key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
+        const name = getReceiptDisplayName(r);
         const linkedClaimIds = getLinkedClaimIds(r);
         const isLinked = linkedClaimIds.length > 0;
         const parsedTaggedAmount = Number(r.taggedAmount);
@@ -486,6 +485,14 @@ function getLinkedClaimIds(receipt) {
     return [receipt.linkedClaimId];
   }
   return [];
+}
+
+function getReceiptDisplayName(receipt) {
+  const key = typeof receipt.key === 'string' ? receipt.key : '';
+  const originalName = typeof receipt.originalName === 'string' ? receipt.originalName.trim() : '';
+  if (originalName) return originalName;
+  const keyWithoutPrefix = key.replace(/^\d{4}-\d{2}-\d{2}_\d{6}_[a-f0-9]{8}_/, '');
+  return keyWithoutPrefix || key || 'Receipt';
 }
 
 function formatReceiptDateLabel(receipt) {
@@ -874,6 +881,21 @@ async function loadYnabTodos() {
               ${linkedReceipts.length} receipt${linkedReceipts.length === 1 ? '' : 's'} linked
             </div>`
           : '';
+        const linkedReceiptList = isLinked
+          ? `<div class="linked-receipt-list">
+              ${linkedReceipts
+                .map((receipt) => {
+                  const name = getReceiptDisplayName(receipt);
+                  return `<button type="button" class="linked-receipt-chip"
+                      data-receipt-key="${escapeHtml(receipt.key)}"
+                      data-receipt-name="${escapeHtml(name)}"
+                      title="Preview linked receipt">
+                    ${escapeHtml(name)}
+                  </button>`;
+                })
+                .join('')}
+            </div>`
+          : '';
         const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -890,6 +912,7 @@ async function loadYnabTodos() {
             <span class="todo-desc">${escapeHtml(t.payee)}</span>
             <span class="todo-account">Account: ${escapeHtml(accountLabel)}</span>
             ${linkIndicator}
+            ${linkedReceiptList}
           </div>
           <div class="todo-actions">
             <div class="todo-meta">
@@ -910,6 +933,14 @@ async function loadYnabTodos() {
       li.addEventListener('click', (e) => handleClaimClick(e, li));
       li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
     });
+    todoList.querySelectorAll('.linked-receipt-chip').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const receiptKey = btn.dataset.receiptKey;
+        if (!receiptKey) return;
+        openPreview(receiptKey, btn.dataset.receiptName || receiptKey);
+      });
+    });
     applyLinkingHighlights();
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
@@ -917,9 +948,9 @@ async function loadYnabTodos() {
   }
 }
 
-refreshBtn.addEventListener('click', () => {
-  loadReceipts();
-  loadYnabTodos();
+refreshBtn.addEventListener('click', async () => {
+  await loadReceipts();
+  await loadYnabTodos();
 });
 
 authSubmit.addEventListener('click', handlePasswordSubmit);
@@ -1284,8 +1315,8 @@ tabBtns.forEach(btn => {
 async function init() {
   if (await checkAuth()) {
     hidePasswordPrompt();
-    loadReceipts();
-    loadYnabTodos();
+    await loadReceipts();
+    await loadYnabTodos();
   }
 }
 
