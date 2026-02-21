@@ -33,6 +33,8 @@ const receiptsColumn = document.getElementById('receiptsColumn');
 const claimsColumn = document.getElementById('claimsColumn');
 const receiptBadge = document.getElementById('receiptBadge');
 const claimBadge = document.getElementById('claimBadge');
+const linkedList = document.getElementById('linkedList');
+const linkedCount = document.getElementById('linkedCount');
 
 // Linking state
 let sourceReceiptKey = null;
@@ -44,8 +46,6 @@ let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
-let linkedJumpHighlightTimer = null;
-let activeLinkedJumpItem = null;
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -251,21 +251,22 @@ async function loadReceipts() {
       return new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime();
     });
 
-    countSpan.textContent = `(${receiptsData.length})`;
-    receiptBadge.textContent = receiptsData.length || '';
+    const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0);
+    countSpan.textContent = `(${outstandingReceipts.length})`;
+    receiptBadge.textContent = outstandingReceipts.length || '';
 
-    if (receiptsData.length === 0) {
-      receiptList.innerHTML = '<li class="empty-state">No pending receipts</li>';
+    if (outstandingReceipts.length === 0) {
+      receiptList.innerHTML = '<li class="empty-state">No outstanding receipts</li>';
       applyLinkingHighlights();
+      renderLinkedPairs();
+      triggerPendingAmountTagging();
       return;
     }
 
-    receiptList.innerHTML = receiptsData
+    receiptList.innerHTML = outstandingReceipts
       .map(r => {
         const dateDisplay = formatReceiptDateLabel(r);
         const name = getReceiptDisplayName(r);
-        const linkedClaimIds = getLinkedClaimIds(r);
-        const isLinked = linkedClaimIds.length > 0;
         const parsedTaggedAmount = Number(r.taggedAmount);
         const taggedAmount = Number.isFinite(parsedTaggedAmount) ? parsedTaggedAmount : null;
         const currencyLabel = (r.taggedCurrency || '').toUpperCase();
@@ -292,18 +293,13 @@ async function loadReceipts() {
               ? `<span class="receipt-ai-tag error" title="${escapeHtml(r.taggedError || 'Tagging failed')}">Failed</span>`
               : '<span class="receipt-ai-tag pending">Pending</span>';
 
-        const usdUnderName = r.taggedCurrency === 'USD' && taggedAmount !== null && !isLinked
+        const usdUnderName = r.taggedCurrency === 'USD' && taggedAmount !== null
           ? `<span class="receipt-usd-tag">${escapeHtml(formatCurrencyAmount('USD', taggedAmount))}</span>`
           : '';
         const titleUnderName = titleLabel
           ? `<span class="receipt-title-tag">${escapeHtml(titleLabel)}</span>`
           : '';
-        const linkedClass = isLinked ? 'linked' : '';
-        const linkBtnIcon = isLinked
-          ? `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M18 6L6 18M6 6l12 12"/>
-            </svg>`
-          : `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>`;
@@ -314,35 +310,9 @@ async function loadReceipts() {
               <line x1="10" y1="11" x2="10" y2="17"/>
               <line x1="14" y1="11" x2="14" y2="17"/>
             </svg>`;
-        const linkIndicatorLabel = linkedClaimIds.length > 1
-          ? `${linkedClaimIds.length} claims linked`
-          : (r.linkedClaimDescription || 'Linked');
-        const linkIndicator = isLinked
-          ? `<div class="link-indicator">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-              </svg>
-              ${escapeHtml(linkIndicatorLabel)}
-            </div>`
-          : '';
-        const linkedClaimList = isLinked
-          ? `<div class="linked-claim-list">
-              ${linkedClaimIds
-                .map((claimId, index) => {
-                  const label = getLinkedClaimJumpLabel(r, claimId, index);
-                  return `<button type="button" class="linked-claim-chip"
-                      data-claim-id="${escapeHtml(claimId)}"
-                      title="Highlight linked claim">
-                    ${escapeHtml(label)}
-                  </button>`;
-                })
-                .join('')}
-            </div>`
-          : '';
         return `
           <li data-key="${escapeHtml(r.key)}" data-name="${escapeHtml(name)}"
-              data-linked="${escapeHtml(linkedClaimIds.join(','))}" class="${linkedClass}">
+              data-linked="">
             <span class="select-indicator receipt-selector" aria-hidden="true">
               <span class="checkmark">✓</span>
             </span>
@@ -350,15 +320,13 @@ async function loadReceipts() {
               <span class="receipt-name">${escapeHtml(name)}</span>
               ${titleUnderName}
               ${usdUnderName}
-              ${linkIndicator}
-              ${linkedClaimList}
             </div>
             <div class="receipt-actions">
               <div class="receipt-meta">
                 <span class="receipt-date ${dateDisplay.className}" title="${escapeHtml(dateDisplay.title)}">${dateDisplay.text}</span>
                 ${primaryAmountBadge}
               </div>
-              <button class="link-btn ${isLinked ? 'linked' : ''}" title="${isLinked ? 'Unlink' : 'Link to claim'}">
+              <button class="link-btn" title="Link to claim">
                 ${linkBtnIcon}
               </button>
               <button class="delete-btn" title="Delete receipt">
@@ -377,16 +345,9 @@ async function loadReceipts() {
       li.querySelector('.link-btn').addEventListener('click', (e) => handleLinkBtnClick(e, li));
       li.querySelector('.delete-btn').addEventListener('click', (e) => handleDeleteBtnClick(e, li));
     });
-    receiptList.querySelectorAll('.linked-claim-chip').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const claimId = btn.dataset.claimId;
-        if (!claimId) return;
-        highlightClaimLinkTarget(claimId);
-      });
-    });
 
     applyLinkingHighlights();
+    renderLinkedPairs();
     triggerPendingAmountTagging();
   } catch (err) {
     console.error('Failed to load receipts:', err);
@@ -520,21 +481,6 @@ function getReceiptDisplayName(receipt) {
   return keyWithoutPrefix || key || 'Receipt';
 }
 
-function getReceiptJumpLabel(receipt) {
-  const vendor = typeof receipt.taggedVendor === 'string' ? receipt.taggedVendor.trim() : '';
-  const purpose = typeof receipt.taggedPurpose === 'string' ? receipt.taggedPurpose.trim() : '';
-  const title = vendor && purpose ? `${vendor} - ${purpose}` : (vendor || purpose);
-  const amount = Number(receipt.taggedAmount);
-  const currency = typeof receipt.taggedCurrency === 'string' ? receipt.taggedCurrency.toUpperCase() : '';
-  const amountLabel = Number.isFinite(amount) ? formatCurrencyAmount(currency, amount) : '';
-
-  if (title && amountLabel) return `${title} · ${amountLabel}`;
-  if (title) return title;
-  if (amountLabel) return amountLabel;
-
-  return getReceiptDisplayName(receipt);
-}
-
 function getLinkedClaimJumpLabel(receipt, claimId, index = 0) {
   const linkedClaim = claimsData.find((claim) => claim.id === claimId);
   if (linkedClaim) {
@@ -556,56 +502,133 @@ function getLinkedClaimJumpLabel(receipt, claimId, index = 0) {
   return `Claim ${shortId}`;
 }
 
-function highlightLinkedListItem(item, tab) {
-  if (!item) return;
+function formatLinkedPairReceiptAmount(receipt) {
+  const taggedAmount = Number(receipt.taggedAmount);
+  if (!Number.isFinite(taggedAmount)) return 'Amount pending';
 
-  if (window.innerWidth <= 700) {
-    switchTab(tab);
+  const currency = (receipt.taggedCurrency || '').toUpperCase();
+  if (currency !== 'USD') {
+    return formatCurrencyAmount(currency, taggedAmount);
   }
 
-  if (linkedJumpHighlightTimer) {
-    clearTimeout(linkedJumpHighlightTimer);
-    linkedJumpHighlightTimer = null;
+  const fxApproxPlus = Number(receipt.taggedAmountSgdApproxPlus325);
+  const fxApprox = Number(receipt.taggedAmountSgdApprox);
+  if (Number.isFinite(fxApproxPlus)) {
+    return `${formatCurrencyAmount('USD', taggedAmount)} (~S$${fxApproxPlus.toFixed(2)})`;
   }
-
-  if (activeLinkedJumpItem && activeLinkedJumpItem !== item) {
-    activeLinkedJumpItem.classList.remove('cross-link-highlight');
+  if (Number.isFinite(fxApprox)) {
+    return `${formatCurrencyAmount('USD', taggedAmount)} (~S$${fxApprox.toFixed(2)})`;
   }
-
-  item.classList.remove('cross-link-highlight');
-  // Force reflow so repeated clicks retrigger the highlight animation.
-  void item.offsetWidth;
-  item.classList.add('cross-link-highlight');
-  item.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  activeLinkedJumpItem = item;
-
-  linkedJumpHighlightTimer = window.setTimeout(() => {
-    if (activeLinkedJumpItem === item) {
-      item.classList.remove('cross-link-highlight');
-      activeLinkedJumpItem = null;
-    }
-    linkedJumpHighlightTimer = null;
-  }, 2200);
+  return formatCurrencyAmount('USD', taggedAmount);
 }
 
-function highlightReceiptLinkTarget(receiptKey) {
-  const receiptItem = Array.from(receiptList.querySelectorAll('li[data-key]'))
-    .find((item) => item.dataset.key === receiptKey);
-  if (!receiptItem) {
-    showStatus('error', 'Linked receipt is not in pending receipts');
-    return;
-  }
-  highlightLinkedListItem(receiptItem, 'receipts');
-}
+function renderLinkedPairs() {
+  const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
+  const linkedPairs = [];
 
-function highlightClaimLinkTarget(claimId) {
-  const claimItem = Array.from(todoList.querySelectorAll('.todo-item[data-claim-id]'))
-    .find((item) => item.dataset.claimId === claimId);
-  if (!claimItem) {
-    showStatus('error', 'Linked claim is not in pending claims');
+  receiptsData.forEach((receipt) => {
+    getLinkedClaimIds(receipt).forEach((claimId, index) => {
+      linkedPairs.push({
+        receipt,
+        claimId,
+        index,
+        claim: claimsById.get(claimId) || null,
+      });
+    });
+  });
+
+  linkedPairs.sort((a, b) => {
+    const aClaimDate = parseDateOnly(a.claim?.date);
+    const bClaimDate = parseDateOnly(b.claim?.date);
+    const aReceiptDate = getReceiptMatchDate(a.receipt).date;
+    const bReceiptDate = getReceiptMatchDate(b.receipt).date;
+    const aDate = aClaimDate || aReceiptDate || new Date(0);
+    const bDate = bClaimDate || bReceiptDate || new Date(0);
+    return bDate.getTime() - aDate.getTime();
+  });
+
+  linkedCount.textContent = `(${linkedPairs.length})`;
+
+  if (linkedPairs.length === 0) {
+    linkedList.innerHTML = '<li class="empty-state">No linked claim-receipt pairs yet</li>';
     return;
   }
-  highlightLinkedListItem(claimItem, 'claims');
+
+  linkedList.innerHTML = linkedPairs
+    .map((pair) => {
+      const { receipt, claim, claimId, index } = pair;
+      const claimTitle = claim
+        ? (claim.description || claim.payee || getLinkedClaimJumpLabel(receipt, claimId, index))
+        : getLinkedClaimJumpLabel(receipt, claimId, index);
+      const claimSub = claim
+        ? (claim.payee || (claim.accountName || 'Unknown account'))
+        : 'Claim details unavailable';
+      const claimDate = claim
+        ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
+        : 'Unknown date';
+      const claimAmount = claim && Number.isFinite(Number(claim.amount))
+        ? `$${Number(claim.amount).toFixed(2)}`
+        : 'Unknown amount';
+
+      const receiptName = getReceiptDisplayName(receipt);
+      const receiptTitle = [receipt.taggedVendor, receipt.taggedPurpose]
+        .filter((part) => typeof part === 'string' && part.trim())
+        .map((part) => part.trim())
+        .join(' - ');
+      const receiptDateInfo = formatReceiptDateLabel(receipt);
+      const receiptAmount = formatLinkedPairReceiptAmount(receipt);
+
+      return `
+        <li class="linked-pair-item" data-receipt-key="${escapeHtml(receipt.key)}" data-claim-id="${escapeHtml(claimId)}">
+          <div class="linked-pair-side linked-pair-claim">
+            <span class="linked-pair-title">${escapeHtml(claimTitle)}</span>
+            <span class="linked-pair-sub">${escapeHtml(claimSub)}</span>
+            <span class="linked-pair-meta">${escapeHtml(claimDate)} · ${escapeHtml(claimAmount)}</span>
+          </div>
+          <div class="linked-pair-connector" aria-hidden="true">↔</div>
+          <button type="button" class="linked-pair-side linked-pair-receipt"
+              data-receipt-key="${escapeHtml(receipt.key)}"
+              data-receipt-name="${escapeHtml(receiptName)}"
+              title="Preview receipt">
+            <span class="linked-pair-title">${escapeHtml(receiptName)}</span>
+            <span class="linked-pair-sub">${escapeHtml(receiptTitle || 'Receipt')}</span>
+            <span class="linked-pair-meta">${escapeHtml(receiptDateInfo.text)} · ${escapeHtml(receiptAmount)}</span>
+          </button>
+          <button type="button" class="linked-pair-unlink"
+              data-receipt-key="${escapeHtml(receipt.key)}"
+              data-claim-id="${escapeHtml(claimId)}">Unlink</button>
+        </li>
+      `;
+    })
+    .join('');
+
+  linkedList.querySelectorAll('.linked-pair-receipt').forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.stopPropagation();
+      const key = btn.dataset.receiptKey;
+      const name = btn.dataset.receiptName;
+      if (!key || !name) return;
+      openPreview(key, name);
+    });
+  });
+
+  linkedList.querySelectorAll('.linked-pair-unlink').forEach((btn) => {
+    btn.addEventListener('click', async (event) => {
+      event.stopPropagation();
+      const receiptKey = btn.dataset.receiptKey;
+      const claimId = btn.dataset.claimId;
+      if (!receiptKey || !claimId) return;
+
+      const receipt = receiptsData.find((item) => item.key === receiptKey);
+      const linkedCountForReceipt = receipt ? getLinkedClaimIds(receipt).length : 1;
+      const confirmation = linkedCountForReceipt > 1
+        ? `This receipt is linked to ${linkedCountForReceipt} claims. Unlink only this pair?`
+        : 'Unlink this claim-receipt pair?';
+
+      if (!window.confirm(confirmation)) return;
+      await unlinkClaimFromReceipt(receiptKey, claimId);
+    });
+  });
 }
 
 function formatReceiptDateLabel(receipt) {
@@ -948,15 +971,7 @@ async function loadYnabTodos() {
       return;
     }
 
-    claimsData = data.todos;
-    todoCount.textContent = `(${claimsData.length})`;
-    claimBadge.textContent = claimsData.length || '';
-
-    if (claimsData.length === 0) {
-      todoList.innerHTML = '<li class="empty-state">No pending claims</li>';
-      applyLinkingHighlights();
-      return;
-    }
+    claimsData = data.todos.sort((a, b) => new Date(b.date) - new Date(a.date));
 
     // Find which claims have linked receipts
     const linkedReceiptsByClaimId = new Map();
@@ -968,52 +983,27 @@ async function loadYnabTodos() {
         linkedReceiptsByClaimId.set(linkedClaimId, linkedReceipts);
       });
     });
-    const linkedClaimIds = new Set(linkedReceiptsByClaimId.keys());
+    const outstandingClaims = claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
+    todoCount.textContent = `(${outstandingClaims.length})`;
+    claimBadge.textContent = outstandingClaims.length || '';
 
-    // Sort: unlinked first (by date desc), then linked (by date desc)
-    claimsData.sort((a, b) => {
-      const aLinked = linkedClaimIds.has(a.id);
-      const bLinked = linkedClaimIds.has(b.id);
-      if (aLinked !== bLinked) return aLinked ? 1 : -1;
-      return new Date(b.date) - new Date(a.date);
-    });
+    if (outstandingClaims.length === 0) {
+      todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
+      applyLinkingHighlights();
+      renderLinkedPairs();
+      return;
+    }
 
-    todoList.innerHTML = claimsData
+    todoList.innerHTML = outstandingClaims
       .map((t) => {
-        const linkedReceipts = linkedReceiptsByClaimId.get(t.id) || [];
-        const isLinked = linkedReceipts.length > 0;
-        const linkedClass = isLinked ? 'linked' : '';
         const accountName = (t.accountName || '').trim();
         const accountLabel = accountName || 'Unknown account';
-        const linkIndicator = isLinked
-          ? `<div class="link-indicator">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
-              </svg>
-              ${linkedReceipts.length} receipt${linkedReceipts.length === 1 ? '' : 's'} linked
-            </div>`
-          : '';
-        const linkedReceiptList = isLinked
-          ? `<div class="linked-receipt-list">
-              ${linkedReceipts
-                .map((receipt) => {
-                  const label = getReceiptJumpLabel(receipt);
-                  return `<button type="button" class="linked-receipt-chip"
-                      data-receipt-key="${escapeHtml(receipt.key)}"
-                      title="Highlight linked receipt">
-                    ${escapeHtml(label)}
-                  </button>`;
-                })
-                .join('')}
-            </div>`
-          : '';
         const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>`;
         return `
-        <li class="todo-item ${linkedClass}" data-claim-id="${escapeHtml(t.id)}"
+        <li class="todo-item" data-claim-id="${escapeHtml(t.id)}"
             data-amount="${t.amount}" data-description="${escapeHtml(t.description)}"
             data-date="${t.date}">
           <span class="select-indicator claim-selector" aria-hidden="true">
@@ -1023,8 +1013,6 @@ async function loadYnabTodos() {
             <span class="todo-payee">${escapeHtml(t.description)}</span>
             <span class="todo-desc">${escapeHtml(t.payee)}</span>
             <span class="todo-account">Account: ${escapeHtml(accountLabel)}</span>
-            ${linkIndicator}
-            ${linkedReceiptList}
           </div>
           <div class="todo-actions">
             <div class="todo-meta">
@@ -1045,15 +1033,8 @@ async function loadYnabTodos() {
       li.addEventListener('click', (e) => handleClaimClick(e, li));
       li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
     });
-    todoList.querySelectorAll('.linked-receipt-chip').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const receiptKey = btn.dataset.receiptKey;
-        if (!receiptKey) return;
-        highlightReceiptLinkTarget(receiptKey);
-      });
-    });
     applyLinkingHighlights();
+    renderLinkedPairs();
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
     todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
@@ -1380,6 +1361,51 @@ async function deleteReceipt(receiptKey) {
     console.error('Delete failed:', err);
     showStatus('error', 'Failed to delete receipt');
   }
+}
+
+function buildLinkedClaimPayload(receipt, claimId, index) {
+  const claim = claimsData.find((item) => item.id === claimId);
+  const fallbackDescription = getLinkedClaimJumpLabel(receipt, claimId, index);
+  const description = (claim?.description || claim?.payee || fallbackDescription || '').trim();
+
+  return {
+    id: claimId,
+    description,
+    amount: claim && Number.isFinite(Number(claim.amount)) ? Number(claim.amount) : undefined,
+    date: claim?.date || undefined,
+  };
+}
+
+async function unlinkClaimFromReceipt(receiptKey, claimId) {
+  const receipt = receiptsData.find((item) => item.key === receiptKey);
+  if (!receipt) {
+    showStatus('error', 'Linked receipt not found');
+    return;
+  }
+
+  const existingClaimIds = getLinkedClaimIds(receipt);
+  if (!existingClaimIds.includes(claimId)) {
+    showStatus('error', 'Linked claim not found');
+    return;
+  }
+
+  const remainingClaimIds = existingClaimIds.filter((id) => id !== claimId);
+  if (remainingClaimIds.length === 0) {
+    await unlinkReceipt(receiptKey);
+    return;
+  }
+
+  const remainingClaims = remainingClaimIds.map((id, index) => buildLinkedClaimPayload(receipt, id, index));
+  showStatus('uploading', 'Updating linked claims...');
+  const result = await patchReceiptLinks(receiptKey, remainingClaims);
+  if (!result.ok) {
+    showStatus('error', result.error || 'Failed to unlink pair');
+    return;
+  }
+
+  clearSelection();
+  showStatus('success', 'Unlinked claim-receipt pair');
+  loadReceipts().then(() => loadYnabTodos());
 }
 
 // Unlink a receipt from its claim
