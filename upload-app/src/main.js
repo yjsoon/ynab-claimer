@@ -1,6 +1,7 @@
 const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
+const THEME_KEY = 'claim_manager_theme';
 
 // Upload constraints (must match server)
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -16,6 +17,7 @@ const status = document.getElementById('status');
 const receiptList = document.getElementById('receiptList');
 const countSpan = document.getElementById('count');
 const refreshBtn = document.getElementById('refreshBtn');
+const themeToggle = document.getElementById('themeToggle');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
 const authOverlay = document.getElementById('authOverlay');
@@ -79,6 +81,35 @@ function clearAuthToken() {
 
 function shouldRemember() {
   return localStorage.getItem(REMEMBER_KEY) === 'true';
+}
+
+function getStoredTheme() {
+  const storedTheme = localStorage.getItem(THEME_KEY);
+  return storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : null;
+}
+
+function getInitialTheme() {
+  const storedTheme = getStoredTheme();
+  if (storedTheme) return storedTheme;
+  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
+function applyTheme(theme) {
+  const isDark = theme === 'dark';
+  const nextTheme = isDark ? 'dark' : 'light';
+  document.documentElement.dataset.theme = nextTheme;
+  document.body.dataset.theme = nextTheme;
+  if (themeToggle) {
+    themeToggle.textContent = isDark ? 'Light mode' : 'Dark mode';
+    themeToggle.setAttribute('aria-pressed', String(isDark));
+  }
+}
+
+function toggleTheme() {
+  const currentTheme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
+  const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
+  localStorage.setItem(THEME_KEY, nextTheme);
+  applyTheme(nextTheme);
 }
 
 function authHeaders() {
@@ -927,6 +958,10 @@ document.addEventListener('keydown', (e) => {
     closePreview();
   }
 });
+if (themeToggle) {
+  themeToggle.addEventListener('click', toggleTheme);
+}
+applyTheme(getInitialTheme());
 
 // Event listeners
 fileInput.addEventListener('change', (e) => {

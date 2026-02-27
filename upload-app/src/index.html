@@ -4,6 +4,25 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Receipt Upload</title>
+  <script>
+    (function () {
+      const THEME_KEY = 'claim_manager_theme';
+      let theme = 'light';
+
+      try {
+        const storedTheme = localStorage.getItem(THEME_KEY);
+        if (storedTheme === 'dark' || storedTheme === 'light') {
+          theme = storedTheme;
+        } else if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+          theme = 'dark';
+        }
+      } catch (_error) {
+        theme = 'light';
+      }
+
+      document.documentElement.dataset.theme = theme;
+    })();
+  </script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -30,7 +49,10 @@
 
     <div id="status" class="status"></div>
 
-    <button id="refreshBtn" class="btn-secondary btn-refresh">Refresh All</button>
+    <div class="toolbar">
+      <button id="refreshBtn" class="btn-secondary btn-refresh">Refresh All</button>
+      <button id="themeToggle" class="btn-secondary btn-theme" type="button" aria-pressed="false">Dark mode</button>
+    </div>
 
     <!-- Mobile tab toggle -->
     <div class="tab-toggle">
