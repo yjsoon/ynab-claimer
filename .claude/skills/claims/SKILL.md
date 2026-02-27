@@ -55,6 +55,8 @@ Parse the response to extract:
 - `memo` - Contains "TODO: description"
 - `category_name` - Category
 
+**IMPORTANT: The YNAB amount is always the claim amount.** Even if the receipt shows a different amount (e.g. foreign currency before conversion, or a different total), the SGD amount from YNAB is what gets submitted to Volopay. Do not flag YNAB/receipt amount mismatches as warnings — the YNAB amount is the source of truth.
+
 ### 3. Fetch Pending Receipts
 
 List receipts from R2:
@@ -238,7 +240,7 @@ For each TODO transaction:
    - For US vendors: Look for "LLC", "Inc.", "Corp" (e.g., "OpenAI, LLC" not "OpenAI")
    - Use the EXACT name as registered, including punctuation
 
-   **Currency discrepancies**: If YNAB amount (SGD) differs from receipt amount, assume USD and calculate the exchange rate: `YNAB_SGD / Receipt_USD`. Display as: `US$X (S$Y at exchange rate of Z)`
+   **Foreign currency**: If the receipt is in a foreign currency, show both amounts with the implied exchange rate: `US$X (S$Y at rate Z)`. The YNAB SGD amount is always the claim amount — never substitute the receipt amount.
 
 6. **Wait for user confirmation**. When user says "done":
 
