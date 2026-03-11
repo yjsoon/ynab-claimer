@@ -1043,6 +1043,7 @@ h2 {
   margin: 0 -12px;
   padding: 12px;
   border-radius: 8px;
+  border-bottom: none;
 }
 
 .todo-item:hover {
