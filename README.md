@@ -34,6 +34,13 @@ Web app for uploading receipts and viewing pending YNAB claims.
 - `PATCH /receipt/:key/receipt-date` - Set/clear manual receipt date override (`YYYY-MM-DD`)
 - `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
 - `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
+- `GET /agent/unclaimed-expenditures` - Agent report of YNAB TODO claims that do not have linked receipts yet
+
+`GET /agent/unclaimed-expenditures` accepts an optional `since_date=YYYY-MM-DD` query param and returns:
+- `summary` - counts for TODO claims, missing receipt claims, linked claims, and unlinked receipts
+- `missingReceiptClaims` - YNAB TODO expenditures with no linked uploaded receipt, including Gmail search hints
+- `linkedClaims` - TODO claims that already have linked receipt metadata
+- `unlinkedReceipts` - uploaded receipts that are not linked to any claim
 
 All endpoints require `X-Auth-Token` header.
 

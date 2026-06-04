@@ -10,6 +10,7 @@ const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '
 const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
 const DEFAULT_AMOUNT_TAG_BATCH = 3;
 const MAX_AMOUNT_TAG_BATCH = 8;
+const RECEIPT_METADATA_CONCURRENCY = 25;
 const FX_API_BASE = 'https://api.frankfurter.dev/v1';
 const USD_SURCHARGE_RATE = 0.0325;
 const FX_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 30;
@@ -60,7 +61,18 @@ interface YnabTransaction {
   account_name: string | null;
   payee_name: string | null;
   memo: string | null;
+  category_name?: string | null;
   transfer_transaction_id: string | null;
+  subtransactions?: YnabSubtransaction[];
+}
+
+interface YnabSubtransaction {
+  id: string;
+  transaction_id: string;
+  amount: number;
+  memo: string | null;
+  payee_name?: string | null;
+  category_name?: string | null;
 }
 
 interface YnabTodo {
@@ -70,6 +82,9 @@ interface YnabTodo {
   amount: number;
   description: string;
   accountName: string;
+  categoryName?: string;
+  source: 'transaction' | 'subtransaction';
+  parentTransactionId?: string;
 }
 
 interface GeminiAmountResult {
@@ -100,6 +115,54 @@ interface LinkedClaimPayload {
   description: string;
   amount?: number;
   date?: string;
+}
+
+interface ReceiptSummary {
+  key: string;
+  size: number;
+  uploaded: string;
+  storageUploaded: string;
+  originalName?: string;
+  linkedClaimId?: string;
+  linkedClaimIds: string[];
+  linkedClaimDescription?: string;
+  receiptDate?: string;
+  receiptDateSource?: string;
+  detectedReceiptDate?: string;
+  detectedReceiptDateConfidence?: number;
+  taggedAmount?: number;
+  taggedCurrency?: string;
+  taggedConfidence?: number;
+  taggedVendor?: string;
+  taggedPurpose?: string;
+  taggedStatus?: string;
+  taggedModel?: string;
+  taggedAt?: string;
+  taggedError?: string;
+  taggedFxStatus?: string;
+  taggedFxError?: string;
+  taggedFxBaseDate?: string;
+  taggedFxDateUsed?: string;
+  taggedFxRateUsdSgd?: number;
+  taggedAmountSgdApprox?: number;
+  taggedAmountSgdApproxPlus325?: number;
+}
+
+interface ReceiptListResult {
+  receipts: ReceiptSummary[];
+  cursor: string | null;
+  hasMore: boolean;
+}
+
+class YnabApiError extends Error {
+  status: number;
+  details: string;
+
+  constructor(status: number, details: string) {
+    super('YNAB API error');
+    this.status = status;
+    this.details = details;
+  }
 }
 
 const fxRateCache = new Map<string, { value: FxRateResult; expiresAt: number }>();
@@ -190,6 +253,248 @@ function getDateFromIsoDateTime(value: string | null | undefined): string | null
 function cleanError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.replace(/\s+/g, ' ').slice(0, 180);
+}
+
+function getDefaultYnabSinceDate(): string {
+  const sixMonthsAgo = new Date();
+  sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
+  return sixMonthsAgo.toISOString().split('T')[0];
+}
+
+function parseTodoDescription(memo: string | null | undefined): string | null {
+  if (!memo) return null;
+  const todoPattern = /^TODO[:\s]/i;
+  if (!todoPattern.test(memo)) return null;
+  const description = memo.replace(/^TODO[:\s]\s*/i, '').trim();
+  return description || 'Claim';
+}
+
+function toYnabTodoFromTransaction(transaction: YnabTransaction): YnabTodo | null {
+  const description = parseTodoDescription(transaction.memo);
+  if (!description) return null;
+
+  // For transfers, only keep the outflow side to avoid duplicate TODOs.
+  if (transaction.transfer_transaction_id && transaction.amount >= 0) {
+    return null;
+  }
+
+  return {
+    id: transaction.id,
+    date: transaction.date,
+    payee: transaction.payee_name || 'Unknown',
+    amount: Math.abs(transaction.amount) / 1000,
+    description,
+    accountName: transaction.account_name || 'Unknown account',
+    categoryName: transaction.category_name || undefined,
+    source: 'transaction',
+  };
+}
+
+function toYnabTodoFromSubtransaction(parent: YnabTransaction, subtransaction: YnabSubtransaction): YnabTodo | null {
+  const description = parseTodoDescription(subtransaction.memo);
+  if (!description) return null;
+
+  return {
+    id: subtransaction.id,
+    date: parent.date,
+    payee: subtransaction.payee_name || parent.payee_name || 'Unknown',
+    amount: Math.abs(subtransaction.amount) / 1000,
+    description,
+    accountName: parent.account_name || 'Unknown account',
+    categoryName: subtransaction.category_name || parent.category_name || undefined,
+    source: 'subtransaction',
+    parentTransactionId: parent.id,
+  };
+}
+
+function sortYnabTodos(todos: YnabTodo[]): YnabTodo[] {
+  return todos.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+}
+
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  concurrency: number,
+  mapper: (item: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  const workerCount = Math.min(Math.max(concurrency, 1), items.length);
+
+  await Promise.all(
+    Array.from({ length: workerCount }, async () => {
+      while (nextIndex < items.length) {
+        const currentIndex = nextIndex;
+        nextIndex += 1;
+        results[currentIndex] = await mapper(items[currentIndex], currentIndex);
+      }
+    })
+  );
+
+  return results;
+}
+
+async function fetchYnabTodos(env: Env, sinceDate = getDefaultYnabSinceDate()): Promise<YnabTodo[]> {
+  const ynabResponse = await fetch(
+    `https://api.ynab.com/v1/budgets/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions?since_date=${encodeURIComponent(sinceDate)}`,
+    {
+      headers: {
+        Authorization: `Bearer ${env.YNAB_API_KEY}`,
+      },
+    }
+  );
+
+  if (!ynabResponse.ok) {
+    const errorText = await ynabResponse.text();
+    throw new YnabApiError(ynabResponse.status, errorText);
+  }
+
+  const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
+  const todos: YnabTodo[] = [];
+
+  data.data.transactions.forEach((transaction) => {
+    const subtransactionTodos: YnabTodo[] = [];
+    (transaction.subtransactions || []).forEach((subtransaction) => {
+      const subtransactionTodo = toYnabTodoFromSubtransaction(transaction, subtransaction);
+      if (subtransactionTodo) subtransactionTodos.push(subtransactionTodo);
+    });
+
+    const todo = toYnabTodoFromTransaction(transaction);
+    if (todo && subtransactionTodos.length === 0) {
+      todos.push(todo);
+    }
+    todos.push(...subtransactionTodos);
+  });
+
+  return sortYnabTodos(todos);
+}
+
+async function listReceiptSummaries(
+  env: Env,
+  options: { limit?: number; cursor?: string } = {}
+): Promise<ReceiptListResult> {
+  const limit = Math.min(Math.max(options.limit || 100, 1), 1000);
+  const listed = await env.RECEIPTS.list({ limit, cursor: options.cursor });
+
+  // Fetch metadata for each receipt (R2 list() doesn't return customMetadata)
+  const receipts = await mapWithConcurrency(
+    listed.objects,
+    RECEIPT_METADATA_CONCURRENCY,
+    async (obj): Promise<ReceiptSummary> => {
+      const head = await env.RECEIPTS.head(obj.key);
+      const metadata = head?.customMetadata || {};
+      const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
+      const primaryLinkedClaimId = linkedClaimIds[0];
+      return {
+        key: obj.key,
+        size: obj.size,
+        // Keep original upload time stable even when metadata is updated.
+        uploaded: metadata.uploadedAt || obj.uploaded.toISOString(),
+        storageUploaded: obj.uploaded.toISOString(),
+        originalName: metadata.originalName,
+        linkedClaimId: primaryLinkedClaimId,
+        linkedClaimIds,
+        linkedClaimDescription: metadata.linkedClaimDescription,
+        receiptDate: metadata.receiptDate,
+        receiptDateSource: metadata.receiptDateSource,
+        detectedReceiptDate: metadata.detectedReceiptDate,
+        detectedReceiptDateConfidence: parseMetadataNumber(metadata.detectedReceiptDateConfidence),
+        taggedAmount: parseMetadataNumber(metadata.taggedAmount),
+        taggedCurrency: metadata.taggedCurrency,
+        taggedConfidence: parseMetadataNumber(metadata.taggedConfidence),
+        taggedVendor: metadata.taggedVendor,
+        taggedPurpose: metadata.taggedPurpose,
+        taggedStatus: metadata.taggedStatus,
+        taggedModel: metadata.taggedModel,
+        taggedAt: metadata.taggedAt,
+        taggedError: metadata.taggedError,
+        taggedFxStatus: metadata.taggedFxStatus,
+        taggedFxError: metadata.taggedFxError,
+        taggedFxBaseDate: metadata.taggedFxBaseDate,
+        taggedFxDateUsed: metadata.taggedFxDateUsed,
+        taggedFxRateUsdSgd: parseMetadataNumber(metadata.taggedFxRateUsdSgd),
+        taggedAmountSgdApprox: parseMetadataNumber(metadata.taggedAmountSgdApprox),
+        taggedAmountSgdApproxPlus325: parseMetadataNumber(metadata.taggedAmountSgdApproxPlus325),
+      };
+    }
+  );
+
+  return {
+    receipts,
+    cursor: listed.truncated ? listed.cursor || null : null,
+    hasMore: listed.truncated,
+  };
+}
+
+async function listAllReceiptSummaries(env: Env, maxReceipts = 5000): Promise<{
+  receipts: ReceiptSummary[];
+  truncated: boolean;
+}> {
+  const receipts: ReceiptSummary[] = [];
+  let cursor: string | undefined;
+  let hasMore = false;
+
+  do {
+    const page = await listReceiptSummaries(env, {
+      limit: Math.min(1000, maxReceipts - receipts.length),
+      cursor,
+    });
+    receipts.push(...page.receipts);
+    cursor = page.cursor || undefined;
+    hasMore = page.hasMore;
+  } while (cursor && receipts.length < maxReceipts);
+
+  return {
+    receipts,
+    truncated: hasMore && receipts.length >= maxReceipts,
+  };
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setUTCDate(next.getUTCDate() + days);
+  return next;
+}
+
+function formatGmailDate(date: Date): string {
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
+}
+
+function buildReceiptSearchHints(todo: YnabTodo): {
+  payee: string;
+  description: string;
+  amount: number;
+  dateWindow: { from: string; to: string } | null;
+  gmailQuery: string;
+} {
+  const parsedDate = extractIsoDate(todo.date);
+  const date = parsedDate ? new Date(`${parsedDate}T00:00:00Z`) : null;
+  const dateWindow = date
+    ? {
+        from: addDays(date, -3).toISOString().slice(0, 10),
+        to: addDays(date, 4).toISOString().slice(0, 10),
+      }
+    : null;
+
+  const queryParts = [todo.payee, todo.description]
+    .map((part) => part.trim())
+    .filter((part) => part && part !== 'Unknown')
+    .map((part) => `"${part.replace(/"/g, '')}"`);
+
+  if (date) {
+    queryParts.push(`after:${formatGmailDate(addDays(date, -3))}`);
+    queryParts.push(`before:${formatGmailDate(addDays(date, 4))}`);
+  }
+
+  return {
+    payee: todo.payee,
+    description: todo.description,
+    amount: todo.amount,
+    dateWindow,
+    gmailQuery: queryParts.join(' '),
+  };
 }
 
 function parseGeminiJson(
@@ -580,7 +885,7 @@ export default {
     }
 
     // Check auth for API routes
-    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/'].some(
+    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
       (route) => path === route || path.startsWith(route)
     );
 
@@ -657,54 +962,13 @@ export default {
         const limit = Math.min(Math.max(isNaN(limitParam) ? 100 : limitParam, 1), 1000);
         const cursor = url.searchParams.get('cursor') || undefined;
 
-        const listed = await env.RECEIPTS.list({ limit, cursor });
-
-        // Fetch metadata for each receipt (R2 list() doesn't return customMetadata)
-        const receipts = await Promise.all(
-          listed.objects.map(async (obj) => {
-            const head = await env.RECEIPTS.head(obj.key);
-            const metadata = head?.customMetadata || {};
-            const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
-            const primaryLinkedClaimId = linkedClaimIds[0];
-            return {
-              key: obj.key,
-              size: obj.size,
-              // Keep original upload time stable even when metadata is updated.
-              uploaded: metadata.uploadedAt || obj.uploaded.toISOString(),
-              storageUploaded: obj.uploaded.toISOString(),
-              originalName: metadata.originalName,
-              linkedClaimId: primaryLinkedClaimId,
-              linkedClaimIds,
-              linkedClaimDescription: metadata.linkedClaimDescription,
-              receiptDate: metadata.receiptDate,
-              receiptDateSource: metadata.receiptDateSource,
-              detectedReceiptDate: metadata.detectedReceiptDate,
-              detectedReceiptDateConfidence: parseMetadataNumber(metadata.detectedReceiptDateConfidence),
-              taggedAmount: parseMetadataNumber(metadata.taggedAmount),
-              taggedCurrency: metadata.taggedCurrency,
-              taggedConfidence: parseMetadataNumber(metadata.taggedConfidence),
-              taggedVendor: metadata.taggedVendor,
-              taggedPurpose: metadata.taggedPurpose,
-              taggedStatus: metadata.taggedStatus,
-              taggedModel: metadata.taggedModel,
-              taggedAt: metadata.taggedAt,
-              taggedError: metadata.taggedError,
-              taggedFxStatus: metadata.taggedFxStatus,
-              taggedFxError: metadata.taggedFxError,
-              taggedFxBaseDate: metadata.taggedFxBaseDate,
-              taggedFxDateUsed: metadata.taggedFxDateUsed,
-              taggedFxRateUsdSgd: parseMetadataNumber(metadata.taggedFxRateUsdSgd),
-              taggedAmountSgdApprox: parseMetadataNumber(metadata.taggedAmountSgdApprox),
-              taggedAmountSgdApproxPlus325: parseMetadataNumber(metadata.taggedAmountSgdApproxPlus325),
-            };
-          })
-        );
+        const result = await listReceiptSummaries(env, { limit, cursor });
 
         return new Response(
           JSON.stringify({
-            receipts,
-            cursor: listed.truncated ? listed.cursor : null,
-            hasMore: listed.truncated,
+            receipts: result.receipts,
+            cursor: result.cursor,
+            hasMore: result.hasMore,
           }),
           { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
         );
@@ -915,51 +1179,88 @@ export default {
       // GET /ynab/todos - Fetch pending claims from YNAB
       if (path === '/ynab/todos' && request.method === 'GET') {
         try {
-          // Only fetch transactions from the last 6 months
-          const sixMonthsAgo = new Date();
-          sixMonthsAgo.setMonth(sixMonthsAgo.getMonth() - 6);
-          const sinceDate = sixMonthsAgo.toISOString().split('T')[0];
-
-          const ynabResponse = await fetch(
-            `https://api.ynab.com/v1/budgets/${env.YNAB_BUDGET_ID}/transactions?since_date=${sinceDate}`,
-            {
-              headers: {
-                Authorization: `Bearer ${env.YNAB_API_KEY}`,
-              },
-            }
-          );
-
-          if (!ynabResponse.ok) {
-            const errorText = await ynabResponse.text();
-            return new Response(JSON.stringify({ error: 'YNAB API error', details: errorText }), {
-              status: ynabResponse.status,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
-          }
-
-          const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
-
-          // Filter for transactions with "TODO:" or "TODO " in memo
-          // For transfers, only keep the outflow side (negative amount) to avoid duplicates
-          const todoPattern = /^TODO[:\s]/i;
-          const todos: YnabTodo[] = data.data.transactions
-            .filter((t) => t.memo && todoPattern.test(t.memo))
-            .filter((t) => !t.transfer_transaction_id || t.amount < 0)
-            .map((t) => ({
-              id: t.id,
-              date: t.date,
-              payee: t.payee_name || 'Unknown',
-              amount: Math.abs(t.amount) / 1000,
-              description: t.memo!.replace(/^TODO[:\s]\s*/i, '').trim(),
-              accountName: t.account_name || 'Unknown account',
-            }))
-            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+          const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
+          const todos = await fetchYnabTodos(env, sinceDate);
 
           return new Response(JSON.stringify({ todos }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } catch (error) {
+          if (error instanceof YnabApiError) {
+            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+              status: error.status,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
           const message = error instanceof Error ? error.message : 'Failed to fetch YNAB data';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // GET /agent/unclaimed-expenditures - Agent-friendly report of TODO claims without linked receipts
+      if (path === '/agent/unclaimed-expenditures' && request.method === 'GET') {
+        try {
+          const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
+          const [todos, receiptResult] = await Promise.all([
+            fetchYnabTodos(env, sinceDate),
+            listAllReceiptSummaries(env),
+          ]);
+
+          const linkedReceiptsByClaimId = new Map<string, ReceiptSummary[]>();
+          receiptResult.receipts.forEach((receipt) => {
+            receipt.linkedClaimIds.forEach((claimId) => {
+              const linkedReceipts = linkedReceiptsByClaimId.get(claimId) || [];
+              linkedReceipts.push(receipt);
+              linkedReceiptsByClaimId.set(claimId, linkedReceipts);
+            });
+          });
+
+          const missingReceiptClaims = todos
+            .filter((todo) => !linkedReceiptsByClaimId.has(todo.id))
+            .map((todo) => ({
+              ...todo,
+              receiptSearchHints: buildReceiptSearchHints(todo),
+            }));
+          const linkedClaims = todos
+            .filter((todo) => linkedReceiptsByClaimId.has(todo.id))
+            .map((todo) => ({
+              ...todo,
+              linkedReceipts: linkedReceiptsByClaimId.get(todo.id) || [],
+            }));
+          const unlinkedReceipts = receiptResult.receipts.filter((receipt) => receipt.linkedClaimIds.length === 0);
+
+          return new Response(
+            JSON.stringify({
+              generatedAt: new Date().toISOString(),
+              sinceDate,
+              summary: {
+                todoClaimCount: todos.length,
+                missingReceiptClaimCount: missingReceiptClaims.length,
+                linkedClaimCount: linkedClaims.length,
+                unlinkedReceiptCount: unlinkedReceipts.length,
+                receiptScanTruncated: receiptResult.truncated,
+              },
+              missingReceiptClaims,
+              linkedClaims,
+              unlinkedReceipts,
+            }),
+            {
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            }
+          );
+        } catch (error) {
+          if (error instanceof YnabApiError) {
+            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+              status: error.status,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          const message = error instanceof Error ? error.message : 'Failed to build agent claim report';
           return new Response(JSON.stringify({ error: message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
