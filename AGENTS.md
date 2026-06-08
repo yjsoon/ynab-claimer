@@ -17,7 +17,10 @@ The `.env` file contains secrets. When writing documentation or examples, always
 - `scripts/` - Local automation scripts for Volopay and Gmail receipt export
 - `.claude/skills/claims/SKILL.md` - Claude Code skill for processing claims
 - `.claude/skills/ride-gmail-receipts/SKILL.md` - Skill for exporting Grab and Gojek ride receipts from Gmail using `gog`
+- `.claude/skills/claim-invoices/SKILL.md` - Skill for generating Xero draft bills from ready-to-claim items (Invoices tab)
 - `.agents/skills/ride-gmail-receipts/SKILL.md` - Agent mirror of the ride Gmail receipt export skill
+- `.agents/skills/claim-invoices/SKILL.md` - Agent mirror of the claim-invoices skill
+- `upload-app/worker/xero.ts` - Xero OAuth + bill creation/attachment for the Invoices tab
 - `.env` - Local config (gitignored)
 - `.env.example` - Template with placeholders (safe to commit)
 
@@ -92,6 +95,29 @@ The claim JSON requires these fields: `merchant`, `amount`, `date`, `memo`, `xer
 - Software → Computer Software (463)
 - IMDA VIBE / "for class" → Cost of Sales (320)
 - Hardware → Computer Hardware & Accessories (464)
+
+## Invoices (Xero Claim Bills)
+
+An alternative to Volopay: the receipts.soon.sg **Invoices** tab turns ready-to-claim
+items into monthly DRAFT bills in Xero (payee "Soon Yin Jie"), split into GST /
+non-GST / transport, with receipts attached. After a push, receipts are tagged
+`xeroInvoiceId` (so they drop off the tab) and the linked YNAB `TODO:` memos become
+`CLAIMED:`.
+
+- Worker: `upload-app/worker/xero.ts` (OAuth 2.0 over raw fetch, refresh-token
+  rotation in the `XERO_TOKENS` KV namespace, bill creation + attachments) and the
+  `/xero/*` routes in `upload-app/worker/index.ts`.
+- UI: `upload-app/src/{index.html,main.js,style.css}` (the Invoices tab + editor).
+- Config: `wrangler.toml` (`XERO_TOKENS` KV + `XERO_SCOPES` / `XERO_INPUT_TAXTYPE`
+  vars); secrets `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` (same Xero app as the local
+  `xero/` project). Local secrets template: `upload-app/.dev.vars.example`.
+
+Account/tax-code rules match the Volopay section above (amounts are tax-inclusive
+SGD; `INPUTY24` only when the receipt shows explicit GST). Xero attachment caps
+(3 MB/file, 10/bill) are handled by merging receipts into chunked combined PDFs;
+HEIC/WEBP can't be embedded and are flagged for manual upload. Full setup and usage:
+`.claude/skills/claim-invoices/SKILL.md`. Do not deploy to the live worker without
+the user's go-ahead.
 
 ## Gmail Receipt Export
 

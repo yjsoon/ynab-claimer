@@ -12,6 +12,7 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 - **Smart Match Highlighting**: During linking, the UI highlights exact and near matches by amount and date
 - **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
 - **Volopay Automation**: Playwright script auto-fills Volopay claim forms
+- **Xero Claim Bills**: The Invoices tab generates monthly DRAFT bills (GST / non-GST / transport) from ready-to-claim items, attaches the receipts, and marks the linked YNAB claims CLAIMED
 - **Password Protection**: Simple auth gate for the web app and API
 - **iOS Shortcut**: Upload receipts directly from the Share Sheet
 - **Claude Code Skill**: Interactive claim processing via `/claims` command
@@ -35,6 +36,7 @@ Web app for uploading receipts and viewing pending YNAB claims.
 - `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
 - `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
 - `GET /agent/unclaimed-expenditures` - Agent report of YNAB TODO claims that do not have linked receipts yet
+- `GET /xero/connect` · `GET /xero/callback` · `GET /xero/status` · `POST /xero/disconnect` · `GET /xero/meta` · `POST /xero/invoices/push` - Xero integration for the Invoices tab (see below)
 
 `GET /agent/unclaimed-expenditures` accepts an optional `since_date=YYYY-MM-DD` query param and returns:
 - `summary` - counts for TODO claims, missing receipt claims, linked claims, and unlinked receipts
@@ -59,6 +61,19 @@ The script fills all form fields and pauses for review before submit. If a dropd
 ### 3. Claude Code Skill (`/claims`)
 
 Interactive claim processing workflow run via Claude Code.
+
+### 4. Xero Invoices (Invoices tab)
+
+A full-width **Invoices** tab in the web app assembles ready-to-claim items into
+monthly DRAFT bills in Xero, replacing Volopay. Items split into GST / non-GST /
+transport (line items grouped by account, sorted by date); each line's account,
+GST flag and remark are editable. **Push to Xero (draft)** creates the bill (payee
+"Soon Yin Jie", tax-inclusive), attaches the receipts (merging into combined PDFs
+when over Xero's 3 MB / 10-attachment caps), tags the receipts, and flips the
+linked YNAB `TODO:` memos to `CLAIMED:`.
+
+The worker talks to Xero over raw `fetch` (OAuth 2.0; rotating refresh token in the
+`XERO_TOKENS` KV namespace). Setup and usage: `.claude/skills/claim-invoices/SKILL.md`.
 
 ## Setup
 
@@ -135,6 +150,27 @@ Then add a DNS record in Cloudflare: `AAAA` record, name: `receipts`, content: `
 4. **Process claims**: Run `/claims` in Claude Code to match receipts to transactions
 
 Receipts can also be marked ready without a visible YNAB TODO claim. Click the receipt link button, then choose **Mark ready** without selecting a claim. These receipts move under **Ready to Claim** alongside ordinary linked claim-receipt pairs.
+
+### 6. Xero Invoices (Optional)
+
+To enable the Invoices tab (Xero draft bills), do this once:
+
+1. In the Xero developer portal, add `https://receipts.soon.sg/xero/callback` as a
+   redirect URI on your existing Xero app.
+2. Create the token KV namespace and paste its id into `wrangler.toml`:
+   ```bash
+   cd upload-app
+   npx wrangler kv namespace create XERO_TOKENS
+   ```
+3. Set the Xero secrets, then redeploy:
+   ```bash
+   wrangler secret put XERO_CLIENT_ID
+   wrangler secret put XERO_CLIENT_SECRET
+   npm run deploy
+   ```
+4. Open the **Invoices** tab and click **Connect Xero** to authorise once.
+
+Details and tax/account rules: `.claude/skills/claim-invoices/SKILL.md`.
 
 ### Auto-Link Clear Matches
 
