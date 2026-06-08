@@ -134,6 +134,28 @@ Then add a DNS record in Cloudflare: `AAAA` record, name: `receipts`, content: `
 3. **View pending claims**: YNAB transactions with `TODO:` memos appear automatically
 4. **Process claims**: Run `/claims` in Claude Code to match receipts to transactions
 
+Receipts can also be marked ready without a visible YNAB TODO claim. Click the receipt link button, then choose **Mark ready** without selecting a claim. These receipts move under **Ready to Claim** alongside ordinary linked claim-receipt pairs.
+
+### Auto-Link Clear Matches
+
+For obvious one-to-one matches, run the local helper from `scripts/`:
+
+```bash
+npm run link:matches
+```
+
+This is a dry run by default. It only proposes matches where one unlinked receipt maps to one unlinked YNAB TODO claim by receipt date and amount. To write the links:
+
+```bash
+npm run link:matches -- --apply
+```
+
+Optional flags:
+
+- `--since-date YYYY-MM-DD` - fetch TODO claims from a specific date
+- `--near-days N` - allow receipt dates within N days; default is exact date only
+- `--allow-upload-date` - use upload date when no manual or AI receipt date exists
+
 ## Workflow
 
 ```
