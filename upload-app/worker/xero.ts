@@ -29,8 +29,6 @@ const DEFAULT_SCOPES =
   'openid profile email accounting.transactions accounting.contacts accounting.attachments accounting.settings.read offline_access';
 
 const TOKENS_KEY = 'xero_auth';
-const STATE_PREFIX = 'xero_state:';
-const STATE_TTL_SECONDS = 600;
 const EXPIRY_BUFFER_SECONDS = 300;
 
 export interface XeroTokenSet {
@@ -83,20 +81,6 @@ export async function clearAuth(env: XeroEnv): Promise<void> {
 }
 
 // --- OAuth: connect ---------------------------------------------------------
-
-export async function createState(env: XeroEnv): Promise<string> {
-  const state = crypto.randomUUID();
-  await env.XERO_TOKENS.put(`${STATE_PREFIX}${state}`, '1', { expirationTtl: STATE_TTL_SECONDS });
-  return state;
-}
-
-export async function consumeState(env: XeroEnv, state: string | null): Promise<boolean> {
-  if (!state) return false;
-  const found = await env.XERO_TOKENS.get(`${STATE_PREFIX}${state}`);
-  if (!found) return false;
-  await env.XERO_TOKENS.delete(`${STATE_PREFIX}${state}`);
-  return true;
-}
 
 export function buildAuthorizeUrl(env: XeroEnv, requestUrl: string, state: string): string {
   const params = new URLSearchParams({
@@ -157,15 +141,30 @@ export async function exchangeCode(env: XeroEnv, requestUrl: string, code: strin
 
 // --- OAuth: token lifecycle -------------------------------------------------
 
-async function refreshAuth(env: XeroEnv, auth: XeroAuth): Promise<XeroAuth> {
-  const tokenSet = await tokenRequest(env, {
-    grant_type: 'refresh_token',
-    refresh_token: auth.tokenSet.refresh_token,
+// De-duplicate concurrent refreshes — refresh tokens rotate, so parallel
+// refreshes (e.g. the Promise.all in /xero/meta) would invalidate each other.
+let refreshInFlight: Promise<XeroAuth> | null = null;
+
+async function refreshAuth(env: XeroEnv, failedAccessToken?: string): Promise<XeroAuth> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async (): Promise<XeroAuth> => {
+    const current = await loadAuth(env);
+    if (!current) throw new Error('Xero is not connected.');
+    // If another caller already refreshed past the token that just failed, reuse it.
+    if (failedAccessToken && current.tokenSet.access_token !== failedAccessToken) {
+      return current;
+    }
+    const tokenSet = await tokenRequest(env, {
+      grant_type: 'refresh_token',
+      refresh_token: current.tokenSet.refresh_token,
+    });
+    const refreshed: XeroAuth = { ...current, tokenSet, updatedAt: new Date().toISOString() };
+    await saveAuth(env, refreshed);
+    return refreshed;
+  })().finally(() => {
+    refreshInFlight = null;
   });
-  // Refresh tokens rotate: persist the new one immediately or the next call fails.
-  const refreshed: XeroAuth = { ...auth, tokenSet, updatedAt: new Date().toISOString() };
-  await saveAuth(env, refreshed);
-  return refreshed;
+  return refreshInFlight;
 }
 
 // Loads stored auth and refreshes proactively when the access token is within
@@ -177,7 +176,7 @@ export async function getValidAuth(env: XeroEnv): Promise<XeroAuth> {
   }
   const now = Math.floor(Date.now() / 1000);
   if (now < auth.tokenSet.expires_at - EXPIRY_BUFFER_SECONDS) return auth;
-  return refreshAuth(env, auth);
+  return refreshAuth(env, auth.tokenSet.access_token);
 }
 
 export interface XeroStatus {
@@ -219,7 +218,7 @@ export async function xeroFetch(env: XeroEnv, path: string, init: XeroFetchInit 
   let res = await attempt(auth.tokenSet.access_token);
 
   if (res.status === 401) {
-    const refreshed = await refreshAuth(env, auth);
+    const refreshed = await refreshAuth(env, auth.tokenSet.access_token);
     res = await attempt(refreshed.tokenSet.access_token);
   }
 

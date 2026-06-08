@@ -1662,7 +1662,9 @@ function buildInvoiceLines() {
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnlyClaimId(claimId) ? null : claimId,
-        include: true,
+        // Default to excluded when there's no usable amount yet, so we never
+        // silently push a $0.00 line.
+        include: Number.isFinite(amount) && amount > 0,
         date,
         payee,
         description,
@@ -1872,8 +1874,9 @@ async function loadXeroStatus() {
       if (dc) dc.addEventListener('click', disconnectXero);
       loadXeroMeta();
     } else {
-      const token = encodeURIComponent(getAuthToken() || '');
-      xeroStatusEl.innerHTML = `Not connected to Xero. <a class="btn-primary btn-connect" href="${API_BASE}/xero/connect?token=${token}">Connect Xero</a>`;
+      xeroStatusEl.innerHTML = `Not connected to Xero. <button type="button" id="xeroConnectBtn" class="btn-primary btn-connect">Connect Xero</button>`;
+      const cb = document.getElementById('xeroConnectBtn');
+      if (cb) cb.addEventListener('click', connectXero);
     }
   } catch (err) {
     xeroStatusEl.textContent = 'Could not check Xero status.';
@@ -1891,6 +1894,17 @@ async function loadXeroMeta() {
     }
   } catch (_err) {
     /* keep fallback accounts */
+  }
+}
+
+async function connectXero() {
+  try {
+    const res = await fetch(`${API_BASE}/xero/connect`, { method: 'POST', headers: authHeaders() });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.authorizeUrl) throw new Error(data.error || `HTTP ${res.status}`);
+    window.location.href = data.authorizeUrl;
+  } catch (err) {
+    showStatus('error', `Could not start Xero connect: ${err.message}`);
   }
 }
 

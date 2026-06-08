@@ -888,6 +888,15 @@ function validateAuth(request: Request, env: Env): boolean {
   return token === env.AUTH_PASSWORD;
 }
 
+function parseCookie(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === name) return decodeURIComponent(rest.join('='));
+  }
+  return null;
+}
+
 // --- Xero claim-bill push: attachment building + YNAB cleanup --------------
 
 const XERO_ATTACH_MAX_BYTES = 3 * 1024 * 1024;
@@ -978,17 +987,25 @@ async function buildClaimAttachments(
     files.push(file);
   }
 
-  if (files.length <= XERO_ATTACH_MAX_COUNT && files.every((f) => f.bytes.byteLength <= XERO_ATTACH_MAX_BYTES)) {
-    return { uploads: files.map((f) => ({ name: f.name, bytes: f.bytes, mime: f.mime })), warnings };
+  // Only PDF/JPG/PNG can be attached — uploaded raw when within caps, or merged
+  // into a combined PDF otherwise. Anything else (HEIC/HEIF/WEBP/GIF/TIFF) is
+  // flagged for manual re-upload as PDF/JPG/PNG.
+  const supported: ReceiptFile[] = [];
+  for (const f of files) {
+    if (EMBEDDABLE_MIME.has(f.mime)) supported.push(f);
+    else warnings.push(`Not attachable (${f.mime}); re-upload as PDF/JPG/PNG: ${f.name}`);
   }
 
-  const embeddable = files.filter((f) => EMBEDDABLE_MIME.has(f.mime));
-  const other = files.filter((f) => !EMBEDDABLE_MIME.has(f.mime));
+  // Within caps: attach individually with logical names.
+  if (supported.length <= XERO_ATTACH_MAX_COUNT && supported.every((f) => f.bytes.byteLength <= XERO_ATTACH_MAX_BYTES)) {
+    return { uploads: supported.map((f) => ({ name: f.name, bytes: f.bytes, mime: f.mime })), warnings };
+  }
 
+  // Otherwise merge into chunked combined PDFs (all remaining files are embeddable).
   const groups: ReceiptFile[][] = [];
   let current: ReceiptFile[] = [];
   let currentBytes = 0;
-  for (const f of embeddable) {
+  for (const f of supported) {
     if (current.length > 0 && currentBytes + f.bytes.byteLength > COMBINED_PDF_CHUNK_BYTES) {
       groups.push(current);
       current = [];
@@ -1012,18 +1029,6 @@ async function buildClaimAttachments(
     uploads.push({ name, bytes: pdf, mime: 'application/pdf' });
   }
 
-  for (const f of other) {
-    if (uploads.length >= XERO_ATTACH_MAX_COUNT) {
-      warnings.push(`Attachment cap reached; not attached: ${f.name}`);
-      continue;
-    }
-    if (f.bytes.byteLength > XERO_ATTACH_MAX_BYTES) {
-      warnings.push(`Larger than 3 MB and not embeddable (${f.mime}); attach manually: ${f.name}`);
-      continue;
-    }
-    uploads.push({ name: f.name, bytes: f.bytes, mime: f.mime });
-  }
-
   if (uploads.length > XERO_ATTACH_MAX_COUNT) {
     warnings.push(`More than ${XERO_ATTACH_MAX_COUNT} attachments; only the first ${XERO_ATTACH_MAX_COUNT} were uploaded.`);
     uploads.length = XERO_ATTACH_MAX_COUNT;
@@ -1040,8 +1045,10 @@ async function markYnabClaimed(env: Env, transactionId: string): Promise<'claime
     if (!getRes.ok) return 'failed';
     const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
     const memo = getData.data?.transaction?.memo || '';
-    if (/claimed/i.test(memo)) return 'claimed'; // already done
-    const newMemo = /todo/i.test(memo) ? memo.replace(/todo/i, 'CLAIMED') : `CLAIMED: ${memo}`.trim();
+    if (/^\s*CLAIMED:/i.test(memo)) return 'claimed'; // already done
+    const newMemo = /^\s*TODO:?/i.test(memo)
+      ? memo.replace(/^\s*TODO:?\s*/i, 'CLAIMED: ')
+      : `CLAIMED: ${memo}`.trim();
     const putRes = await fetch(base, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
@@ -1073,15 +1080,14 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Check auth for API routes. /xero/* is gated too, EXCEPT the OAuth
-    // browser-navigation endpoints: /xero/connect self-authenticates via a
-    // ?token= query param (the X-Auth-Token header isn't sent on top-level
-    // navigations) and /xero/callback is trusted via its one-time state token.
+    // Check auth for API routes. /xero/* is gated too, EXCEPT /xero/callback,
+    // which Xero itself calls and which is trusted via its one-time state cookie.
+    // (/xero/connect is a header-authed POST so the auth token never lands in a URL.)
     const isApiRoute =
       ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
         (route) => path === route || path.startsWith(route)
       ) ||
-      (path.startsWith('/xero/') && path !== '/xero/connect' && path !== '/xero/callback');
+      (path.startsWith('/xero/') && path !== '/xero/callback');
 
     if (isApiRoute && !validateAuth(request, env)) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -1464,24 +1470,34 @@ export default {
 
       // --- Xero integration ---------------------------------------------
 
-      // GET /xero/connect - begin the OAuth flow. Browser navigation, so auth
-      // comes from ?token= (matching AUTH_PASSWORD) rather than a header.
-      if (path === '/xero/connect' && request.method === 'GET') {
-        if (url.searchParams.get('token') !== env.AUTH_PASSWORD) {
-          return new Response('Unauthorized', { status: 401, headers: corsHeaders });
-        }
+      // POST /xero/connect - begin the OAuth flow. Header-authed (X-Auth-Token,
+      // via the API-route gate); returns the authorize URL for the SPA to
+      // navigate to. The CSRF state is set as an HttpOnly cookie (not KV) so the
+      // callback can verify it without depending on KV propagation, and the auth
+      // token never appears in a navigable URL.
+      if (path === '/xero/connect' && request.method === 'POST') {
         if (!env.XERO_CLIENT_ID || !env.XERO_CLIENT_SECRET) {
-          return new Response('Xero is not configured (missing XERO_CLIENT_ID/XERO_CLIENT_SECRET).', {
-            status: 500,
-            headers: corsHeaders,
-          });
+          return new Response(
+            JSON.stringify({ error: 'Xero is not configured (missing XERO_CLIENT_ID/XERO_CLIENT_SECRET).' }),
+            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
         }
-        const state = await xero.createState(env);
-        return Response.redirect(xero.buildAuthorizeUrl(env, request.url, state), 302);
+        const state = crypto.randomUUID();
+        const authorizeUrl = xero.buildAuthorizeUrl(env, request.url, state);
+        const secure = url.protocol === 'https:' ? '; Secure' : '';
+        return new Response(JSON.stringify({ authorizeUrl }), {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'Set-Cookie': `xero_oauth_state=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${secure}`,
+          },
+        });
       }
 
       // GET /xero/callback - OAuth redirect target. Trusted via the one-time
-      // state token, not the auth header (Xero calls this directly).
+      // state cookie set by /xero/connect (Xero calls this directly).
       if (path === '/xero/callback' && request.method === 'GET') {
         const oauthError = url.searchParams.get('error');
         if (oauthError) {
@@ -1489,7 +1505,8 @@ export default {
         }
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
-        if (!code || !(await xero.consumeState(env, state))) {
+        const cookieState = parseCookie(request.headers.get('Cookie'), 'xero_oauth_state');
+        if (!code || !state || !cookieState || state !== cookieState) {
           return new Response('Invalid or expired authorisation state.', { status: 400, headers: corsHeaders });
         }
         try {
@@ -1498,7 +1515,14 @@ export default {
           const message = err instanceof Error ? err.message : 'Xero token exchange failed';
           return new Response(message, { status: 502, headers: corsHeaders });
         }
-        return Response.redirect(`${url.origin}/?xero=connected#invoices`, 302);
+        return new Response(null, {
+          status: 302,
+          headers: {
+            ...corsHeaders,
+            Location: `${url.origin}/?xero=connected#invoices`,
+            'Set-Cookie': 'xero_oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
+          },
+        });
       }
 
       // GET /xero/status - connection status for the UI
