@@ -1615,7 +1615,9 @@ export default {
           }
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
-          const today = new Date().toISOString().slice(0, 10);
+          // Bill date in Singapore time — toISOString() is UTC and would backdate
+          // the bill by a day when pushing between 00:00 and 07:59 SGT.
+          const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
           // Deterministic key over the full line shape (sorted, order-independent):
           // an identical re-push dedupes, but editing account/tax/description/amount
           // produces a new key so edits aren't silently swallowed by Xero.
