@@ -1390,3 +1390,288 @@ h2 {
 :root[data-theme="dark"] .preview-close:active {
   background: #475569;
 }
+
+/* ===== Invoices view ===== */
+.btn-invoices.active {
+  background: #007aff;
+  color: #fff;
+}
+
+.invoices-view {
+  margin-top: 20px;
+}
+
+.invoices-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  background: #fff;
+  border-radius: 12px;
+  padding: 14px 18px;
+}
+
+.xero-status {
+  font-size: 0.95rem;
+  color: #444;
+}
+
+.btn-connect {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: #007aff;
+  color: #fff;
+  text-decoration: none;
+  font-size: 0.9rem;
+}
+
+.link-button {
+  border: none;
+  background: none;
+  color: #007aff;
+  cursor: pointer;
+  font-size: 0.9rem;
+  padding: 0;
+  text-decoration: underline;
+}
+
+.invoices-intro {
+  color: #666;
+  font-size: 0.9rem;
+  margin: 14px 2px;
+}
+
+.invoices-buckets {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.bucket-btn {
+  flex: 1;
+  min-width: 200px;
+  padding: 12px 16px;
+  border: 1px solid #d6d6d6;
+  border-radius: 10px;
+  background: #fff;
+  cursor: pointer;
+  font-size: 0.95rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.bucket-btn:hover {
+  border-color: #007aff;
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.12);
+}
+
+.bucket-meta {
+  display: block;
+  margin-top: 4px;
+  color: #888;
+  font-size: 0.82rem;
+}
+
+.invoices-editor-wrap {
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+  overflow-x: auto;
+}
+
+.invoices-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.invoices-table th,
+.invoices-table td {
+  padding: 8px 8px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.invoices-table th {
+  color: #555;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.invoices-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.invoices-table .col-incl,
+.invoices-table .col-gst {
+  text-align: center;
+}
+
+.invoices-table input[type="text"] {
+  width: 100%;
+  min-width: 120px;
+  padding: 5px 7px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font: inherit;
+}
+
+.invoices-table select {
+  padding: 5px 6px;
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  font: inherit;
+  max-width: 180px;
+}
+
+.invoices-table tr.row-excluded {
+  opacity: 0.45;
+}
+
+.usd-note {
+  color: #b45309;
+  font-size: 0.78rem;
+}
+
+.inv-preview-btn {
+  border: none;
+  background: #eef2ff;
+  color: #4338ca;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.bucket-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bucket-gst { background: #dbeafe; color: #1e40af; }
+.bucket-nongst { background: #f1f5f9; color: #475569; }
+.bucket-transport { background: #dcfce7; color: #166534; }
+
+.invoice-preview {
+  margin-top: 18px;
+}
+
+.invoice-doc {
+  background: #fff;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.invoice-doc-head h3 {
+  margin: 0 0 4px;
+}
+
+.invoice-doc-head p {
+  margin: 0 0 14px;
+  color: #666;
+  font-size: 0.9rem;
+}
+
+.invoice-doc-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.invoice-doc-table th,
+.invoice-doc-table td {
+  padding: 7px 10px;
+  border-bottom: 1px solid #eee;
+  text-align: left;
+}
+
+.invoice-doc-table .num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.invoice-doc-table tfoot td {
+  border-top: 2px solid #ddd;
+  border-bottom: none;
+}
+
+.invoice-doc-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+
+.invoice-doc-note {
+  color: #888;
+  font-size: 0.82rem;
+}
+
+.attach-list {
+  margin: 8px 0 0;
+  padding-left: 18px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+/* Invoices view — dark mode */
+:root[data-theme="dark"] .invoices-bar,
+:root[data-theme="dark"] .invoices-editor-wrap,
+:root[data-theme="dark"] .invoice-doc {
+  background: #1e293b;
+  border-color: #334155;
+}
+
+:root[data-theme="dark"] .xero-status,
+:root[data-theme="dark"] .invoices-intro,
+:root[data-theme="dark"] .bucket-meta,
+:root[data-theme="dark"] .invoice-doc-head p,
+:root[data-theme="dark"] .invoice-doc-note,
+:root[data-theme="dark"] .attach-list {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .bucket-btn {
+  background: #0f172a;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .invoices-table th {
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .invoices-table th,
+:root[data-theme="dark"] .invoices-table td,
+:root[data-theme="dark"] .invoice-doc-table th,
+:root[data-theme="dark"] .invoice-doc-table td {
+  border-bottom-color: #334155;
+}
+
+:root[data-theme="dark"] .invoices-table input[type="text"],
+:root[data-theme="dark"] .invoices-table select {
+  background: #0f172a;
+  border-color: #334155;
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .bucket-gst { background: #1e3a8a; color: #bfdbfe; }
+:root[data-theme="dark"] .bucket-nongst { background: #334155; color: #cbd5e1; }
+:root[data-theme="dark"] .bucket-transport { background: #14532d; color: #bbf7d0; }
+
+:root[data-theme="dark"] .inv-preview-btn {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}

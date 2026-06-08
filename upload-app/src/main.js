@@ -1561,12 +1561,383 @@ tabBtns.forEach(btn => {
   });
 });
 
+// ===== Invoices (Xero claim bills) =====
+
+const invoicesToggle = document.getElementById('invoicesToggle');
+const invoicesView = document.getElementById('invoicesView');
+const xeroStatusEl = document.getElementById('xeroStatus');
+const invoicesRefreshBtn = document.getElementById('invoicesRefreshBtn');
+const invoiceRows = document.getElementById('invoiceRows');
+const invoicesEmpty = document.getElementById('invoicesEmpty');
+const invoicePreview = document.getElementById('invoicePreview');
+const bucketMetaEls = {
+  gst: document.getElementById('bucketGst'),
+  nongst: document.getElementById('bucketNongst'),
+  transport: document.getElementById('bucketTransport'),
+};
+const linkingContainerEl = document.querySelector('.linking-container');
+const linkedSectionEl = document.querySelector('.linked-section');
+const tabToggleEl = document.querySelector('.tab-toggle');
+
+const TRANSPORT_CODES = ['451', '452'];
+const FALLBACK_ACCOUNTS = [
+  { code: '463', name: 'Computer Software' },
+  { code: '320', name: 'Cost of Sales' },
+  { code: '464', name: 'Computer Hardware & Accessories' },
+  { code: '460', name: 'Books, Magazines, Journals' },
+  { code: '451', name: 'Local Public Transport (incl Taxi)' },
+  { code: '452', name: 'Overseas Transport' },
+  { code: '467', name: 'Telephone & Internet' },
+];
+// Best-effort default account from the payee/description. Always editable.
+const ACCOUNT_HINTS = [
+  { code: '451', re: /\b(grab|gojek|gocar|taxi|cab|comfort|cdg|ez-?link|simplygo|mrt|\bbus\b|transport|\bride\b|fare|tada|ryde)\b/i },
+  { code: '464', re: /\b(hardware|cable|adapter|charger|keyboard|mouse|monitor|\bcase\b|ipad|laptop|ssd|usb|dongle|battery|webcam)\b/i },
+  { code: '460', re: /\b(book|books|magazine|journal|ebook)\b/i },
+  { code: '467', re: /\b(phone|mobile|telco|singtel|starhub|\bm1\b|internet|broadband|data plan|\bsim\b)\b/i },
+  { code: '463', re: /\b(subscription|software|saas|\bapp\b|\bai\b|\bapi\b|github|openai|chatgpt|claude|anthropic|lovable|figma|notion|adobe|cloud|domain|hosting)\b/i },
+];
+const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
+
+let invoiceLines = [];
+let invoicesActive = false;
+let xeroConnected = false;
+let xeroAccounts = null; // populated from /xero/meta when connected
+
+function invoiceAccounts() {
+  return xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
+}
+
+function guessAccountCode(text) {
+  const hay = (text || '').toLowerCase();
+  for (const hint of ACCOUNT_HINTS) {
+    if (hint.re.test(hay)) return hint.code;
+  }
+  return '463';
+}
+
+// Input tax code: GST shown -> standard-rated; USD with no GST -> out of scope;
+// SGD with no GST -> non-GST-registered supplier.
+function deriveTaxType(line) {
+  if (line.gstShown) return 'INPUTY24';
+  return line.currency === 'USD' ? 'OPINPUT' : 'NRINPUT';
+}
+
+function lineBucket(line) {
+  if (TRANSPORT_CODES.includes(line.accountCode)) return 'transport';
+  return line.gstShown ? 'gst' : 'nongst';
+}
+
+// Build the editable model from the currently loaded ready-to-claim data:
+// receipts with a non-empty linkedClaimIds, joined to their YNAB claim.
+function buildInvoiceLines() {
+  const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
+  const lines = [];
+
+  receiptsData.forEach((receipt) => {
+    if (receipt.xeroInvoiceId) return; // already billed
+    getLinkedClaimIds(receipt).forEach((claimId) => {
+      const claim = claimsById.get(claimId) || null;
+      const matchDate = getReceiptMatchDate(receipt).date;
+      const date = (claim && claim.date) || (matchDate ? matchDate.toISOString().slice(0, 10) : '');
+      const payee = (claim && claim.payee) || receipt.taggedVendor || 'Unknown payee';
+      const description = (claim && claim.description) || receipt.taggedPurpose || getReceiptDisplayName(receipt);
+      const currency = (receipt.taggedCurrency || 'SGD').toUpperCase();
+
+      // SGD is the source of truth: prefer the YNAB claim amount, else the
+      // receipt's SGD approximation, else the tagged amount.
+      let amount = NaN;
+      if (claim && Number.isFinite(Number(claim.amount))) {
+        amount = Number(claim.amount);
+      } else {
+        const comparables = getComparableReceiptAmounts(receipt);
+        const pref = comparables.find((c) => c.kind === 'fx-plus')
+          || comparables.find((c) => c.kind === 'fx')
+          || comparables[0];
+        if (pref) amount = pref.value;
+      }
+
+      lines.push({
+        id: `${receipt.key}::${claimId}`,
+        receiptKey: receipt.key,
+        receiptName: getReceiptDisplayName(receipt),
+        ynabClaimId: isReadyOnlyClaimId(claimId) ? null : claimId,
+        include: true,
+        date,
+        payee,
+        description,
+        currency,
+        amount: Number.isFinite(amount) ? Number(amount) : 0,
+        accountCode: guessAccountCode(`${payee} ${description}`),
+        gstShown: false,
+        remark: '',
+      });
+    });
+  });
+
+  lines.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  invoiceLines = lines;
+}
+
+function renderInvoiceEditor() {
+  const accounts = invoiceAccounts();
+  invoicesEmpty.hidden = invoiceLines.length > 0;
+
+  invoiceRows.innerHTML = invoiceLines
+    .map((line) => {
+      const options = accounts
+        .map((a) => `<option value="${escapeHtml(a.code)}" ${a.code === line.accountCode ? 'selected' : ''}>${escapeHtml(a.code)} — ${escapeHtml(a.name)}</option>`)
+        .join('');
+      const usdNote = line.currency === 'USD' ? ' <span class="usd-note">(USD)</span>' : '';
+      const bucket = lineBucket(line);
+      return `
+        <tr data-id="${escapeHtml(line.id)}" class="${line.include ? '' : 'row-excluded'}">
+          <td class="col-incl"><input type="checkbox" class="inv-include" ${line.include ? 'checked' : ''}></td>
+          <td class="inv-date">${escapeHtml(line.date || '—')}</td>
+          <td class="inv-payee">${escapeHtml(line.payee)}${usdNote}</td>
+          <td><input type="text" class="inv-desc" value="${escapeHtml(line.description)}"></td>
+          <td><select class="inv-account">${options}</select></td>
+          <td class="col-gst"><input type="checkbox" class="inv-gst" ${line.gstShown ? 'checked' : ''}></td>
+          <td class="num">${line.amount.toFixed(2)}</td>
+          <td><input type="text" class="inv-remark" placeholder="optional" value="${escapeHtml(line.remark)}"></td>
+          <td class="col-bucket"><span class="bucket-chip bucket-${bucket}">${BUCKET_LABEL[bucket]}</span></td>
+          <td><button type="button" class="inv-preview-btn" title="Preview receipt">view</button></td>
+        </tr>`;
+    })
+    .join('');
+
+  invoiceRows.querySelectorAll('tr[data-id]').forEach((tr) => {
+    const line = invoiceLines.find((l) => l.id === tr.dataset.id);
+    if (!line) return;
+    tr.querySelector('.inv-include').addEventListener('change', (e) => {
+      line.include = e.target.checked;
+      tr.classList.toggle('row-excluded', !line.include);
+      renderBucketSummary();
+    });
+    tr.querySelector('.inv-desc').addEventListener('input', (e) => { line.description = e.target.value; });
+    tr.querySelector('.inv-remark').addEventListener('input', (e) => { line.remark = e.target.value; });
+    tr.querySelector('.inv-account').addEventListener('change', (e) => {
+      line.accountCode = e.target.value;
+      updateRowBucket(tr, line);
+      renderBucketSummary();
+    });
+    tr.querySelector('.inv-gst').addEventListener('change', (e) => {
+      line.gstShown = e.target.checked;
+      updateRowBucket(tr, line);
+      renderBucketSummary();
+    });
+    tr.querySelector('.inv-preview-btn').addEventListener('click', () => openPreview(line.receiptKey, line.receiptName));
+  });
+
+  renderBucketSummary();
+}
+
+function updateRowBucket(tr, line) {
+  const chip = tr.querySelector('.bucket-chip');
+  const bucket = lineBucket(line);
+  chip.className = `bucket-chip bucket-${bucket}`;
+  chip.textContent = BUCKET_LABEL[bucket];
+}
+
+function bucketLines(bucket) {
+  return invoiceLines.filter((l) => l.include && lineBucket(l) === bucket);
+}
+
+// Group by account code, then date ascending within the account.
+function sortBucketLines(lines) {
+  return lines.slice().sort((a, b) => {
+    if (a.accountCode !== b.accountCode) return a.accountCode < b.accountCode ? -1 : 1;
+    return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+  });
+}
+
+function renderBucketSummary() {
+  ['gst', 'nongst', 'transport'].forEach((bucket) => {
+    const lines = bucketLines(bucket);
+    const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+    bucketMetaEls[bucket].textContent = `(${lines.length} · S$${total.toFixed(2)})`;
+  });
+}
+
+function lineToDescription(line) {
+  const base = `${line.description} — ${line.payee} (${line.date})`;
+  return line.remark ? `${base} — ${line.remark}` : base;
+}
+
+function generateInvoice(bucket) {
+  const lines = sortBucketLines(bucketLines(bucket));
+  invoicePreview.hidden = false;
+  if (lines.length === 0) {
+    invoicePreview.innerHTML = `<p class="empty-state">No ${BUCKET_LABEL[bucket]} items selected.</p>`;
+    return;
+  }
+  const accounts = invoiceAccounts();
+  const accName = (code) => (accounts.find((a) => a.code === code) || {}).name || '';
+  const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
+  const rowsHtml = lines
+    .map((l) => `
+      <tr>
+        <td>${escapeHtml(l.date)}</td>
+        <td>${escapeHtml(lineToDescription(l))}</td>
+        <td>${escapeHtml(l.accountCode)} ${escapeHtml(accName(l.accountCode))}</td>
+        <td>${escapeHtml(deriveTaxType(l))}</td>
+        <td class="num">S$${Number(l.amount).toFixed(2)}</td>
+      </tr>`)
+    .join('');
+
+  invoicePreview.innerHTML = `
+    <div class="invoice-doc">
+      <div class="invoice-doc-head">
+        <h3>${BUCKET_LABEL[bucket]} claims — DRAFT bill</h3>
+        <p>Payee: <strong>Soon Yin Jie</strong> · ${lines.length} line items · tax-inclusive</p>
+      </div>
+      <table class="invoice-doc-table">
+        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Tax</th><th class="num">Amount</th></tr></thead>
+        <tbody>${rowsHtml}</tbody>
+        <tfoot><tr><td colspan="4" class="num"><strong>Total</strong></td><td class="num"><strong>S$${total.toFixed(2)}</strong></td></tr></tfoot>
+      </table>
+      <div class="invoice-doc-actions">
+        <button type="button" id="pushInvoiceBtn" class="btn-primary" data-bucket="${bucket}">Push to Xero (draft)</button>
+        <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts. You can still edit it in Xero before approving.</span>
+      </div>
+    </div>`;
+  invoicePreview.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const pushBtn = document.getElementById('pushInvoiceBtn');
+  if (pushBtn) pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
+}
+
+async function pushInvoice(bucket, btn) {
+  const lines = sortBucketLines(bucketLines(bucket));
+  if (lines.length === 0) return;
+  if (!xeroConnected) {
+    showStatus('error', 'Connect Xero first.');
+    return;
+  }
+  const reference = window.prompt(`Reference / note for the ${BUCKET_LABEL[bucket]} bill:`, `${BUCKET_LABEL[bucket]} claims`);
+  if (reference === null) return; // cancelled
+
+  btn.disabled = true;
+  btn.textContent = 'Pushing…';
+  try {
+    const payload = {
+      bucket,
+      reference,
+      markClaimed: true,
+      lineItems: lines.map((l) => ({
+        receiptKey: l.receiptKey,
+        ynabClaimId: l.ynabClaimId,
+        date: l.date,
+        description: lineToDescription(l),
+        accountCode: l.accountCode,
+        taxType: deriveTaxType(l),
+        amount: Number(l.amount),
+      })),
+    };
+    const res = await fetch(`${API_BASE}/xero/invoices/push`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+    showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachments.length} receipts attached).`);
+    invoicePreview.innerHTML = `
+      <div class="invoice-doc">
+        <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
+        <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
+      </div>`;
+
+    await loadReceipts();
+    await loadYnabTodos();
+    buildInvoiceLines();
+    renderInvoiceEditor();
+  } catch (err) {
+    showStatus('error', `Push failed: ${err.message}`);
+    btn.disabled = false;
+    btn.textContent = 'Push to Xero (draft)';
+  }
+}
+
+async function loadXeroStatus() {
+  try {
+    const res = await fetch(`${API_BASE}/xero/status`, { headers: authHeaders() });
+    const data = await res.json();
+    xeroConnected = Boolean(data.connected);
+    if (xeroConnected) {
+      xeroStatusEl.innerHTML = `Connected to <strong>${escapeHtml(data.tenantName || 'Xero')}</strong> · <button type="button" id="xeroDisconnectBtn" class="link-button">disconnect</button>`;
+      const dc = document.getElementById('xeroDisconnectBtn');
+      if (dc) dc.addEventListener('click', disconnectXero);
+      loadXeroMeta();
+    } else {
+      const token = encodeURIComponent(getAuthToken() || '');
+      xeroStatusEl.innerHTML = `Not connected to Xero. <a class="btn-primary btn-connect" href="${API_BASE}/xero/connect?token=${token}">Connect Xero</a>`;
+    }
+  } catch (err) {
+    xeroStatusEl.textContent = 'Could not check Xero status.';
+  }
+}
+
+async function loadXeroMeta() {
+  try {
+    const res = await fetch(`${API_BASE}/xero/meta`, { headers: authHeaders() });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (Array.isArray(data.accounts) && data.accounts.length) {
+      xeroAccounts = data.accounts.map((a) => ({ code: a.code, name: a.name }));
+      if (invoicesActive) renderInvoiceEditor();
+    }
+  } catch (_err) {
+    /* keep fallback accounts */
+  }
+}
+
+async function disconnectXero() {
+  await fetch(`${API_BASE}/xero/disconnect`, { method: 'POST', headers: authHeaders() });
+  await loadXeroStatus();
+}
+
+function showInvoicesView(show) {
+  invoicesActive = show;
+  invoicesView.hidden = !show;
+  if (linkingContainerEl) linkingContainerEl.style.display = show ? 'none' : '';
+  if (linkedSectionEl) linkedSectionEl.style.display = show ? 'none' : '';
+  if (tabToggleEl) tabToggleEl.style.display = show ? 'none' : '';
+  if (dropzone) dropzone.style.display = show ? 'none' : '';
+  invoicesToggle.textContent = show ? 'Back to claims' : 'Invoices';
+  invoicesToggle.classList.toggle('active', show);
+  if (show) {
+    invoicePreview.hidden = true;
+    loadXeroStatus();
+    buildInvoiceLines();
+    renderInvoiceEditor();
+  }
+}
+
+invoicesToggle.addEventListener('click', () => showInvoicesView(!invoicesActive));
+invoicesRefreshBtn.addEventListener('click', async () => {
+  await loadReceipts();
+  await loadYnabTodos();
+  buildInvoiceLines();
+  renderInvoiceEditor();
+  loadXeroStatus();
+});
+document.querySelectorAll('.bucket-btn').forEach((btn) => {
+  btn.addEventListener('click', () => generateInvoice(btn.dataset.bucket));
+});
+
 // Initial load with auth check
 async function init() {
   if (await checkAuth()) {
     hidePasswordPrompt();
     await loadReceipts();
     await loadYnabTodos();
+    // Returning from the Xero OAuth round-trip opens the Invoices view.
+    if (new URLSearchParams(location.search).get('xero') === 'connected') {
+      showInvoicesView(true);
+    }
   }
 }
 

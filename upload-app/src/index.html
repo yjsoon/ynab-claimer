@@ -51,6 +51,7 @@
 
     <div class="toolbar">
       <button id="refreshBtn" class="btn-secondary btn-refresh">Refresh All</button>
+      <button id="invoicesToggle" class="btn-secondary btn-invoices" type="button">Invoices</button>
       <button id="themeToggle" class="btn-secondary btn-theme" type="button" aria-pressed="false">Dark mode</button>
     </div>
 
@@ -80,6 +81,58 @@
     <div class="linked-section">
       <h2>Ready to Claim <span id="linkedCount">(0)</span></h2>
       <ul id="linkedList" class="linked-pair-list"></ul>
+    </div>
+
+    <!-- Invoices view: assemble ready-to-claim items into Xero draft bills -->
+    <div id="invoicesView" class="invoices-view" hidden>
+      <div class="invoices-bar">
+        <div id="xeroStatus" class="xero-status">Checking Xero…</div>
+        <div class="invoices-bar-actions">
+          <button id="invoicesRefreshBtn" class="btn-secondary" type="button">Refresh</button>
+        </div>
+      </div>
+
+      <p class="invoices-intro">
+        Review the ready-to-claim items, adjust the account, GST flag and per-line remark,
+        then generate each monthly bill (payee <strong>Soon Yin Jie</strong>). Buckets update live as you edit.
+      </p>
+
+      <div class="invoices-buckets">
+        <button class="bucket-btn" data-bucket="gst" type="button">
+          Generate GST invoice <span class="bucket-meta" id="bucketGst">(0 · S$0.00)</span>
+        </button>
+        <button class="bucket-btn" data-bucket="nongst" type="button">
+          Generate non-GST invoice <span class="bucket-meta" id="bucketNongst">(0 · S$0.00)</span>
+        </button>
+        <button class="bucket-btn" data-bucket="transport" type="button">
+          Generate transport invoice <span class="bucket-meta" id="bucketTransport">(0 · S$0.00)</span>
+        </button>
+      </div>
+
+      <div class="invoices-editor-wrap">
+        <table class="invoices-table">
+          <thead>
+            <tr>
+              <th class="col-incl" title="Include in invoices">✓</th>
+              <th>Date</th>
+              <th>Payee</th>
+              <th>Description</th>
+              <th>Account</th>
+              <th class="col-gst" title="Tick if the receipt shows an explicit GST line">GST?</th>
+              <th class="num">Amount (S$)</th>
+              <th>Remark</th>
+              <th class="col-bucket">Bill</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="invoiceRows"></tbody>
+        </table>
+        <p id="invoicesEmpty" class="empty-state" hidden>
+          No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.
+        </p>
+      </div>
+
+      <div id="invoicePreview" class="invoice-preview" hidden></div>
     </div>
   </div>
 
