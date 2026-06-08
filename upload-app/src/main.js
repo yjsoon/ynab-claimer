@@ -1845,11 +1845,18 @@ async function pushInvoice(bucket, btn) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
 
     const attachments = Array.isArray(data.attachments) ? data.attachments : [];
-    showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachments.length} receipts attached).`);
+    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    const attachedCount = attachments.filter((a) => a.status === 'attached').length;
+    if (data.allAttached === false) {
+      showStatus('error', `Draft bill ${data.invoiceNumber || ''} created, but ${attachments.length - attachedCount} attachment(s) failed — items kept in the tab for retry.`);
+    } else {
+      showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachedCount} receipts attached).`);
+    }
     invoicePreview.innerHTML = `
       <div class="invoice-doc">
         <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
         <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
+        ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>⚠️ ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
       </div>`;
 
     await loadReceipts();

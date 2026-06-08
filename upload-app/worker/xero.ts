@@ -78,6 +78,7 @@ async function saveAuth(env: XeroEnv, auth: XeroAuth): Promise<void> {
 
 export async function clearAuth(env: XeroEnv): Promise<void> {
   cachedAuth = null;
+  if (!env.XERO_TOKENS) return; // not configured — nothing to clear
   await env.XERO_TOKENS.delete(TOKENS_KEY);
 }
 

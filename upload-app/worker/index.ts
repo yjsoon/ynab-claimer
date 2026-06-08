@@ -892,7 +892,14 @@ function parseCookie(header: string | null, name: string): string | null {
   if (!header) return null;
   for (const part of header.split(';')) {
     const [key, ...rest] = part.trim().split('=');
-    if (key === name) return decodeURIComponent(rest.join('='));
+    if (key === name) {
+      const raw = rest.join('=');
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw; // tolerate a malformed cookie value rather than throwing
+      }
+    }
   }
   return null;
 }
@@ -930,7 +937,9 @@ async function loadReceiptFile(env: Env, key: string, label: string): Promise<Re
   const obj = await env.RECEIPTS.get(key);
   if (!obj) return null;
   const bytes = await obj.arrayBuffer();
-  const mime = (obj.httpMetadata?.contentType || EXT_MIME[getExtension(key)] || 'application/octet-stream').toLowerCase();
+  // Strip any MIME parameters (e.g. "image/jpeg; charset=binary") before comparison.
+  const rawMime = obj.httpMetadata?.contentType || EXT_MIME[getExtension(key)] || 'application/octet-stream';
+  const mime = rawMime.split(';')[0].trim().toLowerCase();
   const ext = MIME_EXT[mime] || getExtension(key) || '';
   const base = sanitiseFileName(label).slice(0, 80) || sanitiseFileName(key) || 'receipt';
   return { key, name: `${base}${ext}`, bytes, mime };
@@ -1635,26 +1644,38 @@ export default {
             }
           }
 
-          // Tag receipts as invoiced so they drop off the Invoices tab.
-          const invoicedAt = new Date().toISOString();
-          const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
-          for (const key of uniqueKeys) {
-            await patchReceiptMetadata(env, key, { xeroInvoiceId: bill.invoiceID, invoicedAt });
-          }
+          // Only mark items done when EVERY attachment uploaded. Otherwise leave
+          // the receipts in the Invoices tab (untagged, YNAB still TODO) so the
+          // user can retry — the deterministic idempotency key reuses this draft
+          // rather than creating a duplicate.
+          const failedAttachments = attachments.filter((a) => a.status !== 'attached');
+          const allAttached = failedAttachments.length === 0;
 
-          // Flip linked YNAB TODOs to CLAIMED.
           const claimedYnab: Array<{ id: string; status: string }> = [];
-          if (body.markClaimed !== false) {
-            const claimIds = Array.from(
-              new Set(
-                lineItems
-                  .map((l) => l.ynabClaimId)
-                  .filter((id): id is string => typeof id === 'string' && id.length > 0)
-              )
-            );
-            for (const id of claimIds) {
-              claimedYnab.push({ id, status: await markYnabClaimed(env, id) });
+          if (allAttached) {
+            // Tag receipts as invoiced so they drop off the Invoices tab.
+            const invoicedAt = new Date().toISOString();
+            const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
+            for (const key of uniqueKeys) {
+              await patchReceiptMetadata(env, key, { xeroInvoiceId: bill.invoiceID, invoicedAt });
             }
+            // Flip linked YNAB TODOs to CLAIMED.
+            if (body.markClaimed !== false) {
+              const claimIds = Array.from(
+                new Set(
+                  lineItems
+                    .map((l) => l.ynabClaimId)
+                    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+                )
+              );
+              for (const id of claimIds) {
+                claimedYnab.push({ id, status: await markYnabClaimed(env, id) });
+              }
+            }
+          } else {
+            warnings.push(
+              `${failedAttachments.length} attachment(s) failed to upload, so the receipts were left in the Invoices tab and YNAB was not marked CLAIMED. Review the draft bill in Xero, then retry (the same draft is reused).`
+            );
           }
 
           return new Response(
@@ -1662,6 +1683,7 @@ export default {
               invoiceID: bill.invoiceID,
               invoiceNumber: bill.invoiceNumber,
               url: bill.url,
+              allAttached,
               attachments,
               claimedYnab,
               warnings,
