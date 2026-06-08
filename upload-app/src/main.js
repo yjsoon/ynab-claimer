@@ -29,6 +29,7 @@ const rememberMe = document.getElementById('rememberMe');
 const actionBar = document.getElementById('actionBar');
 const actionText = document.getElementById('actionText');
 const confirmSelection = document.getElementById('confirmSelection');
+const markReadySelection = document.getElementById('markReadySelection');
 const cancelSelection = document.getElementById('cancelSelection');
 const tabBtns = document.querySelectorAll('.tab-btn');
 const receiptsColumn = document.getElementById('receiptsColumn');
@@ -48,6 +49,8 @@ let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+
+const READY_CLAIM_ID_PREFIX = 'receipt-ready:';
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -504,6 +507,14 @@ function getLinkedClaimIds(receipt) {
   return [];
 }
 
+function getReadyClaimId(receipt) {
+  return `${READY_CLAIM_ID_PREFIX}${receipt.key}`;
+}
+
+function isReadyOnlyClaimId(claimId) {
+  return typeof claimId === 'string' && claimId.startsWith(READY_CLAIM_ID_PREFIX);
+}
+
 function getReceiptDisplayName(receipt) {
   const key = typeof receipt.key === 'string' ? receipt.key : '';
   const originalName = typeof receipt.originalName === 'string' ? receipt.originalName.trim() : '';
@@ -513,6 +524,10 @@ function getReceiptDisplayName(receipt) {
 }
 
 function getLinkedClaimJumpLabel(receipt, claimId, index = 0) {
+  if (isReadyOnlyClaimId(claimId)) {
+    return 'Receipt ready';
+  }
+
   const linkedClaim = claimsData.find((claim) => claim.id === claimId);
   if (linkedClaim) {
     const description = (linkedClaim.description || '').trim();
@@ -588,18 +603,25 @@ function renderLinkedPairs() {
   linkedList.innerHTML = linkedPairs
     .map((pair) => {
       const { receipt, claim, claimId, index } = pair;
+      const isReadyOnly = isReadyOnlyClaimId(claimId);
       const claimTitle = claim
         ? (claim.description || claim.payee || getLinkedClaimJumpLabel(receipt, claimId, index))
         : getLinkedClaimJumpLabel(receipt, claimId, index);
       const claimSub = claim
         ? (claim.payee || (claim.accountName || 'Unknown account'))
-        : 'Claim details unavailable';
+        : isReadyOnly
+          ? 'No YNAB claim linked'
+          : 'Claim details unavailable';
       const claimDate = claim
         ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
-        : 'Unknown date';
+        : isReadyOnly
+          ? 'Ready'
+          : 'Unknown date';
       const claimAmount = claim && Number.isFinite(Number(claim.amount))
         ? `$${Number(claim.amount).toFixed(2)}`
-        : 'Unknown amount';
+        : isReadyOnly
+          ? 'Receipt amount'
+          : 'Unknown amount';
 
       const receiptName = getReceiptDisplayName(receipt);
       const receiptTitle = [receipt.taggedVendor, receipt.taggedPurpose]
@@ -616,7 +638,7 @@ function renderLinkedPairs() {
             <span class="linked-pair-sub">${escapeHtml(claimSub)}</span>
             <span class="linked-pair-meta">${escapeHtml(claimDate)} · ${escapeHtml(claimAmount)}</span>
           </div>
-          <div class="linked-pair-connector" aria-hidden="true">↔</div>
+          <div class="linked-pair-connector" aria-hidden="true">${isReadyOnly ? '✓' : '↔'}</div>
           <button type="button" class="linked-pair-side linked-pair-receipt"
               data-receipt-key="${escapeHtml(receipt.key)}"
               data-receipt-name="${escapeHtml(receiptName)}"
@@ -767,6 +789,8 @@ function updateActionBar() {
     actionBar.classList.remove('visible');
     confirmSelection.hidden = true;
     confirmSelection.disabled = true;
+    markReadySelection.hidden = true;
+    markReadySelection.disabled = true;
     return;
   }
 
@@ -775,9 +799,12 @@ function updateActionBar() {
   if (linkingSource === 'receipt') {
     const selectionCount = selectedClaimIds.size;
     if (selectionCount === 0) {
-      actionText.textContent = 'Receipt selected. Tick a claim to link';
+      actionText.textContent = 'Receipt selected. Tick a claim or mark ready';
       confirmSelection.hidden = true;
       confirmSelection.disabled = true;
+      markReadySelection.textContent = 'Mark ready';
+      markReadySelection.hidden = false;
+      markReadySelection.disabled = false;
       return;
     }
 
@@ -785,8 +812,13 @@ function updateActionBar() {
     confirmSelection.textContent = `Link ${selectionCount}`;
     confirmSelection.hidden = false;
     confirmSelection.disabled = false;
+    markReadySelection.hidden = true;
+    markReadySelection.disabled = true;
     return;
   }
+
+  markReadySelection.hidden = true;
+  markReadySelection.disabled = true;
 
   const selectionCount = selectedReceiptKeys.size;
   if (selectionCount === 0) {
@@ -1363,6 +1395,50 @@ async function linkSourceReceiptToClaim() {
   loadReceipts().then(() => loadYnabTodos());
 }
 
+function buildReadyClaimPayload(receipt) {
+  const receiptName = getReceiptDisplayName(receipt);
+  const title = [receipt.taggedVendor, receipt.taggedPurpose]
+    .filter((part) => typeof part === 'string' && part.trim())
+    .map((part) => part.trim())
+    .join(' - ');
+  const dateInfo = getReceiptMatchDate(receipt);
+  const comparableAmounts = getComparableReceiptAmounts(receipt);
+  const preferredAmount = comparableAmounts.find((amount) => amount.kind === 'fx-plus') ||
+    comparableAmounts.find((amount) => amount.kind === 'fx') ||
+    comparableAmounts[0];
+
+  return {
+    id: getReadyClaimId(receipt),
+    description: title || receiptName || 'Receipt ready',
+    amount: preferredAmount?.value,
+    date: dateInfo.date ? dateInfo.date.toISOString().slice(0, 10) : undefined,
+  };
+}
+
+async function markSourceReceiptReady() {
+  if (linkingSource !== 'receipt' || !sourceReceiptKey || selectedClaimIds.size > 0) {
+    return;
+  }
+
+  const receipt = receiptsData.find((item) => item.key === sourceReceiptKey);
+  if (!receipt) {
+    showStatus('error', 'Selected receipt not found');
+    return;
+  }
+
+  showStatus('uploading', 'Marking receipt ready...');
+  const result = await patchReceiptLink(sourceReceiptKey, buildReadyClaimPayload(receipt));
+
+  if (result.ok) {
+    showStatus('success', 'Receipt marked ready');
+  } else {
+    showStatus('error', result.error || 'Failed to mark ready');
+  }
+
+  clearSelection();
+  loadReceipts().then(() => loadYnabTodos());
+}
+
 function handleConfirmSelection() {
   if (linkingSource === 'claim') {
     linkSelectedReceiptsToClaim();
@@ -1467,6 +1543,7 @@ async function unlinkReceipt(receiptKey) {
 // Cancel selection button
 cancelSelection.addEventListener('click', clearSelection);
 confirmSelection.addEventListener('click', handleConfirmSelection);
+markReadySelection.addEventListener('click', markSourceReceiptReady);
 
 // ===== Mobile Tab Toggle =====
 
