@@ -209,22 +209,23 @@ export async function xeroFetch(env: XeroEnv, path: string, init: XeroFetchInit 
   const url = path.startsWith('http') ? path : `${API_BASE}${path}`;
   const auth = await getValidAuth(env);
 
-  const attempt = (accessToken: string): Promise<Response> =>
+  const attempt = (accessToken: string, tenantId: string): Promise<Response> =>
     fetch(url, {
       ...init,
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        'Xero-tenant-id': auth.tenantId,
+        'Xero-tenant-id': tenantId,
         Accept: 'application/json',
         ...(init.headers || {}),
       },
     });
 
-  let res = await attempt(auth.tokenSet.access_token);
+  let res = await attempt(auth.tokenSet.access_token, auth.tenantId);
 
   if (res.status === 401) {
+    // Use the refreshed auth's tenant too, in case it changed since the first attempt.
     const refreshed = await refreshAuth(env, auth.tokenSet.access_token);
-    res = await attempt(refreshed.tokenSet.access_token);
+    res = await attempt(refreshed.tokenSet.access_token, refreshed.tenantId);
   }
 
   // Basic 429 handling: respect Retry-After once (Xero limit: 60/min, 5 concurrent).
@@ -234,7 +235,7 @@ export async function xeroFetch(env: XeroEnv, path: string, init: XeroFetchInit 
     const retryAfter = Number.isFinite(parsed) ? parsed : 5;
     await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(retryAfter, 1), 30) * 1000));
     const current = await getValidAuth(env);
-    res = await attempt(current.tokenSet.access_token);
+    res = await attempt(current.tokenSet.access_token, current.tenantId);
   }
 
   return res;
