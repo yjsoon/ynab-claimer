@@ -1,5 +1,3 @@
-#!/usr/bin/env npx tsx
-
 import { config } from 'dotenv';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';

@@ -1504,26 +1504,29 @@ export default {
       // GET /xero/callback - OAuth redirect target. Trusted via the one-time
       // state cookie set by /xero/connect (Xero calls this directly).
       if (path === '/xero/callback' && request.method === 'GET') {
+        // The callback URL carries the one-time OAuth code — keep it out of
+        // caches and referrers.
+        const noLeak = { ...corsHeaders, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' };
         const oauthError = url.searchParams.get('error');
         if (oauthError) {
-          return new Response(`Xero authorisation failed: ${oauthError}`, { status: 400, headers: corsHeaders });
+          return new Response(`Xero authorisation failed: ${oauthError}`, { status: 400, headers: noLeak });
         }
         const code = url.searchParams.get('code');
         const state = url.searchParams.get('state');
         const cookieState = parseCookie(request.headers.get('Cookie'), 'xero_oauth_state');
         if (!code || !state || !cookieState || state !== cookieState) {
-          return new Response('Invalid or expired authorisation state.', { status: 400, headers: corsHeaders });
+          return new Response('Invalid or expired authorisation state.', { status: 400, headers: noLeak });
         }
         try {
           await xero.exchangeCode(env, request.url, code);
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Xero token exchange failed';
-          return new Response(message, { status: 502, headers: corsHeaders });
+          return new Response(message, { status: 502, headers: noLeak });
         }
         return new Response(null, {
           status: 302,
           headers: {
-            ...corsHeaders,
+            ...noLeak,
             Location: `${url.origin}/?xero=connected#invoices`,
             'Set-Cookie': 'xero_oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
           },
@@ -1571,9 +1574,25 @@ export default {
             markClaimed?: boolean;
             lineItems?: PushLineItem[];
           };
-          const lineItems = (Array.isArray(body.lineItems) ? body.lineItems : []).filter(
-            (l) => l && l.receiptKey && Number(l.amount) > 0 && l.accountCode && l.taxType
-          );
+          const lineItems = (Array.isArray(body.lineItems) ? body.lineItems : [])
+            .filter(
+              (l) =>
+                l &&
+                typeof l.receiptKey === 'string' && l.receiptKey &&
+                typeof l.description === 'string' && l.description.trim() &&
+                typeof l.accountCode === 'string' && l.accountCode &&
+                typeof l.taxType === 'string' && l.taxType &&
+                Number(l.amount) > 0
+            )
+            .map((l) => ({
+              receiptKey: l.receiptKey,
+              ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
+              date: typeof l.date === 'string' ? l.date : '',
+              description: l.description.trim(),
+              accountCode: l.accountCode,
+              taxType: l.taxType,
+              amount: Number(l.amount),
+            }));
           if (lineItems.length === 0) {
             return new Response(JSON.stringify({ error: 'No valid line items to invoice (each needs a positive amount, account and tax code)' }), {
               status: 400,

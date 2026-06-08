@@ -1,5 +1,3 @@
-#!/usr/bin/env npx tsx
-
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, resolve } from 'node:path';
