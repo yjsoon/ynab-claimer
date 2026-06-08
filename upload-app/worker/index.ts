@@ -936,8 +936,9 @@ async function loadReceiptFile(env: Env, key: string, label: string): Promise<Re
   return { key, name: `${base}${ext}`, bytes, mime };
 }
 
-async function buildCombinedPdf(files: ReceiptFile[]): Promise<Uint8Array> {
+async function buildCombinedPdf(files: ReceiptFile[]): Promise<{ bytes: Uint8Array; skipped: string[] }> {
   const doc = await PDFDocument.create();
+  const skipped: string[] = [];
   for (const f of files) {
     try {
       if (f.mime === 'application/pdf') {
@@ -952,10 +953,10 @@ async function buildCombinedPdf(files: ReceiptFile[]): Promise<Uint8Array> {
         doc.addPage([img.width, img.height]).drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
       }
     } catch (_err) {
-      /* skip a receipt that can't be parsed/embedded */
+      skipped.push(f.name);
     }
   }
-  return doc.save();
+  return { bytes: await doc.save(), skipped };
 }
 
 interface AttachmentUpload {
@@ -1018,7 +1019,8 @@ async function buildClaimAttachments(
 
   const uploads: AttachmentUpload[] = [];
   for (let i = 0; i < groups.length; i++) {
-    const pdf = await buildCombinedPdf(groups[i]);
+    const { bytes: pdf, skipped } = await buildCombinedPdf(groups[i]);
+    for (const s of skipped) warnings.push(`Could not embed ${s} into the combined PDF; attach it manually.`);
     if (pdf.byteLength > XERO_ATTACH_MAX_BYTES) {
       warnings.push(`Combined receipts PDF ${i + 1} exceeds 3 MB; attach those receipts manually.`);
       continue;

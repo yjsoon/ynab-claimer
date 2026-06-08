@@ -1857,7 +1857,7 @@ async function pushInvoice(bucket, btn) {
     buildInvoiceLines();
     renderInvoiceEditor();
   } catch (err) {
-    showStatus('error', `Push failed: ${err.message}`);
+    showStatus('error', `Push failed: ${err instanceof Error ? err.message : String(err)}`);
     btn.disabled = false;
     btn.textContent = 'Push to Xero (draft)';
   }
@@ -1904,7 +1904,7 @@ async function connectXero() {
     if (!res.ok || !data.authorizeUrl) throw new Error(data.error || `HTTP ${res.status}`);
     window.location.href = data.authorizeUrl;
   } catch (err) {
-    showStatus('error', `Could not start Xero connect: ${err.message}`);
+    showStatus('error', `Could not start Xero connect: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

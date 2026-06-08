@@ -224,7 +224,9 @@ export async function xeroFetch(env: XeroEnv, path: string, init: XeroFetchInit 
 
   // Basic 429 handling: respect Retry-After once (Xero limit: 60/min, 5 concurrent).
   if (res.status === 429) {
-    const retryAfter = Number(res.headers.get('Retry-After') || '5');
+    // Retry-After may be missing or an HTTP-date; fall back to 5s when not a finite number.
+    const parsed = Number(res.headers.get('Retry-After'));
+    const retryAfter = Number.isFinite(parsed) ? parsed : 5;
     await new Promise((resolve) => setTimeout(resolve, Math.min(Math.max(retryAfter, 1), 30) * 1000));
     const current = await getValidAuth(env);
     res = await attempt(current.tokenSet.access_token);
