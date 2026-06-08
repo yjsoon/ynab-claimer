@@ -1,0 +1,18 @@
+# Local secrets for `wrangler dev` (copy to .dev.vars, which is gitignored).
+# In production these are set with `wrangler secret put <NAME>` instead.
+#
+# Xero app credentials — same app as the local ../../xero project. In the Xero
+# developer portal, add BOTH redirect URIs to the app:
+#   https://receipts.soon.sg/xero/callback   (production)
+#   http://localhost:8787/xero/callback       (wrangler dev default port)
+XERO_CLIENT_ID = "your-xero-client-id"
+XERO_CLIENT_SECRET = "your-xero-client-secret"
+
+# The web-app auth password (must match the deployed AUTH_PASSWORD secret) so
+# the worker can be exercised locally.
+AUTH_PASSWORD = "your-web-app-password"
+
+# Optional: YNAB + Gemini if you want those paths to work under `wrangler dev`.
+# YNAB_API_KEY = "..."
+# YNAB_BUDGET_ID = "..."
+# GEMINI_API_KEY = "..."

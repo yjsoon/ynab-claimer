@@ -1,1 +1,163 @@
-CLAUDE.md
+# Agent Instructions
+
+Guidelines for AI agents working on this codebase.
+
+## Sensitive Data
+
+**DO NOT commit or expose:**
+- Actual Cloudflare Worker URLs (use `https://receipts.yourdomain.com` as placeholder)
+- YNAB API keys or budget IDs
+- Any values from `.env`
+
+The `.env` file contains secrets. When writing documentation or examples, always use placeholders.
+
+## Project Structure
+
+- `upload-app/` - Cloudflare Worker for receipt uploads
+- `scripts/` - Local automation scripts for Volopay and Gmail receipt export
+- `.claude/skills/claims/SKILL.md` - Claude Code skill for processing claims
+- `.claude/skills/ride-gmail-receipts/SKILL.md` - Skill for exporting Grab and Gojek ride receipts from Gmail using `gog`
+- `.claude/skills/claim-invoices/SKILL.md` - Skill for generating Xero draft bills from ready-to-claim items (Invoices tab)
+- `.agents/skills/ride-gmail-receipts/SKILL.md` - Agent mirror of the ride Gmail receipt export skill
+- `.agents/skills/claim-invoices/SKILL.md` - Agent mirror of the claim-invoices skill
+- `upload-app/worker/xero.ts` - Xero OAuth + bill creation/attachment for the Invoices tab
+- `.env` - Local config (gitignored)
+- `.env.example` - Template with placeholders (safe to commit)
+
+## Configuration
+
+Local config lives in `.env` (gitignored); `.env.example` is the committed template. Required variables:
+
+- `YNAB_API_KEY` — from https://app.ynab.com/settings/developer
+- `YNAB_BUDGET_ID` — from the YNAB URL when viewing the budget
+- `GEMINI_API_KEY` — for receipt amount tagging
+- `GEMINI_MODEL` — optional override (worker default: `gemini-3-flash-preview`)
+- `R2_WORKER_URL` — deployed receipt-upload worker URL
+- `R2_PASSWORD` — receipt worker auth token (must match the worker's `AUTH_PASSWORD` secret)
+- `VOLOPAY_URL` — your company's Volopay subdomain
+
+## Claims Processing
+
+The claims skill at `.claude/skills/claims/SKILL.md` handles matching YNAB transactions with uploaded receipts.
+
+Before doing manual claim/receipt matching, run the auto-link helper from `scripts/`:
+
+```bash
+cd scripts
+npm run link:matches
+```
+
+This is a dry run. Always show the full dry-run output to the user for verification before applying anything, including each clear match itemised one by one. If it reports clear one-to-one matches and the user confirms they should be marked as done, apply them with:
+
+```bash
+npm run link:matches -- --apply
+```
+
+The helper only writes receipt link metadata through `PATCH /receipt/:key/link`; it does not delete receipts, update YNAB memos, or submit Volopay claims. Default matching is intentionally conservative: exact receipt date plus amount within 1 cent, with ambiguous candidates skipped. Do not apply `--near-days` or `--allow-upload-date` unless the user explicitly asks for looser matching. Always report ambiguous skipped candidates back to the user and ask which receipt, if any, should be linked.
+
+The web UI section formerly called "Already Linked" is "Ready to Claim". It includes normal claim-receipt links and receipts the user has explicitly marked ready even when no matching YNAB TODO claim is visible. Ready-only receipts use synthetic link IDs prefixed with `receipt-ready:`. Treat those as intentional ready markers, not broken YNAB links.
+
+The claims skill auto-invokes when the user mentions claims, expenses, reimbursements, receipts, or YNAB TODOs.
+
+## YNAB Memo Convention
+
+- `TODO: <description>` — pending claim
+- `CLAIMED: <description>` — processed claim
+
+## Volopay Claim Submission
+
+Submit a single claim to Volopay with the Playwright automation in `scripts/`:
+
+```bash
+cd scripts
+npm run submit -- claim.json
+```
+
+`volopay-submit.ts` reads the claim JSON from the file argument (or stdin), logs into Volopay (using `VOLOPAY_URL`), fills the Create-claim form, then **pauses for manual review** — you click Continue and close the browser to finish. It never auto-submits.
+
+The claim JSON requires these fields: `merchant`, `amount`, `date`, `memo`, `xeroCategory`, `xeroTaxCode`, `receiptPath`. Use the rules below to fill `xeroTaxCode` and `xeroCategory`.
+
+### Tax Code Rules (CRITICAL)
+
+**Only use `INPUTY24` when the receipt shows an explicit GST line item. Never assume GST.**
+
+| Condition | Tax Code |
+| :---- | :---- |
+| Receipt shows a GST amount | `INPUTY24:Standard-Rated Purchases` |
+| No GST + foreign currency | `OPINPUT:Out Of Scope Purchases` |
+| No GST + SGD | `NRINPUT:Purchases from Non-GST Registered Suppliers` |
+
+### Category Mappings
+
+**Volopay**: Software, Equipment & hardware, Entertainment
+
+**Xero**:
+- Software → Computer Software (463)
+- IMDA VIBE / "for class" → Cost of Sales (320)
+- Hardware → Computer Hardware & Accessories (464)
+
+## Invoices (Xero Claim Bills)
+
+An alternative to Volopay: the receipts.soon.sg **Invoices** tab turns ready-to-claim
+items into monthly DRAFT bills in Xero (payee "Soon Yin Jie"), split into GST /
+non-GST / transport, with receipts attached. After a push, receipts are tagged
+`xeroInvoiceId` (so they drop off the tab) and the linked YNAB `TODO:` memos become
+`CLAIMED:`.
+
+- Worker: `upload-app/worker/xero.ts` (OAuth 2.0 over raw fetch, refresh-token
+  rotation in the `XERO_TOKENS` KV namespace, bill creation + attachments) and the
+  `/xero/*` routes in `upload-app/worker/index.ts`.
+- UI: `upload-app/src/{index.html,main.js,style.css}` (the Invoices tab + editor).
+- Config: `wrangler.toml` (`XERO_TOKENS` KV + `XERO_SCOPES` / `XERO_INPUT_TAXTYPE`
+  vars); secrets `XERO_CLIENT_ID` / `XERO_CLIENT_SECRET` (same Xero app as the local
+  `xero/` project). Local secrets template: `upload-app/.dev.vars.example`.
+
+Account/tax-code rules match the Volopay section above (amounts are tax-inclusive
+SGD; `INPUTY24` only when the receipt shows explicit GST). Xero attachment caps
+(3 MB/file, 10/bill) are handled by merging receipts into chunked combined PDFs;
+HEIC/WEBP can't be embedded and are flagged for manual upload. Full setup and usage:
+`.claude/skills/claim-invoices/SKILL.md`. Do not deploy to the live worker without
+the user's go-ahead.
+
+## Gmail Receipt Export
+
+Use the ride Gmail receipt export skill when the user needs missing Grab or Gojek ride receipts from Gmail. It uses `gog` against `yjsoon@gmail.com`, decodes the receipt HTML, and renders a clean PDF with Playwright:
+
+```bash
+cd scripts
+npm run export:grab -- --since-last-exported --label-exported --max 20
+npm run export:gojek -- --since-last-exported --label-exported --max 20
+```
+
+By default, repeat exports should start after the newest provider receipt already labelled `exported`; add `--label-exported` only after a PDF has rendered successfully. GrabFood / Grab Food receipts are ignored unless the user explicitly asks for food claims. Generated PDFs go to `~/Downloads` by default and are named `grab_YYYY-MM-DD_AMOUNT.pdf` or `gojek_YYYY-MM-DD_AMOUNT.pdf`. Do not commit exported receipt PDFs. Use them for the receipt uploader or claim processing flow.
+
+### API Authentication
+
+All receipt worker endpoints require the `X-Auth-Token` header:
+
+```bash
+curl -H "X-Auth-Token: $R2_PASSWORD" "https://receipts.yourdomain.com/list"
+```
+
+The password is stored in `.env` as `R2_PASSWORD` and must match the worker's `AUTH_PASSWORD` secret.
+
+### Gemini Amount Tagging
+
+Receipt amount tagging uses Google Gemini via Worker secret `GEMINI_API_KEY`.
+
+- Default model: `gemini-3-flash-preview`
+- Optional override: Worker secret `GEMINI_MODEL`
+- Batch backfill endpoint: `POST /amount-tags/pending?limit=3`
+- Manual receipt date override endpoint: `PATCH /receipt/:key/receipt-date`
+- Gemini also stores best-effort `taggedVendor` and `taggedPurpose` labels per receipt
+- For USD receipts, store SGD approximations:
+  - day-rate conversion
+  - day-rate conversion plus 3.25%
+
+### Common Pitfalls
+
+1. **Auth header name**: Use `X-Auth-Token`, not `Authorization` or `X-Auth-Password`
+2. **Worker URL**: Read from `.env` - don't hardcode; user may have custom domain
+3. **YNAB amounts**: In milliunits - divide by 1000 for actual dollars
+4. **Transfer duplicates**: Filter for `amount < 0` to avoid counting transfers twice
+5. **Gemini model name**: Use `gemini-3-flash-preview` (hyphenated), not dotted/underscored variants

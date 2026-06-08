@@ -1,6 +1,8 @@
 import { getAssetFromKV } from '@cloudflare/kv-asset-handler';
 // @ts-ignore
 import manifestJSON from '__STATIC_CONTENT_MANIFEST';
+import * as xero from './xero';
+import { PDFDocument } from 'pdf-lib';
 
 const assetManifest = JSON.parse(manifestJSON);
 
@@ -52,6 +54,13 @@ interface Env {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
+  // Xero integration (see worker/xero.ts). Client id/secret are secrets;
+  // XERO_TOKENS stores the rotating refresh token.
+  XERO_TOKENS: KVNamespace;
+  XERO_CLIENT_ID: string;
+  XERO_CLIENT_SECRET: string;
+  XERO_SCOPES?: string;
+  XERO_INPUT_TAXTYPE?: string;
 }
 
 interface YnabTransaction {
@@ -117,6 +126,16 @@ interface LinkedClaimPayload {
   date?: string;
 }
 
+interface PushLineItem {
+  receiptKey: string;
+  ynabClaimId?: string | null;
+  date: string;
+  description: string;
+  accountCode: string;
+  taxType: string;
+  amount: number;
+}
+
 interface ReceiptSummary {
   key: string;
   size: number;
@@ -146,6 +165,9 @@ interface ReceiptSummary {
   taggedFxRateUsdSgd?: number;
   taggedAmountSgdApprox?: number;
   taggedAmountSgdApproxPlus325?: number;
+  // Set once a Xero draft bill has been created for this receipt.
+  xeroInvoiceId?: string;
+  invoicedAt?: string;
 }
 
 interface ReceiptListResult {
@@ -414,6 +436,8 @@ async function listReceiptSummaries(
         taggedFxRateUsdSgd: parseMetadataNumber(metadata.taggedFxRateUsdSgd),
         taggedAmountSgdApprox: parseMetadataNumber(metadata.taggedAmountSgdApprox),
         taggedAmountSgdApproxPlus325: parseMetadataNumber(metadata.taggedAmountSgdApproxPlus325),
+        xeroInvoiceId: metadata.xeroInvoiceId,
+        invoicedAt: metadata.invoicedAt,
       };
     }
   );
@@ -864,6 +888,194 @@ function validateAuth(request: Request, env: Env): boolean {
   return token === env.AUTH_PASSWORD;
 }
 
+function parseCookie(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=');
+    if (key === name) {
+      const raw = rest.join('=');
+      try {
+        return decodeURIComponent(raw);
+      } catch {
+        return raw; // tolerate a malformed cookie value rather than throwing
+      }
+    }
+  }
+  return null;
+}
+
+// --- Xero claim-bill push: attachment building + YNAB cleanup --------------
+
+const XERO_ATTACH_MAX_BYTES = 3 * 1024 * 1024;
+const XERO_ATTACH_MAX_COUNT = 10;
+const COMBINED_PDF_CHUNK_BYTES = Math.floor(2.6 * 1024 * 1024);
+const EMBEDDABLE_MIME = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']);
+
+const EXT_MIME: Record<string, string> = {
+  '.pdf': 'application/pdf', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+  '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.heic': 'image/heic', '.heif': 'image/heif',
+};
+const MIME_EXT: Record<string, string> = {
+  'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/jpg': '.jpg',
+  'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
+  'image/heic': '.heic', 'image/heif': '.heif',
+};
+
+function sanitiseFileName(value: string): string {
+  return value.replace(/[^a-zA-Z0-9 _.-]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+interface ReceiptFile {
+  key: string;
+  name: string;
+  bytes: ArrayBuffer;
+  mime: string;
+}
+
+async function loadReceiptFile(env: Env, key: string, label: string): Promise<ReceiptFile | null> {
+  const obj = await env.RECEIPTS.get(key);
+  if (!obj) return null;
+  const bytes = await obj.arrayBuffer();
+  // Strip any MIME parameters (e.g. "image/jpeg; charset=binary") before comparison.
+  const rawMime = obj.httpMetadata?.contentType || EXT_MIME[getExtension(key)] || 'application/octet-stream';
+  const mime = rawMime.split(';')[0].trim().toLowerCase();
+  const ext = MIME_EXT[mime] || getExtension(key) || '';
+  const base = sanitiseFileName(label).slice(0, 80) || sanitiseFileName(key) || 'receipt';
+  return { key, name: `${base}${ext}`, bytes, mime };
+}
+
+async function buildCombinedPdf(files: ReceiptFile[]): Promise<{ bytes: Uint8Array; skipped: string[] }> {
+  const doc = await PDFDocument.create();
+  const skipped: string[] = [];
+  for (const f of files) {
+    try {
+      if (f.mime === 'application/pdf') {
+        const src = await PDFDocument.load(f.bytes, { ignoreEncryption: true });
+        const pages = await doc.copyPages(src, src.getPageIndices());
+        pages.forEach((p) => doc.addPage(p));
+      } else if (f.mime === 'image/png') {
+        const img = await doc.embedPng(f.bytes);
+        doc.addPage([img.width, img.height]).drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+      } else if (f.mime === 'image/jpeg' || f.mime === 'image/jpg') {
+        const img = await doc.embedJpg(f.bytes);
+        doc.addPage([img.width, img.height]).drawImage(img, { x: 0, y: 0, width: img.width, height: img.height });
+      }
+    } catch (_err) {
+      skipped.push(f.name);
+    }
+  }
+  return { bytes: await doc.save(), skipped };
+}
+
+interface AttachmentUpload {
+  name: string;
+  bytes: ArrayBuffer | Uint8Array;
+  mime: string;
+}
+
+// Prepares receipt attachments within Xero's caps (3 MB each, 10 per bill).
+// Within caps -> individual named files; otherwise merge embeddable receipts
+// into chunked combined PDFs and warn about anything that can't be attached.
+async function buildClaimAttachments(
+  env: Env,
+  lineItems: PushLineItem[],
+  bucketLabel: string
+): Promise<{ uploads: AttachmentUpload[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  const files: ReceiptFile[] = [];
+
+  for (const li of lineItems) {
+    if (!li.receiptKey || seen.has(li.receiptKey)) continue;
+    seen.add(li.receiptKey);
+    const file = await loadReceiptFile(env, li.receiptKey, `${li.date || ''} ${li.description || ''}`);
+    if (!file) {
+      warnings.push(`Receipt not found, skipped: ${li.receiptKey}`);
+      continue;
+    }
+    files.push(file);
+  }
+
+  // Only PDF/JPG/PNG can be attached — uploaded raw when within caps, or merged
+  // into a combined PDF otherwise. Anything else (HEIC/HEIF/WEBP/GIF/TIFF), or any
+  // file over the 3 MB per-attachment cap, is flagged up front for manual upload.
+  const supported: ReceiptFile[] = [];
+  for (const f of files) {
+    if (!EMBEDDABLE_MIME.has(f.mime)) {
+      warnings.push(`Not attachable (${f.mime}); re-upload as PDF/JPG/PNG: ${f.name}`);
+    } else if (f.bytes.byteLength > XERO_ATTACH_MAX_BYTES) {
+      warnings.push(`Too large to attach (${(f.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB > 3 MB); attach manually: ${f.name}`);
+    } else {
+      supported.push(f);
+    }
+  }
+
+  // Within the count cap: attach individually with logical names (all are <=3 MB).
+  if (supported.length <= XERO_ATTACH_MAX_COUNT) {
+    return { uploads: supported.map((f) => ({ name: f.name, bytes: f.bytes, mime: f.mime })), warnings };
+  }
+
+  // Otherwise merge into chunked combined PDFs (all remaining files are embeddable).
+  const groups: ReceiptFile[][] = [];
+  let current: ReceiptFile[] = [];
+  let currentBytes = 0;
+  for (const f of supported) {
+    if (current.length > 0 && currentBytes + f.bytes.byteLength > COMBINED_PDF_CHUNK_BYTES) {
+      groups.push(current);
+      current = [];
+      currentBytes = 0;
+    }
+    current.push(f);
+    currentBytes += f.bytes.byteLength;
+  }
+  if (current.length > 0) groups.push(current);
+
+  const uploads: AttachmentUpload[] = [];
+  for (let i = 0; i < groups.length; i++) {
+    const { bytes: pdf, skipped } = await buildCombinedPdf(groups[i]);
+    for (const s of skipped) warnings.push(`Could not embed ${s} into the combined PDF; attach it manually.`);
+    if (pdf.byteLength > XERO_ATTACH_MAX_BYTES) {
+      warnings.push(`Combined receipts PDF ${i + 1} exceeds 3 MB; attach those receipts manually.`);
+      continue;
+    }
+    const name = groups.length === 1
+      ? `${bucketLabel} receipts.pdf`
+      : `${bucketLabel} receipts ${i + 1} of ${groups.length}.pdf`;
+    uploads.push({ name, bytes: pdf, mime: 'application/pdf' });
+  }
+
+  if (uploads.length > XERO_ATTACH_MAX_COUNT) {
+    warnings.push(`More than ${XERO_ATTACH_MAX_COUNT} attachments; only the first ${XERO_ATTACH_MAX_COUNT} were uploaded.`);
+    uploads.length = XERO_ATTACH_MAX_COUNT;
+  }
+  return { uploads, warnings };
+}
+
+// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED: ...".
+async function markYnabClaimed(env: Env, transactionId: string): Promise<'claimed' | 'skipped' | 'failed'> {
+  if (transactionId.includes('_st_')) return 'skipped'; // subtransaction: update manually
+  try {
+    const base = `https://api.ynab.com/v1/budgets/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
+    const getRes = await fetch(base, { headers: { Authorization: `Bearer ${env.YNAB_API_KEY}` } });
+    if (!getRes.ok) return 'failed';
+    const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
+    const memo = getData.data?.transaction?.memo || '';
+    if (/^\s*CLAIMED:/i.test(memo)) return 'claimed'; // already done
+    const newMemo = /^\s*TODO:?/i.test(memo)
+      ? memo.replace(/^\s*TODO:?\s*/i, 'CLAIMED: ')
+      : `CLAIMED: ${memo}`.trim();
+    const putRes = await fetch(base, {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ transaction: { memo: newMemo } }),
+    });
+    return putRes.ok ? 'claimed' : 'failed';
+  } catch (_err) {
+    return 'failed';
+  }
+}
+
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
@@ -884,10 +1096,14 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Check auth for API routes
-    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
-      (route) => path === route || path.startsWith(route)
-    );
+    // Check auth for API routes. /xero/* is gated too, EXCEPT /xero/callback,
+    // which Xero itself calls and which is trusted via its one-time state cookie.
+    // (/xero/connect is a header-authed POST so the auth token never lands in a URL.)
+    const isApiRoute =
+      ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
+        (route) => path === route || path.startsWith(route)
+      ) ||
+      (path.startsWith('/xero/') && path !== '/xero/callback');
 
     if (isApiRoute && !validateAuth(request, env)) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -1263,6 +1479,230 @@ export default {
           const message = error instanceof Error ? error.message : 'Failed to build agent claim report';
           return new Response(JSON.stringify({ error: message }), {
             status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // --- Xero integration ---------------------------------------------
+
+      // POST /xero/connect - begin the OAuth flow. Header-authed (X-Auth-Token,
+      // via the API-route gate); returns the authorize URL for the SPA to
+      // navigate to. The CSRF state is set as an HttpOnly cookie (not KV) so the
+      // callback can verify it without depending on KV propagation, and the auth
+      // token never appears in a navigable URL.
+      if (path === '/xero/connect' && request.method === 'POST') {
+        if (!env.XERO_CLIENT_ID || !env.XERO_CLIENT_SECRET || !env.XERO_TOKENS) {
+          return new Response(
+            JSON.stringify({
+              error:
+                'Xero is not configured on this deployment (needs the XERO_CLIENT_ID/XERO_CLIENT_SECRET secrets and the XERO_TOKENS KV binding — see setup).',
+            }),
+            { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        }
+        const state = crypto.randomUUID();
+        const authorizeUrl = xero.buildAuthorizeUrl(env, request.url, state);
+        const secure = url.protocol === 'https:' ? '; Secure' : '';
+        return new Response(JSON.stringify({ authorizeUrl }), {
+          headers: {
+            ...corsHeaders,
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+            'Referrer-Policy': 'no-referrer',
+            'Set-Cookie': `xero_oauth_state=${state}; HttpOnly; SameSite=Lax; Path=/; Max-Age=600${secure}`,
+          },
+        });
+      }
+
+      // GET /xero/callback - OAuth redirect target. Trusted via the one-time
+      // state cookie set by /xero/connect (Xero calls this directly).
+      if (path === '/xero/callback' && request.method === 'GET') {
+        // The callback URL carries the one-time OAuth code — keep it out of
+        // caches and referrers.
+        const noLeak = { ...corsHeaders, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' };
+        const oauthError = url.searchParams.get('error');
+        if (oauthError) {
+          return new Response(`Xero authorisation failed: ${oauthError}`, { status: 400, headers: noLeak });
+        }
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        const cookieState = parseCookie(request.headers.get('Cookie'), 'xero_oauth_state');
+        if (!code || !state || !cookieState || state !== cookieState) {
+          return new Response('Invalid or expired authorisation state.', { status: 400, headers: noLeak });
+        }
+        try {
+          await xero.exchangeCode(env, request.url, code);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Xero token exchange failed';
+          return new Response(message, { status: 502, headers: noLeak });
+        }
+        return new Response(null, {
+          status: 302,
+          headers: {
+            ...noLeak,
+            Location: `${url.origin}/?xero=connected#invoices`,
+            'Set-Cookie': 'xero_oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
+          },
+        });
+      }
+
+      // GET /xero/status - connection status for the UI
+      if (path === '/xero/status' && request.method === 'GET') {
+        return new Response(JSON.stringify(await xero.getStatus(env)), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // POST /xero/disconnect - forget stored tokens
+      if (path === '/xero/disconnect' && request.method === 'POST') {
+        await xero.clearAuth(env);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // GET /xero/meta - tax rates + expense accounts for the editor dropdowns
+      if (path === '/xero/meta' && request.method === 'GET') {
+        try {
+          const [taxRates, accounts] = await Promise.all([xero.getTaxRates(env), xero.getExpenseAccounts(env)]);
+          return new Response(JSON.stringify({ taxRates, accounts }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Failed to load Xero metadata';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 502,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // POST /xero/invoices/push - create a DRAFT bill, attach receipts,
+      // tag the receipts as invoiced, and flip linked YNAB TODOs to CLAIMED.
+      if (path === '/xero/invoices/push' && request.method === 'POST') {
+        try {
+          const body = (await request.json()) as {
+            bucket?: string;
+            reference?: string;
+            markClaimed?: boolean;
+            lineItems?: PushLineItem[];
+          };
+          const lineItems = (Array.isArray(body.lineItems) ? body.lineItems : [])
+            .filter(
+              (l) =>
+                l &&
+                typeof l.receiptKey === 'string' && l.receiptKey &&
+                typeof l.description === 'string' && l.description.trim() &&
+                typeof l.accountCode === 'string' && l.accountCode &&
+                typeof l.taxType === 'string' && l.taxType &&
+                Number(l.amount) > 0
+            )
+            .map((l) => ({
+              receiptKey: l.receiptKey,
+              ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
+              date: typeof l.date === 'string' ? l.date : '',
+              description: l.description.trim(),
+              accountCode: l.accountCode,
+              taxType: l.taxType,
+              amount: Number(l.amount),
+            }));
+          if (lineItems.length === 0) {
+            return new Response(JSON.stringify({ error: 'No valid line items to invoice (each needs a positive amount, account and tax code)' }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
+          // Bill date in Singapore time — toISOString() is UTC and would backdate
+          // the bill by a day when pushing between 00:00 and 07:59 SGT.
+          const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
+          // Deterministic key over the full line shape (sorted, order-independent):
+          // an identical re-push dedupes, but editing account/tax/description/amount
+          // produces a new key so edits aren't silently swallowed by Xero.
+          const lineKeys = lineItems
+            .map((l) => `${l.receiptKey}:${Number(l.amount).toFixed(2)}:${l.accountCode}:${l.taxType}:${l.description}`)
+            .sort();
+          const idem = await xero.idempotencyKey(['claim-bill', body.bucket || '', body.reference || '', ...lineKeys]);
+
+          const bill = await xero.createBill(env, {
+            contactName: 'Soon Yin Jie',
+            date: today,
+            reference: body.reference || `${bucketLabel} claims`,
+            idempotencyKey: idem,
+            lineItems: lineItems.map((l) => ({
+              description: l.description,
+              accountCode: l.accountCode,
+              taxType: l.taxType,
+              amount: Number(l.amount),
+            })),
+          });
+
+          // Attach receipts serially (Xero allows 5 concurrent; serial is safe).
+          const { uploads, warnings } = await buildClaimAttachments(env, lineItems, `${bucketLabel} ${today}`);
+          const attachments: Array<{ name: string; status: string }> = [];
+          for (const up of uploads) {
+            try {
+              await xero.attachToInvoice(env, bill.invoiceID, up.name, up.bytes, up.mime);
+              attachments.push({ name: up.name, status: 'attached' });
+            } catch (err) {
+              attachments.push({ name: up.name, status: `failed: ${err instanceof Error ? err.message : 'error'}` });
+            }
+          }
+
+          // "Fully attached" means buildClaimAttachments dropped nothing
+          // (unattachable type, missing, oversize, embed/merge failure all add a
+          // warning) AND every upload succeeded. Only then do we mark items done;
+          // otherwise leave them in the Invoices tab (untagged, YNAB still TODO)
+          // so the user can retry — the deterministic idempotency key reuses this
+          // draft rather than creating a duplicate.
+          const failedUploads = attachments.filter((a) => a.status !== 'attached');
+          const allAttached = warnings.length === 0 && failedUploads.length === 0;
+
+          const claimedYnab: Array<{ id: string; status: string }> = [];
+          if (allAttached) {
+            // Tag receipts as invoiced so they drop off the Invoices tab.
+            const invoicedAt = new Date().toISOString();
+            const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
+            for (const key of uniqueKeys) {
+              await patchReceiptMetadata(env, key, { xeroInvoiceId: bill.invoiceID, invoicedAt });
+            }
+            // Flip linked YNAB TODOs to CLAIMED.
+            if (body.markClaimed !== false) {
+              const claimIds = Array.from(
+                new Set(
+                  lineItems
+                    .map((l) => l.ynabClaimId)
+                    .filter((id): id is string => typeof id === 'string' && id.length > 0)
+                )
+              );
+              for (const id of claimIds) {
+                claimedYnab.push({ id, status: await markYnabClaimed(env, id) });
+              }
+            }
+          } else {
+            warnings.push(
+              'Not every receipt was attached (see the attachment notes), so the receipts were left in the Invoices tab and YNAB was not marked CLAIMED. Review the draft bill in Xero, attach anything missing, then retry (the same draft is reused).'
+            );
+          }
+
+          return new Response(
+            JSON.stringify({
+              invoiceID: bill.invoiceID,
+              invoiceNumber: bill.invoiceNumber,
+              url: bill.url,
+              allAttached,
+              attachments,
+              claimedYnab,
+              warnings,
+            }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Failed to push invoice to Xero';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
