@@ -64,6 +64,7 @@ export function redirectUri(requestUrl: string): string {
 }
 
 async function loadAuth(env: XeroEnv): Promise<XeroAuth | null> {
+  if (!env.XERO_TOKENS) return null; // KV binding not configured on this deployment
   if (cachedAuth !== undefined) return cachedAuth;
   const raw = await env.XERO_TOKENS.get(TOKENS_KEY);
   cachedAuth = raw ? (JSON.parse(raw) as XeroAuth) : null;
@@ -170,6 +171,9 @@ async function refreshAuth(env: XeroEnv, failedAccessToken?: string): Promise<Xe
 // Loads stored auth and refreshes proactively when the access token is within
 // EXPIRY_BUFFER_SECONDS of expiry. Call once up front for a batch of requests.
 export async function getValidAuth(env: XeroEnv): Promise<XeroAuth> {
+  if (!env.XERO_TOKENS) {
+    throw new Error('Xero is not configured on this deployment (the XERO_TOKENS KV binding is missing — see setup).');
+  }
   const auth = await loadAuth(env);
   if (!auth) {
     throw new Error('Xero is not connected. Open the Invoices tab and click "Connect Xero".');
@@ -262,13 +266,16 @@ export async function getTaxRates(env: XeroEnv): Promise<XeroTaxRate[]> {
 }
 
 export async function getExpenseAccounts(env: XeroEnv): Promise<XeroAccount[]> {
-  const res = await xeroFetch(env, '/Accounts?where=' + encodeURIComponent('Class=="EXPENSE"'));
+  // Fetch all accounts and filter by Class in code — robust regardless of which
+  // fields the Accounts `where` clause supports, and Class=="EXPENSE" correctly
+  // includes Cost of Sales (Type DIRECTCOSTS), which Type=="EXPENSE" would miss.
+  const res = await xeroFetch(env, '/Accounts');
   if (!res.ok) throw new Error(`Xero /Accounts ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = (await res.json()) as {
-    Accounts?: Array<{ Code?: string; Name?: string; Type?: string; TaxType?: string; Status?: string }>;
+    Accounts?: Array<{ Code?: string; Name?: string; Type?: string; Class?: string; TaxType?: string; Status?: string }>;
   };
   return (data.Accounts || [])
-    .filter((a) => a.Code && (a.Status || 'ACTIVE') === 'ACTIVE')
+    .filter((a) => a.Code && (a.Status || 'ACTIVE') === 'ACTIVE' && (a.Class || '').toUpperCase() === 'EXPENSE')
     .map((a) => ({ code: a.Code as string, name: a.Name || '', type: a.Type || '', taxType: a.TaxType }));
 }
 

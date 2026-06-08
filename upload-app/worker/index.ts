@@ -1478,10 +1478,13 @@ export default {
       // callback can verify it without depending on KV propagation, and the auth
       // token never appears in a navigable URL.
       if (path === '/xero/connect' && request.method === 'POST') {
-        if (!env.XERO_CLIENT_ID || !env.XERO_CLIENT_SECRET) {
+        if (!env.XERO_CLIENT_ID || !env.XERO_CLIENT_SECRET || !env.XERO_TOKENS) {
           return new Response(
-            JSON.stringify({ error: 'Xero is not configured (missing XERO_CLIENT_ID/XERO_CLIENT_SECRET).' }),
-            { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            JSON.stringify({
+              error:
+                'Xero is not configured on this deployment (needs the XERO_CLIENT_ID/XERO_CLIENT_SECRET secrets and the XERO_TOKENS KV binding — see setup).',
+            }),
+            { status: 503, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
         const state = crypto.randomUUID();
@@ -1569,10 +1572,10 @@ export default {
             lineItems?: PushLineItem[];
           };
           const lineItems = (Array.isArray(body.lineItems) ? body.lineItems : []).filter(
-            (l) => l && l.receiptKey && Number.isFinite(Number(l.amount)) && l.accountCode && l.taxType
+            (l) => l && l.receiptKey && Number(l.amount) > 0 && l.accountCode && l.taxType
           );
           if (lineItems.length === 0) {
-            return new Response(JSON.stringify({ error: 'No valid line items to invoice' }), {
+            return new Response(JSON.stringify({ error: 'No valid line items to invoice (each needs a positive amount, account and tax code)' }), {
               status: 400,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
