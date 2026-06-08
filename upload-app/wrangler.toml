@@ -12,6 +12,19 @@ routes = [
 binding = "RECEIPTS"
 bucket_name = "receipts"
 
+# KV namespace for Xero OAuth tokens (rotating refresh token + tenant id).
+# Create it once and paste the id below:
+#   npx wrangler kv namespace create XERO_TOKENS
+[[kv_namespaces]]
+binding = "XERO_TOKENS"
+id = "REPLACE_WITH_XERO_TOKENS_KV_ID"
+
+# Non-secret Xero config. Secrets (XERO_CLIENT_ID, XERO_CLIENT_SECRET) are set
+# via `wrangler secret put` (prod) or .dev.vars (local) — never committed.
+[vars]
+XERO_SCOPES = "openid profile email accounting.transactions accounting.contacts accounting.attachments accounting.settings.read offline_access"
+XERO_INPUT_TAXTYPE = "INPUTY24"
+
 # Serve static files from src/
 [site]
 bucket = "./src"

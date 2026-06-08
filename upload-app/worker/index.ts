@@ -1,6 +1,7 @@
 import { getAssetFromKV } from '@cloudflare/kv-asset-handler';
 // @ts-ignore
 import manifestJSON from '__STATIC_CONTENT_MANIFEST';
+import * as xero from './xero';
 
 const assetManifest = JSON.parse(manifestJSON);
 
@@ -52,6 +53,13 @@ interface Env {
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
+  // Xero integration (see worker/xero.ts). Client id/secret are secrets;
+  // XERO_TOKENS stores the rotating refresh token.
+  XERO_TOKENS: KVNamespace;
+  XERO_CLIENT_ID: string;
+  XERO_CLIENT_SECRET: string;
+  XERO_SCOPES?: string;
+  XERO_INPUT_TAXTYPE?: string;
 }
 
 interface YnabTransaction {
@@ -884,10 +892,15 @@ export default {
       return new Response(null, { headers: corsHeaders });
     }
 
-    // Check auth for API routes
-    const isApiRoute = ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
-      (route) => path === route || path.startsWith(route)
-    );
+    // Check auth for API routes. /xero/* is gated too, EXCEPT the OAuth
+    // browser-navigation endpoints: /xero/connect self-authenticates via a
+    // ?token= query param (the X-Auth-Token header isn't sent on top-level
+    // navigations) and /xero/callback is trusted via its one-time state token.
+    const isApiRoute =
+      ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
+        (route) => path === route || path.startsWith(route)
+      ) ||
+      (path.startsWith('/xero/') && path !== '/xero/connect' && path !== '/xero/callback');
 
     if (isApiRoute && !validateAuth(request, env)) {
       return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -1263,6 +1276,76 @@ export default {
           const message = error instanceof Error ? error.message : 'Failed to build agent claim report';
           return new Response(JSON.stringify({ error: message }), {
             status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // --- Xero integration ---------------------------------------------
+
+      // GET /xero/connect - begin the OAuth flow. Browser navigation, so auth
+      // comes from ?token= (matching AUTH_PASSWORD) rather than a header.
+      if (path === '/xero/connect' && request.method === 'GET') {
+        if (url.searchParams.get('token') !== env.AUTH_PASSWORD) {
+          return new Response('Unauthorized', { status: 401, headers: corsHeaders });
+        }
+        if (!env.XERO_CLIENT_ID || !env.XERO_CLIENT_SECRET) {
+          return new Response('Xero is not configured (missing XERO_CLIENT_ID/XERO_CLIENT_SECRET).', {
+            status: 500,
+            headers: corsHeaders,
+          });
+        }
+        const state = await xero.createState(env);
+        return Response.redirect(xero.buildAuthorizeUrl(env, request.url, state), 302);
+      }
+
+      // GET /xero/callback - OAuth redirect target. Trusted via the one-time
+      // state token, not the auth header (Xero calls this directly).
+      if (path === '/xero/callback' && request.method === 'GET') {
+        const oauthError = url.searchParams.get('error');
+        if (oauthError) {
+          return new Response(`Xero authorisation failed: ${oauthError}`, { status: 400, headers: corsHeaders });
+        }
+        const code = url.searchParams.get('code');
+        const state = url.searchParams.get('state');
+        if (!code || !(await xero.consumeState(env, state))) {
+          return new Response('Invalid or expired authorisation state.', { status: 400, headers: corsHeaders });
+        }
+        try {
+          await xero.exchangeCode(env, request.url, code);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Xero token exchange failed';
+          return new Response(message, { status: 502, headers: corsHeaders });
+        }
+        return Response.redirect(`${url.origin}/?xero=connected#invoices`, 302);
+      }
+
+      // GET /xero/status - connection status for the UI
+      if (path === '/xero/status' && request.method === 'GET') {
+        return new Response(JSON.stringify(await xero.getStatus(env)), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // POST /xero/disconnect - forget stored tokens
+      if (path === '/xero/disconnect' && request.method === 'POST') {
+        await xero.clearAuth(env);
+        return new Response(JSON.stringify({ success: true }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // GET /xero/meta - tax rates + expense accounts for the editor dropdowns
+      if (path === '/xero/meta' && request.method === 'GET') {
+        try {
+          const [taxRates, accounts] = await Promise.all([xero.getTaxRates(env), xero.getExpenseAccounts(env)]);
+          return new Response(JSON.stringify({ taxRates, accounts }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Failed to load Xero metadata';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
