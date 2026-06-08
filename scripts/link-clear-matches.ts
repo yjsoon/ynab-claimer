@@ -69,7 +69,9 @@ function parseArgs(argv: string[]): Args {
     } else if (arg === '--allow-upload-date') {
       args.allowUploadDate = true;
     } else if (arg === '--since-date') {
-      args.sinceDate = argv[++i];
+      const value = argv[++i];
+      if (!value) throw new Error('--since-date requires a value (YYYY-MM-DD)');
+      args.sinceDate = value;
     } else if (arg.startsWith('--since-date=')) {
       args.sinceDate = arg.slice('--since-date='.length);
     } else if (arg === '--near-days') {

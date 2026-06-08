@@ -67,7 +67,17 @@ async function loadAuth(env: XeroEnv): Promise<XeroAuth | null> {
   if (!env.XERO_TOKENS) return null; // KV binding not configured on this deployment
   if (cachedAuth !== undefined) return cachedAuth;
   const raw = await env.XERO_TOKENS.get(TOKENS_KEY);
-  cachedAuth = raw ? (JSON.parse(raw) as XeroAuth) : null;
+  if (!raw) {
+    cachedAuth = null;
+    return cachedAuth;
+  }
+  try {
+    cachedAuth = JSON.parse(raw) as XeroAuth;
+  } catch {
+    // Corrupted token blob — treat as disconnected and clear it so the user can reconnect.
+    cachedAuth = null;
+    await env.XERO_TOKENS.delete(TOKENS_KEY);
+  }
   return cachedAuth;
 }
 
