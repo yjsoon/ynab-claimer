@@ -13,6 +13,7 @@
     "wrangler": "^4.54.0"
   },
   "dependencies": {
-    "@cloudflare/kv-asset-handler": "^0.4.1"
+    "@cloudflare/kv-asset-handler": "^0.4.1",
+    "pdf-lib": "^1.17.1"
   }
 }

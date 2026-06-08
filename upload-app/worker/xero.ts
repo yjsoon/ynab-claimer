@@ -270,3 +270,96 @@ export async function getExpenseAccounts(env: XeroEnv): Promise<XeroAccount[]> {
     .filter((a) => a.Code && (a.Status || 'ACTIVE') === 'ACTIVE')
     .map((a) => ({ code: a.Code as string, name: a.Name || '', type: a.Type || '', taxType: a.TaxType }));
 }
+
+// --- Create bill + attach receipts ------------------------------------------
+
+export interface XeroBillLine {
+  description: string;
+  accountCode: string;
+  taxType: string; // INPUTY24 | NRINPUT | OPINPUT (INPUTY24 is mapped per tenant)
+  amount: number; // tax-inclusive SGD
+}
+
+export interface XeroBillInput {
+  contactName: string;
+  date: string; // YYYY-MM-DD
+  reference?: string;
+  lineItems: XeroBillLine[];
+  idempotencyKey?: string;
+}
+
+export interface XeroBillResult {
+  invoiceID: string;
+  invoiceNumber: string;
+  url: string;
+}
+
+// Creates a DRAFT ACCPAY (bill). Line amounts are tax-inclusive so Xero
+// back-computes GST on standard-rated lines. Contact is matched/created by name.
+export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<XeroBillResult> {
+  const inputTaxType = env.XERO_INPUT_TAXTYPE || 'INPUTY24';
+  const body = {
+    Type: 'ACCPAY',
+    Contact: { Name: bill.contactName },
+    Date: bill.date,
+    DueDate: bill.date,
+    Status: 'DRAFT',
+    Reference: bill.reference || '',
+    LineAmountTypes: 'Inclusive',
+    LineItems: bill.lineItems.map((l) => ({
+      Description: l.description,
+      Quantity: 1,
+      UnitAmount: Number(l.amount.toFixed(2)),
+      AccountCode: l.accountCode,
+      // The frontend uses the logical 'INPUTY24'; map to the tenant's actual code.
+      TaxType: l.taxType === 'INPUTY24' ? inputTaxType : l.taxType,
+    })),
+  };
+
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (bill.idempotencyKey) headers['Idempotency-Key'] = bill.idempotencyKey;
+
+  const res = await xeroFetch(env, '/Invoices?summarizeErrors=false', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    throw new Error(`Xero create bill ${res.status}: ${(await res.text()).slice(0, 400)}`);
+  }
+  const data = (await res.json()) as { Invoices?: Array<{ InvoiceID?: string; InvoiceNumber?: string }> };
+  const inv = data.Invoices && data.Invoices[0];
+  if (!inv || !inv.InvoiceID) throw new Error('Xero did not return an invoice id');
+  return {
+    invoiceID: inv.InvoiceID,
+    invoiceNumber: inv.InvoiceNumber || '',
+    url: `https://go.xero.com/app/invoicing/view/${inv.InvoiceID}`,
+  };
+}
+
+// Uploads a single attachment (raw bytes) to an invoice. Xero limits: 3 MB per
+// attachment, 10 per document — the caller is responsible for staying within.
+export async function attachToInvoice(
+  env: XeroEnv,
+  invoiceID: string,
+  fileName: string,
+  bytes: ArrayBuffer | Uint8Array,
+  mimeType: string
+): Promise<void> {
+  const res = await xeroFetch(env, `/Invoices/${invoiceID}/Attachments/${encodeURIComponent(fileName)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': mimeType },
+    body: bytes as BodyInit,
+  });
+  if (!res.ok) {
+    throw new Error(`Xero attach ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  }
+}
+
+// Deterministic idempotency key (<=128 chars) so re-running the same push does
+// not create a duplicate bill.
+export async function idempotencyKey(parts: string[]): Promise<string> {
+  const data = new TextEncoder().encode(parts.join('|'));
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
