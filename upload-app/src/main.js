@@ -1848,7 +1848,7 @@ async function pushInvoice(bucket, btn) {
     const warnings = Array.isArray(data.warnings) ? data.warnings : [];
     const attachedCount = attachments.filter((a) => a.status === 'attached').length;
     if (data.allAttached === false) {
-      showStatus('error', `Draft bill ${data.invoiceNumber || ''} created, but ${attachments.length - attachedCount} attachment(s) failed — items kept in the tab for retry.`);
+      showStatus('error', `Draft bill ${data.invoiceNumber || ''} created, but not all receipts were attached — items kept in the tab for retry (see notes).`);
     } else {
       showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachedCount} receipts attached).`);
     }

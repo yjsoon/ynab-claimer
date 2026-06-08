@@ -998,16 +998,21 @@ async function buildClaimAttachments(
   }
 
   // Only PDF/JPG/PNG can be attached — uploaded raw when within caps, or merged
-  // into a combined PDF otherwise. Anything else (HEIC/HEIF/WEBP/GIF/TIFF) is
-  // flagged for manual re-upload as PDF/JPG/PNG.
+  // into a combined PDF otherwise. Anything else (HEIC/HEIF/WEBP/GIF/TIFF), or any
+  // file over the 3 MB per-attachment cap, is flagged up front for manual upload.
   const supported: ReceiptFile[] = [];
   for (const f of files) {
-    if (EMBEDDABLE_MIME.has(f.mime)) supported.push(f);
-    else warnings.push(`Not attachable (${f.mime}); re-upload as PDF/JPG/PNG: ${f.name}`);
+    if (!EMBEDDABLE_MIME.has(f.mime)) {
+      warnings.push(`Not attachable (${f.mime}); re-upload as PDF/JPG/PNG: ${f.name}`);
+    } else if (f.bytes.byteLength > XERO_ATTACH_MAX_BYTES) {
+      warnings.push(`Too large to attach (${(f.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB > 3 MB); attach manually: ${f.name}`);
+    } else {
+      supported.push(f);
+    }
   }
 
-  // Within caps: attach individually with logical names.
-  if (supported.length <= XERO_ATTACH_MAX_COUNT && supported.every((f) => f.bytes.byteLength <= XERO_ATTACH_MAX_BYTES)) {
+  // Within the count cap: attach individually with logical names (all are <=3 MB).
+  if (supported.length <= XERO_ATTACH_MAX_COUNT) {
     return { uploads: supported.map((f) => ({ name: f.name, bytes: f.bytes, mime: f.mime })), warnings };
   }
 
@@ -1644,12 +1649,14 @@ export default {
             }
           }
 
-          // Only mark items done when EVERY attachment uploaded. Otherwise leave
-          // the receipts in the Invoices tab (untagged, YNAB still TODO) so the
-          // user can retry — the deterministic idempotency key reuses this draft
-          // rather than creating a duplicate.
-          const failedAttachments = attachments.filter((a) => a.status !== 'attached');
-          const allAttached = failedAttachments.length === 0;
+          // "Fully attached" means buildClaimAttachments dropped nothing
+          // (unattachable type, missing, oversize, embed/merge failure all add a
+          // warning) AND every upload succeeded. Only then do we mark items done;
+          // otherwise leave them in the Invoices tab (untagged, YNAB still TODO)
+          // so the user can retry — the deterministic idempotency key reuses this
+          // draft rather than creating a duplicate.
+          const failedUploads = attachments.filter((a) => a.status !== 'attached');
+          const allAttached = warnings.length === 0 && failedUploads.length === 0;
 
           const claimedYnab: Array<{ id: string; status: string }> = [];
           if (allAttached) {
@@ -1674,7 +1681,7 @@ export default {
             }
           } else {
             warnings.push(
-              `${failedAttachments.length} attachment(s) failed to upload, so the receipts were left in the Invoices tab and YNAB was not marked CLAIMED. Review the draft bill in Xero, then retry (the same draft is reused).`
+              'Not every receipt was attached (see the attachment notes), so the receipts were left in the Invoices tab and YNAB was not marked CLAIMED. Review the draft bill in Xero, attach anything missing, then retry (the same draft is reused).'
             );
           }
 
