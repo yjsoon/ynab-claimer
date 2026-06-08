@@ -1578,11 +1578,13 @@ export default {
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
           const today = new Date().toISOString().slice(0, 10);
-          const idem = await xero.idempotencyKey([
-            'claim-bill',
-            body.bucket || '',
-            ...lineItems.map((l) => `${l.receiptKey}:${Number(l.amount).toFixed(2)}`),
-          ]);
+          // Deterministic key over the full line shape (sorted, order-independent):
+          // an identical re-push dedupes, but editing account/tax/description/amount
+          // produces a new key so edits aren't silently swallowed by Xero.
+          const lineKeys = lineItems
+            .map((l) => `${l.receiptKey}:${Number(l.amount).toFixed(2)}:${l.accountCode}:${l.taxType}:${l.description}`)
+            .sort();
+          const idem = await xero.idempotencyKey(['claim-bill', body.bucket || '', body.reference || '', ...lineKeys]);
 
           const bill = await xero.createBill(env, {
             contactName: 'Soon Yin Jie',

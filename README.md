@@ -36,7 +36,7 @@ Web app for uploading receipts and viewing pending YNAB claims.
 - `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
 - `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
 - `GET /agent/unclaimed-expenditures` - Agent report of YNAB TODO claims that do not have linked receipts yet
-- `GET /xero/connect` · `GET /xero/callback` · `GET /xero/status` · `POST /xero/disconnect` · `GET /xero/meta` · `POST /xero/invoices/push` - Xero integration for the Invoices tab (see below)
+- `POST /xero/connect` · `GET /xero/callback` · `GET /xero/status` · `POST /xero/disconnect` · `GET /xero/meta` · `POST /xero/invoices/push` - Xero integration for the Invoices tab (see below)
 
 `GET /agent/unclaimed-expenditures` accepts an optional `since_date=YYYY-MM-DD` query param and returns:
 - `summary` - counts for TODO claims, missing receipt claims, linked claims, and unlinked receipts

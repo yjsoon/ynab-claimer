@@ -51,7 +51,7 @@ link, review/approve in Xero.
 
 | Method | Path | Purpose |
 | :-- | :-- | :-- |
-| GET | `/xero/connect?token=<AUTH_PASSWORD>` | Start OAuth (browser navigation) |
+| POST | `/xero/connect` | Start OAuth (header-authed; returns `{authorizeUrl}` for the SPA to navigate to) |
 | GET | `/xero/callback` | OAuth redirect target (trusted via one-time state) |
 | GET | `/xero/status` | `{connected, tenantName}` |
 | POST | `/xero/disconnect` | Forget stored tokens |
