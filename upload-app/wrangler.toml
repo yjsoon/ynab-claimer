@@ -13,14 +13,10 @@ binding = "RECEIPTS"
 bucket_name = "receipts"
 
 # KV namespace for Xero OAuth tokens (rotating refresh token + tenant id).
-# Commented out so `wrangler deploy` (and the CI auto-deploy workflow) stays
-# green before the Invoices/Xero feature is configured. To enable it:
-#   1. npx wrangler kv namespace create XERO_TOKENS
-#   2. uncomment the three lines below and paste the returned id
-# The /xero/* endpoints return an error until this binding exists.
-# [[kv_namespaces]]
-# binding = "XERO_TOKENS"
-# id = "paste-kv-namespace-id-here"
+# Created with: npx wrangler kv namespace create XERO_TOKENS
+[[kv_namespaces]]
+binding = "XERO_TOKENS"
+id = "2435b070b98e4ac89312e6d784d66af0"
 
 # Non-secret Xero config. Secrets (XERO_CLIENT_ID, XERO_CLIENT_SECRET) are set
 # via `wrangler secret put` (prod) or .dev.vars (local) — never committed.
