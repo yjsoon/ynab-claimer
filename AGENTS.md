@@ -119,16 +119,19 @@ HEIC/WEBP can't be embedded and are flagged for manual upload. Full setup and us
 `.claude/skills/claim-invoices/SKILL.md`. Do not deploy to the live worker without
 the user's go-ahead.
 
-### GST Detection
+### Vision Tagging (Amounts + GST Detection)
 
-The GST checkbox on each invoice line defaults from an AI verdict stored on the
-receipt (`taggedGstShown` / `taggedGstAmount` / `taggedGstSource` metadata; the
-checkbox remains the manual override):
+Receipt vision tagging (amount/date/vendor/purpose extraction and GST
+detection) is provider-switched: MiniMax coding-plan VLM (`MINIMAX_API_KEY`
+secret, an `sk-cp-` key; calls are covered by the coding-plan subscription) is
+the primary for image receipts; Gemini (`GEMINI_API_KEY`) is the backup and
+always handles PDF/HEIC. Toggle via the `VISION_PROVIDER` var in `wrangler.toml`
+(`minimax` | `gemini`).
 
-- Primary provider: MiniMax coding-plan VLM (`MINIMAX_API_KEY` secret, an
-  `sk-cp-` key; calls are covered by the coding-plan subscription). Images only.
-- Backup: Gemini (`GEMINI_API_KEY`), which also handles PDF/HEIC receipts.
-- Toggle via the `GST_PROVIDER` var in `wrangler.toml` (`minimax` | `gemini`).
+The GST checkbox on each invoice line defaults from the AI verdict stored on
+the receipt (`taggedGstShown` / `taggedGstAmount` / `taggedGstSource` metadata;
+the checkbox remains the manual override):
+
 - New uploads are tagged automatically alongside amount tagging. Backfill via
   the **Detect GST** button on the Invoices tab, or
   `POST /gst-tags/pending?limit=8` (loop until `remaining` is 0); re-run one
@@ -161,9 +164,11 @@ The password is stored in `.env` as `R2_PASSWORD` and must match the worker's `A
 
 ### Gemini Amount Tagging
 
-Receipt amount tagging uses Google Gemini via Worker secret `GEMINI_API_KEY`.
+Receipt amount tagging uses MiniMax coding-plan VLM for image receipts when
+`MINIMAX_API_KEY` is set (see "Vision Tagging" below), with Google Gemini
+(Worker secret `GEMINI_API_KEY`) as backup and for PDFs/HEIC.
 
-- Default model: `gemini-3-flash-preview`
+- Default Gemini model: `gemini-3-flash-preview`
 - Optional override: Worker secret `GEMINI_MODEL`
 - Batch backfill endpoint: `POST /amount-tags/pending?limit=3`
 - Manual receipt date override endpoint: `PATCH /receipt/:key/receipt-date`

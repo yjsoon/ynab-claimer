@@ -23,10 +23,10 @@ id = "2435b070b98e4ac89312e6d784d66af0"
 [vars]
 XERO_SCOPES = "openid profile email accounting.transactions accounting.contacts accounting.attachments accounting.settings.read offline_access"
 XERO_INPUT_TAXTYPE = "INPUTY24"
-# GST detection provider: "minimax" (coding-plan VLM, image receipts; needs the
-# MINIMAX_API_KEY secret) or "gemini". Gemini remains the backup either way and
-# always handles PDFs/HEIC.
-GST_PROVIDER = "minimax"
+# Receipt vision provider for amount extraction + GST detection: "minimax"
+# (coding-plan VLM, image receipts; needs the MINIMAX_API_KEY secret) or
+# "gemini". Gemini remains the backup either way and always handles PDFs/HEIC.
+VISION_PROVIDER = "minimax"
 
 # Serve static files from src/
 [site]

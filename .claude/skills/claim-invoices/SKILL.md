@@ -48,10 +48,11 @@ the per-line **remark**; the GST / non-GST / transport buckets update live. Clic
 link, review/approve in Xero.
 
 The **GST?** toggle defaults from an AI verdict (`taggedGstShown` receipt
-metadata): MiniMax coding-plan VLM for images (`MINIMAX_API_KEY` secret), Gemini
-as backup and for PDFs/HEIC; switch with the `GST_PROVIDER` var. New uploads are
-tagged automatically; the **Detect GST** button backfills receipts without a
-verdict (or `POST /gst-tags/pending?limit=8` until `remaining` is 0).
+metadata). Vision tagging (amount extraction + GST detection) uses MiniMax
+coding-plan VLM for images (`MINIMAX_API_KEY` secret) with Gemini as backup and
+for PDFs/HEIC; switch with the `VISION_PROVIDER` var. New uploads are tagged
+automatically; the **Detect GST** button backfills receipts without a verdict
+(or `POST /gst-tags/pending?limit=8` until `remaining` is 0).
 
 ## Endpoints (worker)
 

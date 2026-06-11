@@ -17,6 +17,7 @@ AUTH_PASSWORD = "your-web-app-password"
 # YNAB_BUDGET_ID = "..."
 # GEMINI_API_KEY = "..."
 
-# Optional: MiniMax coding-plan key (sk-cp-...) for GST detection on image
-# receipts. Falls back to Gemini when missing. See GST_PROVIDER in wrangler.toml.
+# Optional: MiniMax coding-plan key (sk-cp-...) for amount extraction + GST
+# detection on image receipts. Falls back to Gemini when missing. See
+# VISION_PROVIDER in wrangler.toml.
 # MINIMAX_API_KEY = "..."

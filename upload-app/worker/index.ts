@@ -59,11 +59,12 @@ interface Env {
   YNAB_BUDGET_ID: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
-  // GST detection: MiniMax coding-plan VLM is the primary provider for image
-  // receipts (covered by the coding-plan subscription); Gemini is the backup
-  // and handles PDFs/HEIC. Override with GST_PROVIDER = 'gemini' | 'minimax'.
+  // Receipt vision tagging (amount extraction + GST detection): MiniMax
+  // coding-plan VLM is the primary provider for image receipts (covered by the
+  // coding-plan subscription); Gemini is the backup and handles PDFs/HEIC.
+  // Override with VISION_PROVIDER = 'gemini' | 'minimax'.
   MINIMAX_API_KEY?: string;
-  GST_PROVIDER?: string;
+  VISION_PROVIDER?: string;
   CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
   // Xero integration (see worker/xero.ts). Client id/secret are secrets;
   // XERO_TOKENS stores the rotating refresh token.
@@ -724,23 +725,23 @@ async function callGeminiWithFile(
   return { text: textOutput, model };
 }
 
-async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
-  const prompt = [
-    'Extract the final payable total amount, receipt date, vendor, and purpose from this receipt.',
-    'Return strict JSON only with this schema:',
-    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number, "vendor": string|null, "purpose": string|null}',
-    'Rules:',
-    '- amount must be the final charged total, no currency symbols.',
-    '- use null if the amount is unreadable or ambiguous.',
-    '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
-    '- use null for receiptDate if date is unreadable/ambiguous.',
-    '- vendor should be merchant/vendor name only.',
-    '- purpose should be a short label (2-6 words) for what this expense is for.',
-    '- confidence must be between 0 and 1.',
-    '- receiptDateConfidence must be between 0 and 1.',
-  ].join('\n');
+const AMOUNT_PROMPT = [
+  'Extract the final payable total amount, receipt date, vendor, and purpose from this receipt.',
+  'Return strict JSON only with this schema:',
+  '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number, "vendor": string|null, "purpose": string|null}',
+  'Rules:',
+  '- amount must be the final charged total, no currency symbols.',
+  '- use null if the amount is unreadable or ambiguous.',
+  '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
+  '- use null for receiptDate if date is unreadable/ambiguous.',
+  '- vendor should be merchant/vendor name only.',
+  '- purpose should be a short label (2-6 words) for what this expense is for.',
+  '- confidence must be between 0 and 1.',
+  '- receiptDateConfidence must be between 0 and 1.',
+].join('\n');
 
-  const { text, model } = await callGeminiWithFile(env, prompt, fileBuffer, mimeType);
+async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+  const { text, model } = await callGeminiWithFile(env, AMOUNT_PROMPT, fileBuffer, mimeType);
 
   const parsed = parseGeminiJson(text);
   if (!parsed) {
@@ -751,6 +752,33 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
     ...parsed,
     model,
   };
+}
+
+async function extractAmountWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+  const text = await callMiniMaxVlm(env, AMOUNT_PROMPT, fileBuffer, mimeType);
+
+  const parsed = parseGeminiJson(text);
+  if (!parsed) {
+    throw new Error('MiniMax VLM amount response was not valid JSON');
+  }
+
+  return {
+    ...parsed,
+    model: 'minimax-vlm',
+  };
+}
+
+// Provider-aware amount extraction: MiniMax for image receipts, Gemini as
+// backup and for PDFs/HEIC.
+async function extractReceiptAmount(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+  if (useMiniMaxFor(env, mimeType)) {
+    try {
+      return await extractAmountWithMiniMax(env, fileBuffer, mimeType);
+    } catch {
+      if (!env.GEMINI_API_KEY) throw new Error('MiniMax amount extraction failed and GEMINI_API_KEY is not configured');
+    }
+  }
+  return extractAmountWithGemini(env, fileBuffer, mimeType);
 }
 
 const GST_PROMPT = [
@@ -793,7 +821,7 @@ function parseGstJson(rawText: string): { gstShown: boolean; gstAmount: number |
   }
 }
 
-async function detectGstWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
+async function callMiniMaxVlm(env: Env, prompt: string, fileBuffer: ArrayBuffer, mimeType: string): Promise<string> {
   if (!env.MINIMAX_API_KEY) {
     throw new Error('Missing MINIMAX_API_KEY');
   }
@@ -805,7 +833,7 @@ async function detectGstWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType:
       Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
     },
     body: JSON.stringify({
-      prompt: GST_PROMPT,
+      prompt,
       image_url: `data:${mimeType};base64,${toBase64(fileBuffer)}`,
     }),
   });
@@ -824,7 +852,17 @@ async function detectGstWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType:
     throw new Error(`MiniMax VLM error ${payload.base_resp.status_code}: ${payload.base_resp.status_msg || 'unknown'}`);
   }
 
-  const parsed = parseGstJson(payload.content || '');
+  if (!payload.content) {
+    throw new Error('MiniMax VLM response did not contain content');
+  }
+
+  return payload.content;
+}
+
+async function detectGstWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
+  const text = await callMiniMaxVlm(env, GST_PROMPT, fileBuffer, mimeType);
+
+  const parsed = parseGstJson(text);
   if (!parsed) {
     throw new Error('MiniMax VLM response was not valid JSON');
   }
@@ -843,17 +881,21 @@ async function detectGstWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: 
   return { ...parsed, source: 'gemini' };
 }
 
-function gstProvider(env: Env): 'minimax' | 'gemini' {
-  const configured = (env.GST_PROVIDER || '').toLowerCase();
+function visionProvider(env: Env): 'minimax' | 'gemini' {
+  const configured = (env.VISION_PROVIDER || '').toLowerCase();
   if (configured === 'gemini') return 'gemini';
   if (configured === 'minimax') return 'minimax';
   return env.MINIMAX_API_KEY ? 'minimax' : 'gemini';
 }
 
+function useMiniMaxFor(env: Env, mimeType: string): boolean {
+  return visionProvider(env) === 'minimax' && !!env.MINIMAX_API_KEY && MINIMAX_IMAGE_MIMES.includes(mimeType);
+}
+
 // MiniMax (coding-plan VLM) is the primary GST detector for image receipts;
 // Gemini is the backup and the only option for PDFs/HEIC.
 async function detectReceiptGst(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
-  if (gstProvider(env) === 'minimax' && env.MINIMAX_API_KEY && MINIMAX_IMAGE_MIMES.includes(mimeType)) {
+  if (useMiniMaxFor(env, mimeType)) {
     try {
       return await detectGstWithMiniMax(env, fileBuffer, mimeType);
     } catch {
@@ -944,8 +986,8 @@ async function tagPendingGst(env: Env, limit: number): Promise<{
 }
 
 async function tagReceiptAmount(env: Env, key: string, options: { force?: boolean } = {}): Promise<AmountTagResult> {
-  if (!env.GEMINI_API_KEY) {
-    return { key, status: 'skipped', reason: 'missing_gemini_api_key' };
+  if (!env.GEMINI_API_KEY && !env.MINIMAX_API_KEY) {
+    return { key, status: 'skipped', reason: 'missing_vision_api_key' };
   }
 
   const object = await env.RECEIPTS.get(key);
@@ -966,7 +1008,7 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
   const mimeType = object.httpMetadata?.contentType || 'application/octet-stream';
 
   try {
-    const gemini = await extractAmountWithGemini(env, fileBuffer, mimeType);
+    const extracted = await extractReceiptAmount(env, fileBuffer, mimeType);
 
     // GST detection rides along but must never fail the amount tagging.
     let gst: GstDetectionResult | null = null;
@@ -977,8 +1019,8 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
       gstError = cleanError(error);
     }
 
-    const status = gemini.amount === null ? 'missing' : 'ok';
-    const detectedReceiptDate = gemini.receiptDate;
+    const status = extracted.amount === null ? 'missing' : 'ok';
+    const detectedReceiptDate = extracted.receiptDate;
     const hasManualDateOverride = metadata.receiptDateSource === 'manual' && !!metadata.receiptDate;
 
     const nextReceiptDate = hasManualDateOverride
@@ -996,10 +1038,10 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
     let fxApproxPlus325: string | undefined;
     let fxError: string | undefined;
 
-    if (gemini.amount !== null && gemini.currency === 'USD') {
+    if (extracted.amount !== null && extracted.currency === 'USD') {
       try {
         const fx = await getUsdSgdRate(fxBaseDate);
-        const sgdApprox = roundMoney(gemini.amount * fx.rate);
+        const sgdApprox = roundMoney(extracted.amount * fx.rate);
         const sgdApproxWithFee = roundMoney(sgdApprox * (1 + USD_SURCHARGE_RATE));
         fxStatus = 'ok';
         fxDateUsed = fx.dateUsed;
@@ -1010,24 +1052,24 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
         fxStatus = 'error';
         fxError = cleanError(error);
       }
-    } else if (gemini.amount !== null) {
+    } else if (extracted.amount !== null) {
       fxStatus = 'not_usd';
     }
 
     await patchReceiptMetadata(env, key, {
       taggedStatus: status,
-      taggedAmount: gemini.amount === null ? undefined : gemini.amount.toFixed(2),
-      taggedCurrency: gemini.currency,
-      taggedConfidence: gemini.confidence.toFixed(2),
+      taggedAmount: extracted.amount === null ? undefined : extracted.amount.toFixed(2),
+      taggedCurrency: extracted.currency,
+      taggedConfidence: extracted.confidence.toFixed(2),
       detectedReceiptDate: detectedReceiptDate || undefined,
-      detectedReceiptDateConfidence: gemini.receiptDateConfidence.toFixed(2),
+      detectedReceiptDateConfidence: extracted.receiptDateConfidence.toFixed(2),
       receiptDate: nextReceiptDate || undefined,
       receiptDateSource: nextReceiptDateSource,
-      taggedVendor: gemini.vendor || undefined,
-      taggedPurpose: gemini.purpose || undefined,
-      taggedModel: gemini.model,
+      taggedVendor: extracted.vendor || undefined,
+      taggedPurpose: extracted.purpose || undefined,
+      taggedModel: extracted.model,
       taggedAt: new Date().toISOString(),
-      taggedFxBaseDate: gemini.amount === null ? undefined : fxBaseDate,
+      taggedFxBaseDate: extracted.amount === null ? undefined : fxBaseDate,
       taggedFxDateUsed: fxDateUsed,
       taggedFxRateUsdSgd: fxRate,
       taggedFxStatus: fxStatus,
@@ -1040,14 +1082,14 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
       taggedError: undefined,
     });
 
-    if (gemini.amount === null) {
+    if (extracted.amount === null) {
       return { key, status: 'skipped', reason: 'amount_not_found' };
     }
 
     return {
       key,
       status: 'tagged',
-      amount: gemini.amount,
+      amount: extracted.amount,
     };
   } catch (error) {
     const reason = cleanError(error);
@@ -1443,8 +1485,8 @@ export default {
 
       // POST /amount-tags/pending - Tag a batch of untagged, unlinked pending receipts
       if (path === '/amount-tags/pending' && request.method === 'POST') {
-        if (!env.GEMINI_API_KEY) {
-          return new Response(JSON.stringify({ error: 'GEMINI_API_KEY is not configured' }), {
+        if (!env.GEMINI_API_KEY && !env.MINIMAX_API_KEY) {
+          return new Response(JSON.stringify({ error: 'Neither MINIMAX_API_KEY nor GEMINI_API_KEY is configured' }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
