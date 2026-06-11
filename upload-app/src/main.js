@@ -1567,6 +1567,7 @@ const invoicesToggle = document.getElementById('invoicesToggle');
 const invoicesView = document.getElementById('invoicesView');
 const xeroStatusEl = document.getElementById('xeroStatus');
 const invoicesRefreshBtn = document.getElementById('invoicesRefreshBtn');
+const detectGstBtn = document.getElementById('detectGstBtn');
 const invoiceRows = document.getElementById('invoiceRows');
 const invoicesEmpty = document.getElementById('invoicesEmpty');
 const invoicePreview = document.getElementById('invoicePreview');
@@ -1671,7 +1672,9 @@ function buildInvoiceLines() {
         currency,
         amount: Number.isFinite(amount) ? Number(amount) : 0,
         accountCode: guessAccountCode(`${payee} ${description}`),
-        gstShown: false,
+        // Default from the AI GST verdict (MiniMax/Gemini); the checkbox stays
+        // the manual override.
+        gstShown: receipt.taggedGstShown === true,
         remark: '',
       });
     });
@@ -1944,6 +1947,47 @@ invoicesRefreshBtn.addEventListener('click', async () => {
   buildInvoiceLines();
   renderInvoiceEditor();
   loadXeroStatus();
+});
+
+// Backfill GST verdicts in worker-sized batches until nothing is left, then
+// rebuild the editor so the GST checkboxes pick up the new defaults.
+detectGstBtn.addEventListener('click', async () => {
+  detectGstBtn.disabled = true;
+  let tagged = 0;
+  let failed = 0;
+  try {
+    for (let round = 0; round < 30; round++) {
+      detectGstBtn.textContent = `Detecting… (${tagged})`;
+      const response = await fetch(`${API_BASE}/gst-tags/pending?limit=8`, {
+        method: 'POST',
+        headers: authHeaders(),
+      });
+      if (response.status === 401) {
+        showPasswordPrompt();
+        return;
+      }
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(body.error || `GST tagging failed (${response.status})`);
+      }
+      const result = await response.json();
+      tagged += result.tagged;
+      failed += result.failed;
+      // Stop when done, or when a round makes no progress (all failures)
+      // so persistent provider errors don't spin the loop.
+      if (result.remaining <= 0 || result.processed === 0 || result.tagged === 0) break;
+    }
+    detectGstBtn.textContent = failed ? `Done: ${tagged} tagged, ${failed} failed` : `Done: ${tagged} tagged`;
+    await loadReceipts();
+    buildInvoiceLines();
+    renderInvoiceEditor();
+  } catch (error) {
+    detectGstBtn.textContent = 'Detect GST failed';
+    console.error('GST detection failed', error);
+  } finally {
+    detectGstBtn.disabled = false;
+    setTimeout(() => { detectGstBtn.textContent = 'Detect GST'; }, 4000);
+  }
 });
 document.querySelectorAll('.bucket-btn').forEach((btn) => {
   btn.addEventListener('click', () => generateInvoice(btn.dataset.bucket));

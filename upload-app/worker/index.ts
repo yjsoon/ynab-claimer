@@ -12,6 +12,12 @@ const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '
 const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
 const DEFAULT_AMOUNT_TAG_BATCH = 3;
 const MAX_AMOUNT_TAG_BATCH = 8;
+const DEFAULT_GST_TAG_BATCH = 3;
+const MAX_GST_TAG_BATCH = 8;
+const MINIMAX_VLM_URL = 'https://api.minimax.io/v1/coding_plan/vlm';
+// The MiniMax coding-plan VLM endpoint only accepts images; PDFs and HEIC go
+// to Gemini instead.
+const MINIMAX_IMAGE_MIMES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 const RECEIPT_METADATA_CONCURRENCY = 25;
 const FX_API_BASE = 'https://api.frankfurter.dev/v1';
 const USD_SURCHARGE_RATE = 0.0325;
@@ -53,6 +59,11 @@ interface Env {
   YNAB_BUDGET_ID: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
+  // GST detection: MiniMax coding-plan VLM is the primary provider for image
+  // receipts (covered by the coding-plan subscription); Gemini is the backup
+  // and handles PDFs/HEIC. Override with GST_PROVIDER = 'gemini' | 'minimax'.
+  MINIMAX_API_KEY?: string;
+  GST_PROVIDER?: string;
   CORS_ORIGIN?: string; // Optional: lock CORS to specific origin
   // Xero integration (see worker/xero.ts). Client id/secret are secrets;
   // XERO_TOKENS stores the rotating refresh token.
@@ -114,6 +125,22 @@ interface AmountTagResult {
   reason?: string;
 }
 
+interface GstDetectionResult {
+  gstShown: boolean;
+  gstAmount: number | null;
+  confidence: number;
+  source: 'minimax' | 'gemini';
+}
+
+interface GstTagResult {
+  key: string;
+  status: 'tagged' | 'skipped' | 'failed';
+  gstShown?: boolean;
+  gstAmount?: number | null;
+  source?: string;
+  reason?: string;
+}
+
 interface FxRateResult {
   rate: number;
   dateUsed: string;
@@ -165,6 +192,10 @@ interface ReceiptSummary {
   taggedFxRateUsdSgd?: number;
   taggedAmountSgdApprox?: number;
   taggedAmountSgdApproxPlus325?: number;
+  taggedGstShown?: boolean;
+  taggedGstAmount?: number;
+  taggedGstConfidence?: number;
+  taggedGstSource?: string;
   // Set once a Xero draft bill has been created for this receipt.
   xeroInvoiceId?: string;
   invoicedAt?: string;
@@ -436,6 +467,11 @@ async function listReceiptSummaries(
         taggedFxRateUsdSgd: parseMetadataNumber(metadata.taggedFxRateUsdSgd),
         taggedAmountSgdApprox: parseMetadataNumber(metadata.taggedAmountSgdApprox),
         taggedAmountSgdApproxPlus325: parseMetadataNumber(metadata.taggedAmountSgdApproxPlus325),
+        taggedGstShown:
+          metadata.taggedGstShown === 'true' ? true : metadata.taggedGstShown === 'false' ? false : undefined,
+        taggedGstAmount: parseMetadataNumber(metadata.taggedGstAmount),
+        taggedGstConfidence: parseMetadataNumber(metadata.taggedGstConfidence),
+        taggedGstSource: metadata.taggedGstSource,
         xeroInvoiceId: metadata.xeroInvoiceId,
         invoicedAt: metadata.invoicedAt,
       };
@@ -629,26 +665,17 @@ async function patchReceiptMetadata(
   return true;
 }
 
-async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+async function callGeminiWithFile(
+  env: Env,
+  prompt: string,
+  fileBuffer: ArrayBuffer,
+  mimeType: string
+): Promise<{ text: string; model: string }> {
   if (!env.GEMINI_API_KEY) {
     throw new Error('Missing GEMINI_API_KEY');
   }
 
   const model = env.GEMINI_MODEL || DEFAULT_GEMINI_MODEL;
-  const prompt = [
-    'Extract the final payable total amount, receipt date, vendor, and purpose from this receipt.',
-    'Return strict JSON only with this schema:',
-    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number, "vendor": string|null, "purpose": string|null}',
-    'Rules:',
-    '- amount must be the final charged total, no currency symbols.',
-    '- use null if the amount is unreadable or ambiguous.',
-    '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
-    '- use null for receiptDate if date is unreadable/ambiguous.',
-    '- vendor should be merchant/vendor name only.',
-    '- purpose should be a short label (2-6 words) for what this expense is for.',
-    '- confidence must be between 0 and 1.',
-    '- receiptDateConfidence must be between 0 and 1.',
-  ].join('\n');
 
   const geminiResponse = await fetch(
     `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(env.GEMINI_API_KEY)}`,
@@ -694,7 +721,28 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
     throw new Error('Gemini response did not contain text output');
   }
 
-  const parsed = parseGeminiJson(textOutput);
+  return { text: textOutput, model };
+}
+
+async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GeminiAmountResult> {
+  const prompt = [
+    'Extract the final payable total amount, receipt date, vendor, and purpose from this receipt.',
+    'Return strict JSON only with this schema:',
+    '{"amount": number|null, "currency": "ISO-4217-or-UNKNOWN", "confidence": number, "receiptDate": "YYYY-MM-DD"|null, "receiptDateConfidence": number, "vendor": string|null, "purpose": string|null}',
+    'Rules:',
+    '- amount must be the final charged total, no currency symbols.',
+    '- use null if the amount is unreadable or ambiguous.',
+    '- receiptDate should be purchase/transaction date in YYYY-MM-DD.',
+    '- use null for receiptDate if date is unreadable/ambiguous.',
+    '- vendor should be merchant/vendor name only.',
+    '- purpose should be a short label (2-6 words) for what this expense is for.',
+    '- confidence must be between 0 and 1.',
+    '- receiptDateConfidence must be between 0 and 1.',
+  ].join('\n');
+
+  const { text, model } = await callGeminiWithFile(env, prompt, fileBuffer, mimeType);
+
+  const parsed = parseGeminiJson(text);
   if (!parsed) {
     throw new Error('Gemini response was not valid JSON');
   }
@@ -702,6 +750,196 @@ async function extractAmountWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeTy
   return {
     ...parsed,
     model,
+  };
+}
+
+const GST_PROMPT = [
+  'Determine whether this receipt shows an explicit GST (Singapore Goods & Services Tax) line item.',
+  'Return strict JSON only with this schema:',
+  '{"gstShown": boolean, "gstAmount": number|null, "confidence": number}',
+  'Rules:',
+  '- gstShown must be true ONLY if an explicit GST amount or GST line is printed on the receipt.',
+  '- Never infer GST from the vendor, location, or total; if no GST breakdown is printed, gstShown is false.',
+  '- gstAmount is the printed GST amount with no currency symbols, null if none is shown.',
+  '- confidence must be between 0 and 1.',
+].join('\n');
+
+function parseGstJson(rawText: string): { gstShown: boolean; gstAmount: number | null; confidence: number } | null {
+  const trimmed = rawText.trim();
+  const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const jsonText = fencedMatch?.[1]?.trim() || trimmed;
+
+  try {
+    const parsed = JSON.parse(jsonText) as {
+      gstShown?: boolean | string;
+      gstAmount?: number | string | null;
+      confidence?: number | string;
+    };
+
+    const gstShown = parsed.gstShown === true || parsed.gstShown === 'true';
+
+    let gstAmount: number | null = null;
+    if (parsed.gstAmount !== null && parsed.gstAmount !== undefined && parsed.gstAmount !== '') {
+      const parsedAmount =
+        typeof parsed.gstAmount === 'number' ? parsed.gstAmount : Number.parseFloat(String(parsed.gstAmount));
+      if (Number.isFinite(parsedAmount) && parsedAmount >= 0) {
+        gstAmount = Math.round(parsedAmount * 100) / 100;
+      }
+    }
+
+    return { gstShown, gstAmount, confidence: parseConfidence(parsed.confidence) };
+  } catch {
+    return null;
+  }
+}
+
+async function detectGstWithMiniMax(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
+  if (!env.MINIMAX_API_KEY) {
+    throw new Error('Missing MINIMAX_API_KEY');
+  }
+
+  const response = await fetch(MINIMAX_VLM_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${env.MINIMAX_API_KEY}`,
+    },
+    body: JSON.stringify({
+      prompt: GST_PROMPT,
+      image_url: `data:${mimeType};base64,${toBase64(fileBuffer)}`,
+    }),
+  });
+
+  if (!response.ok) {
+    const details = (await response.text()).slice(0, 300);
+    throw new Error(`MiniMax VLM ${response.status}: ${details}`);
+  }
+
+  const payload = (await response.json()) as {
+    content?: string;
+    base_resp?: { status_code?: number; status_msg?: string };
+  };
+
+  if (payload.base_resp && payload.base_resp.status_code !== 0) {
+    throw new Error(`MiniMax VLM error ${payload.base_resp.status_code}: ${payload.base_resp.status_msg || 'unknown'}`);
+  }
+
+  const parsed = parseGstJson(payload.content || '');
+  if (!parsed) {
+    throw new Error('MiniMax VLM response was not valid JSON');
+  }
+
+  return { ...parsed, source: 'minimax' };
+}
+
+async function detectGstWithGemini(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
+  const { text } = await callGeminiWithFile(env, GST_PROMPT, fileBuffer, mimeType);
+
+  const parsed = parseGstJson(text);
+  if (!parsed) {
+    throw new Error('Gemini GST response was not valid JSON');
+  }
+
+  return { ...parsed, source: 'gemini' };
+}
+
+function gstProvider(env: Env): 'minimax' | 'gemini' {
+  const configured = (env.GST_PROVIDER || '').toLowerCase();
+  if (configured === 'gemini') return 'gemini';
+  if (configured === 'minimax') return 'minimax';
+  return env.MINIMAX_API_KEY ? 'minimax' : 'gemini';
+}
+
+// MiniMax (coding-plan VLM) is the primary GST detector for image receipts;
+// Gemini is the backup and the only option for PDFs/HEIC.
+async function detectReceiptGst(env: Env, fileBuffer: ArrayBuffer, mimeType: string): Promise<GstDetectionResult> {
+  if (gstProvider(env) === 'minimax' && env.MINIMAX_API_KEY && MINIMAX_IMAGE_MIMES.includes(mimeType)) {
+    try {
+      return await detectGstWithMiniMax(env, fileBuffer, mimeType);
+    } catch {
+      if (!env.GEMINI_API_KEY) throw new Error('MiniMax GST detection failed and GEMINI_API_KEY is not configured');
+    }
+  }
+  return detectGstWithGemini(env, fileBuffer, mimeType);
+}
+
+function buildGstMetadataPatch(gst: GstDetectionResult): Record<string, string | undefined> {
+  return {
+    taggedGstShown: String(gst.gstShown),
+    taggedGstAmount: gst.gstAmount !== null ? gst.gstAmount.toFixed(2) : undefined,
+    taggedGstConfidence: gst.confidence.toFixed(2),
+    taggedGstSource: gst.source,
+    taggedGstAt: new Date().toISOString(),
+    taggedGstError: undefined,
+  };
+}
+
+async function tagReceiptGst(env: Env, key: string, options: { force?: boolean } = {}): Promise<GstTagResult> {
+  const object = await env.RECEIPTS.get(key);
+  if (!object) {
+    return { key, status: 'failed', reason: 'receipt_not_found' };
+  }
+
+  const metadata = object.customMetadata || {};
+  if (!options.force && metadata.taggedGstShown !== undefined) {
+    return { key, status: 'skipped', reason: 'already_tagged' };
+  }
+
+  const fileBuffer = await object.arrayBuffer();
+  const mimeType = object.httpMetadata?.contentType || 'application/octet-stream';
+
+  try {
+    const gst = await detectReceiptGst(env, fileBuffer, mimeType);
+    await patchReceiptMetadata(env, key, buildGstMetadataPatch(gst));
+    return { key, status: 'tagged', gstShown: gst.gstShown, gstAmount: gst.gstAmount, source: gst.source };
+  } catch (error) {
+    const reason = cleanError(error);
+    await patchReceiptMetadata(env, key, { taggedGstError: reason });
+    return { key, status: 'failed', reason };
+  }
+}
+
+// Backfill GST tags for receipts uploaded before GST detection existed. Unlike
+// amount tagging, linked receipts are included — they are exactly the
+// ready-to-claim items the Invoices tab needs GST verdicts for. Receipts
+// already pushed to Xero are skipped.
+async function tagPendingGst(env: Env, limit: number): Promise<{
+  requested: number;
+  processed: number;
+  tagged: number;
+  skipped: number;
+  failed: number;
+  remaining: number;
+  results: GstTagResult[];
+}> {
+  const listed = await env.RECEIPTS.list({ limit: 1000 });
+  const candidateKeys: string[] = [];
+  let remaining = 0;
+
+  for (const object of listed.objects) {
+    const head = await env.RECEIPTS.head(object.key);
+    const metadata = head?.customMetadata || {};
+    if (metadata.xeroInvoiceId) continue;
+    if (metadata.taggedGstShown !== undefined) continue;
+    remaining += 1;
+    if (candidateKeys.length < limit) candidateKeys.push(object.key);
+  }
+
+  const results: GstTagResult[] = [];
+  for (const key of candidateKeys) {
+    // Sequential to keep within provider rate limits.
+    const result = await tagReceiptGst(env, key);
+    results.push(result);
+  }
+
+  return {
+    requested: limit,
+    processed: results.length,
+    tagged: results.filter((r) => r.status === 'tagged').length,
+    skipped: results.filter((r) => r.status === 'skipped').length,
+    failed: results.filter((r) => r.status === 'failed').length,
+    remaining: remaining - results.filter((r) => r.status === 'tagged').length,
+    results,
   };
 }
 
@@ -729,6 +967,16 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
 
   try {
     const gemini = await extractAmountWithGemini(env, fileBuffer, mimeType);
+
+    // GST detection rides along but must never fail the amount tagging.
+    let gst: GstDetectionResult | null = null;
+    let gstError: string | undefined;
+    try {
+      gst = await detectReceiptGst(env, fileBuffer, mimeType);
+    } catch (error) {
+      gstError = cleanError(error);
+    }
+
     const status = gemini.amount === null ? 'missing' : 'ok';
     const detectedReceiptDate = gemini.receiptDate;
     const hasManualDateOverride = metadata.receiptDateSource === 'manual' && !!metadata.receiptDate;
@@ -786,6 +1034,9 @@ async function tagReceiptAmount(env: Env, key: string, options: { force?: boolea
       taggedFxError: fxError,
       taggedAmountSgdApprox: fxApprox,
       taggedAmountSgdApproxPlus325: fxApproxPlus325,
+      // Omit (rather than undefined-delete) GST fields when detection failed,
+      // so an earlier successful GST tag survives a forced amount re-tag.
+      ...(gst ? buildGstMetadataPatch(gst) : { taggedGstError: gstError }),
       taggedError: undefined,
     });
 
@@ -1100,7 +1351,7 @@ export default {
     // which Xero itself calls and which is trusted via its one-time state cookie.
     // (/xero/connect is a header-authed POST so the auth token never lands in a URL.)
     const isApiRoute =
-      ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/agent/'].some(
+      ['/upload', '/list', '/receipt/', '/ynab/', '/amount-tags/', '/gst-tags/', '/agent/'].some(
         (route) => path === route || path.startsWith(route)
       ) ||
       (path.startsWith('/xero/') && path !== '/xero/callback');
@@ -1207,6 +1458,41 @@ export default {
 
         const result = await tagPendingReceipts(env, limit);
         return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // POST /gst-tags/pending - Detect GST for a batch of receipts that have
+      // no GST verdict yet (includes linked/ready-to-claim receipts; skips
+      // anything already pushed to Xero). Used to backfill existing receipts.
+      if (path === '/gst-tags/pending' && request.method === 'POST') {
+        if (!env.MINIMAX_API_KEY && !env.GEMINI_API_KEY) {
+          return new Response(JSON.stringify({ error: 'Neither MINIMAX_API_KEY nor GEMINI_API_KEY is configured' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const requestedLimit = parseInt(url.searchParams.get('limit') || String(DEFAULT_GST_TAG_BATCH), 10);
+        const limit = Math.min(
+          Math.max(Number.isNaN(requestedLimit) ? DEFAULT_GST_TAG_BATCH : requestedLimit, 1),
+          MAX_GST_TAG_BATCH
+        );
+
+        const result = await tagPendingGst(env, limit);
+        return new Response(JSON.stringify(result), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // POST /receipt/:key/tag-gst - Re-run GST detection for one receipt
+      if (path.startsWith('/receipt/') && path.endsWith('/tag-gst') && request.method === 'POST') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/tag-gst', ''));
+        const result = await tagReceiptGst(env, key, { force: true });
+        const statusCode = result.status === 'failed' ? 500 : 200;
+
+        return new Response(JSON.stringify(result), {
+          status: statusCode,
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

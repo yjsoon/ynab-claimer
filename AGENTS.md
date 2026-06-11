@@ -119,6 +119,24 @@ HEIC/WEBP can't be embedded and are flagged for manual upload. Full setup and us
 `.claude/skills/claim-invoices/SKILL.md`. Do not deploy to the live worker without
 the user's go-ahead.
 
+### GST Detection
+
+The GST checkbox on each invoice line defaults from an AI verdict stored on the
+receipt (`taggedGstShown` / `taggedGstAmount` / `taggedGstSource` metadata; the
+checkbox remains the manual override):
+
+- Primary provider: MiniMax coding-plan VLM (`MINIMAX_API_KEY` secret, an
+  `sk-cp-` key; calls are covered by the coding-plan subscription). Images only.
+- Backup: Gemini (`GEMINI_API_KEY`), which also handles PDF/HEIC receipts.
+- Toggle via the `GST_PROVIDER` var in `wrangler.toml` (`minimax` | `gemini`).
+- New uploads are tagged automatically alongside amount tagging. Backfill via
+  the **Detect GST** button on the Invoices tab, or
+  `POST /gst-tags/pending?limit=8` (loop until `remaining` is 0); re-run one
+  receipt with `POST /receipt/:key/tag-gst`.
+- The verdict is strictly "an explicit GST line is printed on the receipt" —
+  never inferred from vendor or total. Note a USD receipt can legitimately show
+  SG GST (overseas-vendor-registration suppliers like Fireworks AI).
+
 ## Gmail Receipt Export
 
 Use the ride Gmail receipt export skill when the user needs missing Grab or Gojek ride receipts from Gmail. It uses `gog` against `yjsoon@gmail.com`, decodes the receipt HTML, and renders a clean PDF with Playwright:

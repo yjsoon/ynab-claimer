@@ -47,6 +47,12 @@ the per-line **remark**; the GST / non-GST / transport buckets update live. Clic
 **Generate … invoice** to preview, then **Push to Xero (draft)**. Open the returned
 link, review/approve in Xero.
 
+The **GST?** toggle defaults from an AI verdict (`taggedGstShown` receipt
+metadata): MiniMax coding-plan VLM for images (`MINIMAX_API_KEY` secret), Gemini
+as backup and for PDFs/HEIC; switch with the `GST_PROVIDER` var. New uploads are
+tagged automatically; the **Detect GST** button backfills receipts without a
+verdict (or `POST /gst-tags/pending?limit=8` until `remaining` is 0).
+
 ## Endpoints (worker)
 
 | Method | Path | Purpose |
@@ -57,6 +63,8 @@ link, review/approve in Xero.
 | POST | `/xero/disconnect` | Forget stored tokens |
 | GET | `/xero/meta` | Tax rates + expense accounts (dropdowns / verification) |
 | POST | `/xero/invoices/push` | Create DRAFT bill, attach receipts, tag + flip YNAB CLAIMED |
+| POST | `/gst-tags/pending?limit=8` | Detect GST for receipts without a verdict (backfill; returns `remaining`) |
+| POST | `/receipt/:key/tag-gst` | Force GST re-detection for one receipt |
 
 ## Rules
 
