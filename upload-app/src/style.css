@@ -1513,13 +1513,27 @@ h2 {
   text-align: center;
 }
 
-.invoices-table input[type="text"] {
-  width: 100%;
-  min-width: 120px;
+.invoices-table input[type="text"],
+.invoices-table input[type="date"],
+.invoices-table input[type="number"] {
   padding: 5px 7px;
   border: 1px solid #ddd;
   border-radius: 6px;
   font: inherit;
+}
+
+.invoices-table input[type="text"] {
+  width: 100%;
+  min-width: 120px;
+}
+
+.invoices-table input.inv-date {
+  min-width: 132px;
+}
+
+.invoices-table input.inv-amount {
+  width: 90px;
+  text-align: right;
 }
 
 .invoices-table select {
@@ -1661,6 +1675,8 @@ h2 {
 }
 
 :root[data-theme="dark"] .invoices-table input[type="text"],
+:root[data-theme="dark"] .invoices-table input[type="date"],
+:root[data-theme="dark"] .invoices-table input[type="number"],
 :root[data-theme="dark"] .invoices-table select {
   background: #0f172a;
   border-color: #334155;

@@ -1698,12 +1698,12 @@ function renderInvoiceEditor() {
       return `
         <tr data-id="${escapeHtml(line.id)}" class="${line.include ? '' : 'row-excluded'}">
           <td class="col-incl"><input type="checkbox" class="inv-include" ${line.include ? 'checked' : ''}></td>
-          <td class="inv-date">${escapeHtml(line.date || '—')}</td>
-          <td class="inv-payee">${escapeHtml(line.payee)}${usdNote}</td>
+          <td><input type="date" class="inv-date" value="${escapeHtml(line.date || '')}"></td>
+          <td><input type="text" class="inv-payee" value="${escapeHtml(line.payee)}">${usdNote}</td>
           <td><input type="text" class="inv-desc" value="${escapeHtml(line.description)}"></td>
           <td><select class="inv-account">${options}</select></td>
           <td class="col-gst"><input type="checkbox" class="inv-gst" ${line.gstShown ? 'checked' : ''}></td>
-          <td class="num">${line.amount.toFixed(2)}</td>
+          <td class="num"><input type="number" step="0.01" min="0" class="inv-amount" value="${line.amount.toFixed(2)}"></td>
           <td><input type="text" class="inv-remark" placeholder="optional" value="${escapeHtml(line.remark)}"></td>
           <td class="col-bucket"><span class="bucket-chip bucket-${bucket}">${BUCKET_LABEL[bucket]}</span></td>
           <td><button type="button" class="inv-preview-btn" title="Preview receipt">view</button></td>
@@ -1719,8 +1719,15 @@ function renderInvoiceEditor() {
       tr.classList.toggle('row-excluded', !line.include);
       renderBucketSummary();
     });
+    tr.querySelector('.inv-date').addEventListener('change', (e) => { line.date = e.target.value; });
+    tr.querySelector('.inv-payee').addEventListener('input', (e) => { line.payee = e.target.value; });
     tr.querySelector('.inv-desc').addEventListener('input', (e) => { line.description = e.target.value; });
     tr.querySelector('.inv-remark').addEventListener('input', (e) => { line.remark = e.target.value; });
+    tr.querySelector('.inv-amount').addEventListener('input', (e) => {
+      const v = Number(e.target.value);
+      line.amount = Number.isFinite(v) ? v : 0;
+      renderBucketSummary();
+    });
     tr.querySelector('.inv-account').addEventListener('change', (e) => {
       line.accountCode = e.target.value;
       updateRowBucket(tr, line);
@@ -1764,8 +1771,15 @@ function renderBucketSummary() {
   });
 }
 
+// YNAB transfer transactions carry a payee like "Transfer : Work Refundables",
+// which is internal noise — don't append it (or the date) to the line.
+function isTransferPayee(payee) {
+  return /^\s*transfer\s*:/i.test(payee || '');
+}
+
 function lineToDescription(line) {
-  const base = `${line.description} — ${line.payee} (${line.date})`;
+  const hasRealPayee = line.payee && !isTransferPayee(line.payee);
+  const base = hasRealPayee ? `${line.description} — ${line.payee} (${line.date})` : line.description;
   return line.remark ? `${base} — ${line.remark}` : base;
 }
 
