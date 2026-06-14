@@ -1631,6 +1631,46 @@ function lineBucket(line) {
 
 // Build the editable model from the currently loaded ready-to-claim data:
 // receipts with a non-empty linkedClaimIds, joined to their YNAB claim.
+// --- Persisted manual edits (survive refresh / tab toggle / reload) ---------
+const INVOICE_EDITS_KEY = 'claim_manager_invoice_edits';
+
+function loadInvoiceEdits() {
+  try {
+    return JSON.parse(localStorage.getItem(INVOICE_EDITS_KEY) || '{}') || {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+function writeInvoiceEdits(store) {
+  try {
+    localStorage.setItem(INVOICE_EDITS_KEY, JSON.stringify(store));
+  } catch (_err) {
+    /* ignore storage quota / availability errors */
+  }
+}
+
+function saveInvoiceEdit(lineId, patch) {
+  const store = loadInvoiceEdits();
+  store[lineId] = { ...(store[lineId] || {}), ...patch };
+  writeInvoiceEdits(store);
+}
+
+// Re-apply saved manual edits onto freshly-built lines, and prune saved edits
+// for lines that no longer exist (e.g. once a receipt has been invoiced).
+function applySavedInvoiceEdits(lines) {
+  const store = loadInvoiceEdits();
+  const liveIds = new Set(lines.map((l) => l.id));
+  lines.forEach((line) => {
+    if (store[line.id]) Object.assign(line, store[line.id]);
+  });
+  const pruned = {};
+  Object.keys(store).forEach((id) => {
+    if (liveIds.has(id)) pruned[id] = store[id];
+  });
+  if (Object.keys(pruned).length !== Object.keys(store).length) writeInvoiceEdits(pruned);
+}
+
 function buildInvoiceLines() {
   const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const lines = [];
@@ -1681,6 +1721,7 @@ function buildInvoiceLines() {
   });
 
   lines.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+  applySavedInvoiceEdits(lines);
   invoiceLines = lines;
 }
 
@@ -1699,12 +1740,11 @@ function renderInvoiceEditor() {
         <tr data-id="${escapeHtml(line.id)}" class="${line.include ? '' : 'row-excluded'}">
           <td class="col-incl"><input type="checkbox" class="inv-include" ${line.include ? 'checked' : ''}></td>
           <td><input type="date" class="inv-date" value="${escapeHtml(line.date || '')}"></td>
-          <td><input type="text" class="inv-payee" value="${escapeHtml(line.payee)}">${usdNote}</td>
           <td><input type="text" class="inv-desc" value="${escapeHtml(line.description)}"></td>
           <td><select class="inv-account">${options}</select></td>
-          <td class="col-gst"><input type="checkbox" class="inv-gst" ${line.gstShown ? 'checked' : ''}></td>
-          <td class="num"><input type="number" step="0.01" min="0" class="inv-amount" value="${line.amount.toFixed(2)}"></td>
+          <td class="num"><input type="number" step="0.01" min="0" class="inv-amount" value="${line.amount.toFixed(2)}">${usdNote}</td>
           <td><input type="text" class="inv-remark" placeholder="optional" value="${escapeHtml(line.remark)}"></td>
+          <td class="col-gst"><input type="checkbox" class="inv-gst" ${line.gstShown ? 'checked' : ''}></td>
           <td class="col-bucket"><span class="bucket-chip bucket-${bucket}">${BUCKET_LABEL[bucket]}</span></td>
           <td><button type="button" class="inv-preview-btn" title="Preview receipt">view</button></td>
         </tr>`;
@@ -1717,24 +1757,36 @@ function renderInvoiceEditor() {
     tr.querySelector('.inv-include').addEventListener('change', (e) => {
       line.include = e.target.checked;
       tr.classList.toggle('row-excluded', !line.include);
+      saveInvoiceEdit(line.id, { include: line.include });
       renderBucketSummary();
     });
-    tr.querySelector('.inv-date').addEventListener('change', (e) => { line.date = e.target.value; });
-    tr.querySelector('.inv-payee').addEventListener('input', (e) => { line.payee = e.target.value; });
-    tr.querySelector('.inv-desc').addEventListener('input', (e) => { line.description = e.target.value; });
-    tr.querySelector('.inv-remark').addEventListener('input', (e) => { line.remark = e.target.value; });
+    tr.querySelector('.inv-date').addEventListener('change', (e) => {
+      line.date = e.target.value;
+      saveInvoiceEdit(line.id, { date: line.date });
+    });
+    tr.querySelector('.inv-desc').addEventListener('input', (e) => {
+      line.description = e.target.value;
+      saveInvoiceEdit(line.id, { description: line.description });
+    });
+    tr.querySelector('.inv-remark').addEventListener('input', (e) => {
+      line.remark = e.target.value;
+      saveInvoiceEdit(line.id, { remark: line.remark });
+    });
     tr.querySelector('.inv-amount').addEventListener('input', (e) => {
       const v = Number(e.target.value);
       line.amount = Number.isFinite(v) ? v : 0;
+      saveInvoiceEdit(line.id, { amount: line.amount });
       renderBucketSummary();
     });
     tr.querySelector('.inv-account').addEventListener('change', (e) => {
       line.accountCode = e.target.value;
+      saveInvoiceEdit(line.id, { accountCode: line.accountCode });
       updateRowBucket(tr, line);
       renderBucketSummary();
     });
     tr.querySelector('.inv-gst').addEventListener('change', (e) => {
       line.gstShown = e.target.checked;
+      saveInvoiceEdit(line.id, { gstShown: line.gstShown });
       updateRowBucket(tr, line);
       renderBucketSummary();
     });
