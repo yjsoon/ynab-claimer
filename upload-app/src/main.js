@@ -1840,6 +1840,12 @@ const BUCKET_BTN_LABEL = {
 };
 let invoicePreviewBusy = false;
 let activeInvoiceBucket = null;
+let invoicePreviewGeneration = 0;
+
+function invalidateInvoicePreviewGeneration() {
+  invoicePreviewGeneration += 1;
+  invoicePreviewBusy = false;
+}
 const TRANSPORT_CODES = ['451', '452'];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
@@ -2000,8 +2006,8 @@ function renderInvoiceClaimLoadError() {
   invoicesEmpty.hidden = false;
   invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
   invoicePreview.hidden = true;
+  invalidateInvoicePreviewGeneration();
   activeInvoiceBucket = null;
-  invoicePreviewBusy = false;
   updateBucketButtonUi();
   renderBucketSummary();
 }
@@ -2193,6 +2199,7 @@ function renderInvoicePreviewDoc(bucket) {
 function generateInvoice(bucket) {
   if (invoicePreviewBusy) return;
 
+  const generation = ++invoicePreviewGeneration;
   invoicePreviewBusy = true;
   activeInvoiceBucket = bucket;
   invoicePreview.hidden = false;
@@ -2202,9 +2209,14 @@ function generateInvoice(bucket) {
 
   requestAnimationFrame(() => {
     setTimeout(() => {
+      if (generation !== invoicePreviewGeneration) return;
       try {
         renderInvoicePreviewDoc(bucket);
+      } catch (err) {
+        if (generation !== invoicePreviewGeneration) return;
+        invoicePreview.innerHTML = `<p class="empty-state">Could not build preview: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
       } finally {
+        if (generation !== invoicePreviewGeneration) return;
         invoicePreviewBusy = false;
         updateBucketButtonUi();
         renderBucketSummary();
@@ -2368,14 +2380,17 @@ function showInvoicesView(show) {
   invoicesView.hidden = !show;
   updateModeNav(show);
   updateAppTitle(show);
+  invalidateInvoicePreviewGeneration();
   if (show) {
     invoicePreview.hidden = true;
     activeInvoiceBucket = null;
-    invoicePreviewBusy = false;
     updateBucketButtonUi();
     loadXeroStatus();
     buildInvoiceLines();
     renderInvoiceEditor();
+  } else {
+    activeInvoiceBucket = null;
+    updateBucketButtonUi();
   }
 }
 
