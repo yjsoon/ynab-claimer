@@ -472,7 +472,11 @@ function loadClaimFilterState() {
 }
 
 function saveClaimFilterState() {
-  localStorage.setItem(CLAIM_FILTER_KEY, JSON.stringify(claimFilterState));
+  try {
+    localStorage.setItem(CLAIM_FILTER_KEY, JSON.stringify(claimFilterState));
+  } catch (error) {
+    console.warn('Claim filter preferences could not be saved:', error);
+  }
 }
 
 function getManualClaimFilterTerms() {
@@ -492,8 +496,6 @@ function getClaimSearchText(claim) {
     claim.description,
     claim.payee,
     claim.accountName,
-    claim.date,
-    Number.isFinite(Number(claim.amount)) ? Number(claim.amount).toFixed(2) : '',
   ]
     .filter(Boolean)
     .join(' ')
@@ -509,7 +511,9 @@ function claimMatchesHideFilter(claim, terms) {
 function renderClaimFilterControls() {
   if (!claimFilterInput || !claimFilterPills || !claimFilterClear) return;
 
-  claimFilterInput.value = claimFilterState.text;
+  if (document.activeElement !== claimFilterInput && claimFilterInput.value !== claimFilterState.text) {
+    claimFilterInput.value = claimFilterState.text;
+  }
   const activeQuickFilters = new Set(claimFilterState.quickFilters.map(normaliseFilterTerm));
   claimFilterPills.innerHTML = DEFAULT_CLAIM_FILTERS.map((term) => {
     const isActive = activeQuickFilters.has(normaliseFilterTerm(term));
@@ -525,6 +529,23 @@ function renderClaimFilterControls() {
 
   const hasFilters = claimFilterState.text.trim() || claimFilterState.quickFilters.length > 0;
   claimFilterClear.hidden = !hasFilters;
+}
+
+function pruneClaimSelectionToVisibleClaims(visibleClaims) {
+  const visibleClaimIds = new Set(visibleClaims.map((claim) => claim.id));
+
+  if (linkingSource === 'receipt') {
+    selectedClaimIds = new Set(
+      Array.from(selectedClaimIds).filter((claimId) => visibleClaimIds.has(claimId))
+    );
+  }
+
+  if (linkingSource === 'claim' && sourceClaimId && !visibleClaimIds.has(sourceClaimId)) {
+    linkingSource = null;
+    sourceClaimId = null;
+    selectedClaimIds.clear();
+    selectedReceiptKeys.clear();
+  }
 }
 
 function formatDateForLocale(date) {
@@ -1113,11 +1134,16 @@ async function loadYnabTodos() {
       headers: authHeaders(),
     });
 
-    const data = await response.json();
+    const data = await response.json().catch(() => null);
 
-    if (response.status === 401 && data.error === 'Unauthorized') {
+    if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
+      clearAuthToken();
       showPasswordPrompt();
       return;
+    }
+
+    if (!data) {
+      throw new Error(`Failed to fetch claims (${response.status})`);
     }
 
     if (data.error) {
@@ -1155,11 +1181,12 @@ function renderOutstandingClaims() {
   const outstandingClaims = getOutstandingClaims();
   const filterTerms = getClaimFilterTerms();
   const visibleClaims = outstandingClaims.filter((claim) => !claimMatchesHideFilter(claim, filterTerms));
+  pruneClaimSelectionToVisibleClaims(visibleClaims);
 
   todoCount.textContent = filterTerms.length > 0
     ? `(${visibleClaims.length} of ${outstandingClaims.length})`
     : `(${outstandingClaims.length})`;
-  claimBadge.textContent = visibleClaims.length || '';
+  claimBadge.textContent = outstandingClaims.length || '';
 
   if (outstandingClaims.length === 0) {
     todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
