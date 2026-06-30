@@ -1824,28 +1824,27 @@ const invoicesView = document.getElementById('invoicesView');
 const xeroStatusEl = document.getElementById('xeroStatus');
 const invoicesRefreshBtn = document.getElementById('invoicesRefreshBtn');
 const detectGstBtn = document.getElementById('detectGstBtn');
-const invoiceRows = document.getElementById('invoiceRows');
+const invoicesSectionsEl = document.getElementById('invoicesSections');
 const invoicesEmpty = document.getElementById('invoicesEmpty');
-const invoicePreview = document.getElementById('invoicePreview');
-const bucketMetaEls = {
-  gst: document.getElementById('bucketGst'),
-  nongst: document.getElementById('bucketNongst'),
-  transport: document.getElementById('bucketTransport'),
-};
-const invoicesBucketsEl = document.querySelector('.invoices-buckets');
-const BUCKET_BTN_LABEL = {
-  gst: 'Generate GST invoice',
-  nongst: 'Generate non-GST invoice',
-  transport: 'Generate transport invoice',
-};
-let invoicePreviewBusy = false;
-let activeInvoiceBucket = null;
-let invoicePreviewGeneration = 0;
+const invoicesLoadingEl = document.getElementById('invoicesLoading');
 
-function invalidateInvoicePreviewGeneration() {
-  invoicePreviewGeneration += 1;
-  invoicePreviewBusy = false;
-}
+const INVOICE_BUCKETS = ['gst', 'nongst', 'transport'];
+const BUCKET_HEADING = {
+  gst: 'GST claims — DRAFT bill',
+  nongst: 'Non-GST claims — DRAFT bill',
+  transport: 'Transport claims — DRAFT bill',
+};
+const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
+const INVOICE_SECTIONS_KEY = 'claim_manager_invoice_sections';
+const EYE_ICON = '<svg class="inv-eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
+
+let invoiceLines = [];
+let invoicesActive = false;
+let invoicesLoading = false;
+let xeroConnected = false;
+let xeroAccounts = null;
+let activeInvoiceEditCell = null;
+let invoiceRenderGeneration = 0;
 const TRANSPORT_CODES = ['451', '452'];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
@@ -1864,12 +1863,6 @@ const ACCOUNT_HINTS = [
   { code: '467', re: /\b(phone|mobile|telco|singtel|starhub|\bm1\b|internet|broadband|data plan|\bsim\b)\b/i },
   { code: '463', re: /\b(subscription|software|saas|\bapp\b|\bai\b|\bapi\b|github|openai|chatgpt|claude|anthropic|lovable|figma|notion|adobe|cloud|domain|hosting)\b/i },
 ];
-const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
-
-let invoiceLines = [];
-let invoicesActive = false;
-let xeroConnected = false;
-let xeroAccounts = null; // populated from /xero/meta when connected
 const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.';
 const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
@@ -1895,6 +1888,62 @@ function deriveTaxType(line) {
 function lineBucket(line) {
   if (TRANSPORT_CODES.includes(line.accountCode)) return 'transport';
   return line.gstShown ? 'gst' : 'nongst';
+}
+
+function getLineSection(line) {
+  return line.section || lineBucket(line);
+}
+
+function setLineSection(line, section) {
+  line.section = section;
+  if (section === 'transport') {
+    if (!TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '451';
+    line.gstShown = false;
+  } else if (section === 'gst') {
+    line.gstShown = true;
+    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
+  } else {
+    line.gstShown = false;
+    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
+  }
+  saveInvoiceEdit(line.id, {
+    section: line.section,
+    gstShown: line.gstShown,
+    accountCode: line.accountCode,
+  });
+}
+
+function defaultForeignCurrencyRemark(receipt) {
+  const currency = (receipt.taggedCurrency || 'SGD').toUpperCase();
+  if (currency === 'SGD') return '';
+  const amount = Number(receipt.taggedAmount);
+  if (!Number.isFinite(amount)) return '';
+  return formatCurrencyAmount(currency, amount);
+}
+
+function loadSectionCollapsedState() {
+  try {
+    return JSON.parse(localStorage.getItem(INVOICE_SECTIONS_KEY) || '{}') || {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+function saveSectionCollapsed(bucket, collapsed) {
+  const state = loadSectionCollapsedState();
+  state[bucket] = collapsed;
+  try {
+    localStorage.setItem(INVOICE_SECTIONS_KEY, JSON.stringify(state));
+  } catch (_err) {
+    /* ignore */
+  }
+}
+
+function setInvoicesLoading(loading) {
+  invoicesLoading = loading;
+  if (invoicesLoadingEl) invoicesLoadingEl.hidden = !loading;
+  if (invoicesSectionsEl) invoicesSectionsEl.hidden = loading;
+  if (invoicesEmpty) invoicesEmpty.hidden = loading || invoiceLines.length > 0;
 }
 
 // Build the editable model from the currently loaded ready-to-claim data:
@@ -1978,19 +2027,14 @@ function buildInvoiceLines() {
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
-        // Default to excluded when there's no usable amount yet, so we never
-        // silently push a $0.00 line.
-        include: Number.isFinite(amount) && amount > 0,
         date,
         payee,
         description,
         currency,
         amount: Number.isFinite(amount) ? Number(amount) : 0,
         accountCode: guessAccountCode(`${payee} ${description}`),
-        // Default from the AI GST verdict (MiniMax/Gemini); the checkbox stays
-        // the manual override.
         gstShown: receipt.taggedGstShown === true,
-        remark: '',
+        remark: defaultForeignCurrencyRemark(receipt),
       });
     });
   });
@@ -2002,14 +2046,324 @@ function buildInvoiceLines() {
 
 function renderInvoiceClaimLoadError() {
   invoiceLines = [];
-  invoiceRows.innerHTML = '';
+  if (invoicesSectionsEl) invoicesSectionsEl.innerHTML = '';
   invoicesEmpty.hidden = false;
   invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
-  invoicePreview.hidden = true;
-  invalidateInvoicePreviewGeneration();
-  activeInvoiceBucket = null;
-  updateBucketButtonUi();
-  renderBucketSummary();
+  setInvoicesLoading(false);
+}
+
+function accountLabel(code, accounts) {
+  const match = accounts.find((a) => a.code === code);
+  return match ? `${match.code} ${match.name}` : code;
+}
+
+function renderInvoiceLineRow(line, accounts) {
+  const section = getLineSection(line);
+  return `
+    <tr data-id="${escapeHtml(line.id)}">
+      <td class="inv-cell-editable" data-field="date" data-input="text"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
+      <td class="inv-cell-editable" data-field="description" data-input="text"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
+      <td class="inv-cell-editable" data-field="accountCode" data-input="select"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
+      <td class="inv-cell-editable" data-field="section" data-input="type"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
+      <td class="inv-cell-editable" data-field="remark" data-input="text"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
+      <td><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
+      <td class="num inv-cell-editable" data-field="amount" data-input="text"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
+      <td class="col-preview"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
+    </tr>`;
+}
+
+function renderInvoiceSection(bucket, lines, accounts) {
+  const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+  const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
+  const rowsHtml = lines.map((line) => renderInvoiceLineRow(line, accounts)).join('');
+  return `
+    <details class="invoice-section invoice-section-${bucket}" data-bucket="${bucket}" ${collapsed ? '' : 'open'}>
+      <summary class="invoice-section-header">
+        <span class="invoice-section-title">${BUCKET_HEADING[bucket]}</span>
+        <span class="invoice-section-meta">${lines.length} line items · S$${total.toFixed(2)}</span>
+      </summary>
+      <div class="invoice-section-body">
+        <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
+        <div class="invoice-section-table-wrap">
+          <table class="invoice-doc-table">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Description</th>
+                <th>Account</th>
+                <th>Type</th>
+                <th>Remark</th>
+                <th>Tax</th>
+                <th class="num">Amount</th>
+                <th class="col-preview"></th>
+              </tr>
+            </thead>
+            <tbody>${rowsHtml || `<tr><td colspan="8" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
+            <tfoot>
+              <tr>
+                <td colspan="6" class="num"><strong>Total</strong></td>
+                <td class="num"><strong>S$${total.toFixed(2)}</strong></td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+        <div class="invoice-section-status" role="status" aria-live="polite"></div>
+        <div class="invoice-doc-actions">
+          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${lines.length === 0 ? 'disabled' : ''}>Push to Xero (draft)</button>
+          <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts.</span>
+        </div>
+      </div>
+    </details>`;
+}
+
+function closeActiveInvoiceEdit({ commit = false } = {}) {
+  if (!activeInvoiceEditCell) return;
+  if (commit && activeInvoiceEditCell._commitEdit) {
+    activeInvoiceEditCell._commitEdit();
+  } else if (activeInvoiceEditCell._cancelEdit) {
+    activeInvoiceEditCell._cancelEdit();
+  }
+}
+
+function commitActiveInvoiceEdit() {
+  closeActiveInvoiceEdit({ commit: true });
+}
+
+function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs = '', format, parse }) {
+  const renderDisplay = () => {
+    cell.classList.remove('is-editing');
+    const value = format ? format(line[field]) : (line[field] ?? '');
+    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(String(value ?? '—'))}</span>`;
+    cell.onclick = () => startEdit();
+  };
+
+  const startEdit = () => {
+    if (cell.classList.contains('is-editing')) return;
+    closeActiveInvoiceEdit({ commit: true });
+    activeInvoiceEditCell = cell;
+    cell.classList.add('is-editing');
+    const original = line[field];
+    const editValue = inputType === 'number' ? Number(original).toFixed(2) : (original ?? '');
+    cell.innerHTML = `
+      <div class="inv-edit-wrap">
+        <input type="${inputType}" class="inv-edit-input" value="${escapeHtml(String(editValue))}" ${inputAttrs}>
+        <div class="inv-edit-actions">
+          <button type="button" class="inv-edit-confirm" title="Save">✓</button>
+          <button type="button" class="inv-edit-cancel" title="Cancel">✕</button>
+        </div>
+      </div>`;
+    const input = cell.querySelector('.inv-edit-input');
+    input.focus();
+    if (inputType !== 'date') input.select();
+
+    const commit = () => {
+      const parsed = parse ? parse(input.value) : input.value;
+      line[field] = parsed;
+      saveInvoiceEdit(line.id, { [field]: parsed });
+      activeInvoiceEditCell = null;
+      if (field === 'amount') {
+        renderInvoiceEditor();
+      } else {
+        renderDisplay();
+        updateSectionHeaders();
+      }
+    };
+
+    const cancel = () => {
+      line[field] = original;
+      activeInvoiceEditCell = null;
+      renderDisplay();
+    };
+    cell._cancelEdit = cancel;
+    cell._commitEdit = commit;
+
+    cell.querySelector('.inv-edit-confirm').addEventListener('click', (e) => {
+      e.stopPropagation();
+      commit();
+    });
+    cell.querySelector('.inv-edit-cancel').addEventListener('click', (e) => {
+      e.stopPropagation();
+      cancel();
+    });
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        commit();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        cancel();
+      }
+    });
+    input.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (cell.classList.contains('is-editing') && !cell.contains(document.activeElement)) commit();
+      }, 0);
+    });
+  };
+
+  renderDisplay();
+}
+
+function attachAccountEditCell(cell, line, accounts) {
+  const renderDisplay = () => {
+    cell.classList.remove('is-editing');
+    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span>`;
+    cell.onclick = () => startEdit();
+  };
+
+  const startEdit = () => {
+    if (cell.classList.contains('is-editing')) return;
+    closeActiveInvoiceEdit({ commit: true });
+    activeInvoiceEditCell = cell;
+    cell.classList.add('is-editing');
+    const options = accounts
+      .map((a) => `<option value="${escapeHtml(a.code)}" ${a.code === line.accountCode ? 'selected' : ''}>${escapeHtml(a.code)} — ${escapeHtml(a.name)}</option>`)
+      .join('');
+    cell.innerHTML = `<select class="inv-edit-select">${options}</select>`;
+    const select = cell.querySelector('.inv-edit-select');
+    select.focus();
+    const commit = () => {
+      line.accountCode = select.value;
+      saveInvoiceEdit(line.id, { accountCode: line.accountCode });
+      activeInvoiceEditCell = null;
+      const prevSection = getLineSection(line);
+      if (TRANSPORT_CODES.includes(line.accountCode) && line.section !== 'transport') {
+        setLineSection(line, 'transport');
+        renderInvoiceEditor();
+        return;
+      }
+      renderDisplay();
+      if (getLineSection(line) !== prevSection) renderInvoiceEditor();
+      else updateSectionHeaders();
+    };
+    cell._cancelEdit = () => {
+      activeInvoiceEditCell = null;
+      renderDisplay();
+    };
+    cell._commitEdit = commit;
+    select.addEventListener('change', commit);
+    select.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (cell.classList.contains('is-editing')) commit();
+      }, 0);
+    });
+    select.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cell._cancelEdit();
+      }
+    });
+  };
+
+  renderDisplay();
+}
+
+function attachTypeEditCell(cell, line) {
+  const renderDisplay = () => {
+    cell.classList.remove('is-editing');
+    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[getLineSection(line)])}</span>`;
+    cell.onclick = () => startEdit();
+  };
+
+  const startEdit = () => {
+    if (cell.classList.contains('is-editing')) return;
+    closeActiveInvoiceEdit({ commit: true });
+    activeInvoiceEditCell = cell;
+    cell.classList.add('is-editing');
+    const current = getLineSection(line);
+    const options = INVOICE_BUCKETS
+      .map((b) => `<option value="${b}" ${b === current ? 'selected' : ''}>${escapeHtml(BUCKET_LABEL[b])}</option>`)
+      .join('');
+    cell.innerHTML = `<select class="inv-edit-select">${options}</select>`;
+    const select = cell.querySelector('.inv-edit-select');
+    select.focus();
+    const commit = () => {
+      const next = select.value;
+      activeInvoiceEditCell = null;
+      if (next !== getLineSection(line)) {
+        setLineSection(line, next);
+        renderInvoiceEditor();
+      } else {
+        renderDisplay();
+      }
+    };
+    cell._cancelEdit = () => {
+      activeInvoiceEditCell = null;
+      renderDisplay();
+    };
+    cell._commitEdit = commit;
+    select.addEventListener('change', commit);
+    select.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (cell.classList.contains('is-editing')) commit();
+      }, 0);
+    });
+    select.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cell._cancelEdit();
+      }
+    });
+  };
+
+  renderDisplay();
+}
+
+function attachInvoiceRowEditors(tr, line, accounts) {
+  attachTextEditCell(tr.querySelector('[data-field="date"]'), line, 'date', { inputType: 'date' });
+  attachTextEditCell(tr.querySelector('[data-field="description"]'), line, 'description', { inputType: 'text' });
+  attachAccountEditCell(tr.querySelector('[data-field="accountCode"]'), line, accounts);
+  attachTypeEditCell(tr.querySelector('[data-field="section"]'), line);
+  attachTextEditCell(tr.querySelector('[data-field="remark"]'), line, 'remark', { inputType: 'text' });
+  attachTextEditCell(tr.querySelector('[data-field="amount"]'), line, 'amount', {
+    inputType: 'number',
+    inputAttrs: 'step="0.01" min="0"',
+    format: (v) => `S$${Number(v).toFixed(2)}`,
+    parse: (v) => {
+      const n = Number(v);
+      return Number.isFinite(n) ? n : 0;
+    },
+  });
+  tr.querySelector('.inv-preview-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    openPreview(line.receiptKey, line.receiptName);
+  });
+}
+
+function updateSectionHeaders() {
+  if (!invoicesSectionsEl) return;
+  INVOICE_BUCKETS.forEach((bucket) => {
+    const section = invoicesSectionsEl.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
+    if (!section) return;
+    const lines = sortBucketLines(bucketLines(bucket));
+    const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+    const meta = section.querySelector('.invoice-section-meta');
+    if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}`;
+    const pushBtn = section.querySelector('.invoice-push-btn');
+    if (pushBtn) pushBtn.disabled = lines.length === 0;
+    const totalCell = section.querySelector('tfoot tr td:last-child strong');
+    if (totalCell) totalCell.textContent = `S$${total.toFixed(2)}`;
+  });
+}
+
+function bindInvoiceSectionEvents() {
+  if (!invoicesSectionsEl) return;
+  invoicesSectionsEl.querySelectorAll('.invoice-section').forEach((section) => {
+    const bucket = section.dataset.bucket;
+    section.addEventListener('toggle', () => {
+      saveSectionCollapsed(bucket, !section.open);
+    });
+    const pushBtn = section.querySelector('.invoice-push-btn');
+    if (pushBtn) {
+      pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
+    }
+    const tbody = section.querySelector('tbody');
+    tbody.querySelectorAll('tr[data-id]').forEach((tr) => {
+      const line = invoiceLines.find((l) => l.id === tr.dataset.id);
+      if (line) attachInvoiceRowEditors(tr, line, invoiceAccounts());
+    });
+  });
 }
 
 function renderInvoiceEditor() {
@@ -2019,85 +2373,47 @@ function renderInvoiceEditor() {
   }
 
   const accounts = invoiceAccounts();
+  const generation = ++invoiceRenderGeneration;
   invoicesEmpty.hidden = invoiceLines.length > 0;
   invoicesEmpty.textContent = INVOICE_EMPTY_TEXT;
 
-  invoiceRows.innerHTML = invoiceLines
-    .map((line) => {
-      const options = accounts
-        .map((a) => `<option value="${escapeHtml(a.code)}" ${a.code === line.accountCode ? 'selected' : ''}>${escapeHtml(a.code)} — ${escapeHtml(a.name)}</option>`)
-        .join('');
-      const usdNote = line.currency === 'USD' ? ' <span class="usd-note">(USD)</span>' : '';
-      const bucket = lineBucket(line);
-      return `
-        <tr data-id="${escapeHtml(line.id)}" class="${line.include ? '' : 'row-excluded'}">
-          <td class="col-incl"><input type="checkbox" class="inv-include" ${line.include ? 'checked' : ''}></td>
-          <td><input type="date" class="inv-date" value="${escapeHtml(line.date || '')}"></td>
-          <td><input type="text" class="inv-desc" value="${escapeHtml(line.description)}"></td>
-          <td><select class="inv-account">${options}</select></td>
-          <td class="num"><input type="number" step="0.01" min="0" class="inv-amount" value="${line.amount.toFixed(2)}">${usdNote}</td>
-          <td><input type="text" class="inv-remark" placeholder="optional" value="${escapeHtml(line.remark)}"></td>
-          <td class="col-gst"><input type="checkbox" class="inv-gst" ${line.gstShown ? 'checked' : ''}></td>
-          <td class="col-bucket"><span class="bucket-chip bucket-${bucket}">${BUCKET_LABEL[bucket]}</span></td>
-          <td><button type="button" class="inv-preview-btn" title="Preview receipt">view</button></td>
-        </tr>`;
-    })
+  if (!invoicesSectionsEl) return;
+
+  if (invoiceLines.length === 0) {
+    invoicesSectionsEl.innerHTML = '';
+    return;
+  }
+
+  invoicesSectionsEl.innerHTML = INVOICE_BUCKETS
+    .map((bucket) => renderInvoiceSection(bucket, sortBucketLines(bucketLines(bucket)), accounts))
     .join('');
 
-  invoiceRows.querySelectorAll('tr[data-id]').forEach((tr) => {
-    const line = invoiceLines.find((l) => l.id === tr.dataset.id);
-    if (!line) return;
-    tr.querySelector('.inv-include').addEventListener('change', (e) => {
-      line.include = e.target.checked;
-      tr.classList.toggle('row-excluded', !line.include);
-      saveInvoiceEdit(line.id, { include: line.include });
-      renderBucketSummary();
+  if (generation !== invoiceRenderGeneration) return;
+  bindInvoiceSectionEvents();
+}
+
+function renderInvoiceEditorDeferred() {
+  const generation = ++invoiceRenderGeneration;
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        if (generation === invoiceRenderGeneration) renderInvoiceEditor();
+        resolve();
+      }, 0);
     });
-    tr.querySelector('.inv-date').addEventListener('change', (e) => {
-      line.date = e.target.value;
-      saveInvoiceEdit(line.id, { date: line.date });
-    });
-    tr.querySelector('.inv-desc').addEventListener('input', (e) => {
-      line.description = e.target.value;
-      saveInvoiceEdit(line.id, { description: line.description });
-    });
-    tr.querySelector('.inv-remark').addEventListener('input', (e) => {
-      line.remark = e.target.value;
-      saveInvoiceEdit(line.id, { remark: line.remark });
-    });
-    tr.querySelector('.inv-amount').addEventListener('input', (e) => {
-      const v = Number(e.target.value);
-      line.amount = Number.isFinite(v) ? v : 0;
-      saveInvoiceEdit(line.id, { amount: line.amount });
-      renderBucketSummary();
-    });
-    tr.querySelector('.inv-account').addEventListener('change', (e) => {
-      line.accountCode = e.target.value;
-      saveInvoiceEdit(line.id, { accountCode: line.accountCode });
-      updateRowBucket(tr, line);
-      renderBucketSummary();
-    });
-    tr.querySelector('.inv-gst').addEventListener('change', (e) => {
-      line.gstShown = e.target.checked;
-      saveInvoiceEdit(line.id, { gstShown: line.gstShown });
-      updateRowBucket(tr, line);
-      renderBucketSummary();
-    });
-    tr.querySelector('.inv-preview-btn').addEventListener('click', () => openPreview(line.receiptKey, line.receiptName));
   });
-
-  renderBucketSummary();
 }
 
-function updateRowBucket(tr, line) {
-  const chip = tr.querySelector('.bucket-chip');
-  const bucket = lineBucket(line);
-  chip.className = `bucket-chip bucket-${bucket}`;
-  chip.textContent = BUCKET_LABEL[bucket];
-}
-
-function bucketLines(bucket) {
-  return invoiceLines.filter((l) => l.include && lineBucket(l) === bucket);
+async function refreshInvoicesView({ showLoading = true } = {}) {
+  if (showLoading) setInvoicesLoading(true);
+  try {
+    await loadReceipts();
+    await loadYnabTodos();
+    buildInvoiceLines();
+    await renderInvoiceEditorDeferred();
+  } finally {
+    setInvoicesLoading(false);
+  }
 }
 
 // Group by account code, then date ascending within the account.
@@ -2108,12 +2424,8 @@ function sortBucketLines(lines) {
   });
 }
 
-function renderBucketSummary() {
-  ['gst', 'nongst', 'transport'].forEach((bucket) => {
-    const lines = bucketLines(bucket);
-    const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
-    bucketMetaEls[bucket].textContent = `(${lines.length} · S$${total.toFixed(2)})`;
-  });
+function bucketLines(bucket) {
+  return invoiceLines.filter((l) => getLineSection(l) === bucket && l.include !== false);
 }
 
 // YNAB transfer transactions carry a payee like "Transfer : Work Refundables",
@@ -2128,101 +2440,17 @@ function lineToDescription(line) {
   return line.remark ? `${base} — ${line.remark}` : base;
 }
 
-function bucketButtonEls() {
-  return invoicesBucketsEl ? [...invoicesBucketsEl.querySelectorAll('.bucket-btn')] : [];
-}
-
-function updateBucketButtonUi() {
-  bucketButtonEls().forEach((btn) => {
-    const bucket = btn.dataset.bucket;
-    const isActive = activeInvoiceBucket === bucket && !invoicePreview.hidden;
-    const isGenerating = invoicePreviewBusy && activeInvoiceBucket === bucket;
-    btn.classList.toggle('bucket-btn-active', isActive);
-    btn.disabled = invoicePreviewBusy;
-    btn.setAttribute('aria-busy', isGenerating ? 'true' : 'false');
-    const labelEl = btn.querySelector('.bucket-btn-label');
-    if (labelEl) {
-      labelEl.textContent = isGenerating
-        ? 'Generating preview…'
-        : (BUCKET_BTN_LABEL[bucket] || 'Generate invoice');
-    }
-  });
-}
-
-function renderInvoicePreviewDoc(bucket) {
-  const lines = sortBucketLines(bucketLines(bucket));
-  activeInvoiceBucket = bucket;
-  invoicePreview.hidden = false;
-
-  if (lines.length === 0) {
-    invoicePreview.innerHTML = `<p class="empty-state">No ${BUCKET_LABEL[bucket]} items selected. Tick the include column for lines you want in this bill.</p>`;
-    updateBucketButtonUi();
-    return;
-  }
-
-  const accounts = invoiceAccounts();
-  const accName = (code) => (accounts.find((a) => a.code === code) || {}).name || '';
-  const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
-  const rowsHtml = lines
-    .map((l) => `
-      <tr>
-        <td>${escapeHtml(l.date)}</td>
-        <td>${escapeHtml(lineToDescription(l))}</td>
-        <td>${escapeHtml(l.accountCode)} ${escapeHtml(accName(l.accountCode))}</td>
-        <td>${escapeHtml(deriveTaxType(l))}</td>
-        <td class="num">S$${Number(l.amount).toFixed(2)}</td>
-      </tr>`)
-    .join('');
-
-  invoicePreview.innerHTML = `
-    <div class="invoice-doc">
-      <div class="invoice-doc-head">
-        <h3>${BUCKET_LABEL[bucket]} claims — DRAFT bill</h3>
-        <p>Payee: <strong>Soon Yin Jie</strong> · ${lines.length} line items · tax-inclusive</p>
-      </div>
-      <table class="invoice-doc-table">
-        <thead><tr><th>Date</th><th>Description</th><th>Account</th><th>Tax</th><th class="num">Amount</th></tr></thead>
-        <tbody>${rowsHtml}</tbody>
-        <tfoot><tr><td colspan="4" class="num"><strong>Total</strong></td><td class="num"><strong>S$${total.toFixed(2)}</strong></td></tr></tfoot>
-      </table>
-      <div class="invoice-doc-actions">
-        <button type="button" id="pushInvoiceBtn" class="btn-primary" data-bucket="${bucket}">Push to Xero (draft)</button>
-        <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts. You can still edit it in Xero before approving.</span>
-      </div>
+function showSectionPushResult(bucket, data, warnings) {
+  const section = invoicesSectionsEl?.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
+  const statusEl = section?.querySelector('.invoice-section-status');
+  if (!statusEl) return;
+  const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+  statusEl.innerHTML = `
+    <div class="invoice-push-result">
+      <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
+      <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
+      ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>⚠️ ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
-
-  const pushBtn = document.getElementById('pushInvoiceBtn');
-  if (pushBtn) pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
-  updateBucketButtonUi();
-}
-
-function generateInvoice(bucket) {
-  if (invoicePreviewBusy) return;
-
-  const generation = ++invoicePreviewGeneration;
-  invoicePreviewBusy = true;
-  activeInvoiceBucket = bucket;
-  invoicePreview.hidden = false;
-  invoicePreview.innerHTML = `<p class="invoice-preview-loading" role="status">Building ${BUCKET_LABEL[bucket]} preview…</p>`;
-  updateBucketButtonUi();
-  invoicePreview.scrollIntoView({ block: 'nearest' });
-
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      if (generation !== invoicePreviewGeneration) return;
-      try {
-        renderInvoicePreviewDoc(bucket);
-      } catch (err) {
-        if (generation !== invoicePreviewGeneration) return;
-        invoicePreview.innerHTML = `<p class="empty-state">Could not build preview: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
-      } finally {
-        if (generation !== invoicePreviewGeneration) return;
-        invoicePreviewBusy = false;
-        updateBucketButtonUi();
-        renderBucketSummary();
-      }
-    }, 0);
-  });
 }
 
 async function pushInvoice(bucket, btn) {
@@ -2231,14 +2459,16 @@ async function pushInvoice(bucket, btn) {
     return;
   }
 
-  const lines = sortBucketLines(bucketLines(bucket));
+  commitActiveInvoiceEdit();
+
+  const lines = sortBucketLines(bucketLines(bucket)).filter((l) => (Number(l.amount) || 0) > 0);
   if (lines.length === 0) return;
   if (!xeroConnected) {
     showStatus('error', 'Connect Xero first.');
     return;
   }
   const reference = window.prompt(`Reference / note for the ${BUCKET_LABEL[bucket]} bill:`, `${BUCKET_LABEL[bucket]} claims`);
-  if (reference === null) return; // cancelled
+  if (reference === null) return;
 
   btn.disabled = true;
   btn.textContent = 'Pushing…';
@@ -2273,17 +2503,10 @@ async function pushInvoice(bucket, btn) {
     } else {
       showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachedCount} receipts attached).`);
     }
-    invoicePreview.innerHTML = `
-      <div class="invoice-doc">
-        <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
-        <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
-        ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>⚠️ ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
-      </div>`;
+    showSectionPushResult(bucket, data, warnings);
 
-    await loadReceipts();
-    await loadYnabTodos();
-    buildInvoiceLines();
-    renderInvoiceEditor();
+    await refreshInvoicesView({ showLoading: false });
+    showSectionPushResult(bucket, data, warnings);
   } catch (err) {
     showStatus('error', `Push failed: ${err instanceof Error ? err.message : String(err)}`);
     btn.disabled = false;
@@ -2374,23 +2597,20 @@ function navigateToMode(invoices, { replace = false } = {}) {
   showInvoicesView(invoices);
 }
 
-function showInvoicesView(show) {
+function showInvoicesView(show, { refresh = true } = {}) {
   invoicesActive = show;
   if (claimsView) claimsView.hidden = show;
   invoicesView.hidden = !show;
   updateModeNav(show);
   updateAppTitle(show);
-  invalidateInvoicePreviewGeneration();
   if (show) {
-    invoicePreview.hidden = true;
-    activeInvoiceBucket = null;
-    updateBucketButtonUi();
+    closeActiveInvoiceEdit({ commit: true });
     loadXeroStatus();
-    buildInvoiceLines();
-    renderInvoiceEditor();
+    if (refresh && getAuthToken()) {
+      refreshInvoicesView({ showLoading: true });
+    }
   } else {
-    activeInvoiceBucket = null;
-    updateBucketButtonUi();
+    closeActiveInvoiceEdit({ commit: true });
   }
 }
 
@@ -2408,10 +2628,7 @@ window.addEventListener('popstate', () => {
   showInvoicesView(isInvoicesPath());
 });
 invoicesRefreshBtn.addEventListener('click', async () => {
-  await loadReceipts();
-  await loadYnabTodos();
-  buildInvoiceLines();
-  renderInvoiceEditor();
+  await refreshInvoicesView({ showLoading: true });
   loadXeroStatus();
 });
 
@@ -2444,9 +2661,7 @@ detectGstBtn.addEventListener('click', async () => {
       if (result.remaining <= 0 || result.processed === 0 || result.tagged === 0) break;
     }
     detectGstBtn.textContent = failed ? `Done: ${tagged} tagged, ${failed} failed` : `Done: ${tagged} tagged`;
-    await loadReceipts();
-    buildInvoiceLines();
-    renderInvoiceEditor();
+    await refreshInvoicesView({ showLoading: false });
   } catch (error) {
     detectGstBtn.textContent = 'Detect GST failed';
     console.error('GST detection failed', error);
@@ -2455,16 +2670,9 @@ detectGstBtn.addEventListener('click', async () => {
     setTimeout(() => { detectGstBtn.textContent = 'Detect GST'; }, 4000);
   }
 });
-if (invoicesBucketsEl) {
-  invoicesBucketsEl.addEventListener('click', (event) => {
-    const btn = event.target.closest('.bucket-btn');
-    if (!btn || btn.disabled) return;
-    generateInvoice(btn.dataset.bucket);
-  });
-}
 
 // Apply route on first paint so /invoices shows the invoice shell immediately.
-showInvoicesView(isInvoicesPath());
+showInvoicesView(isInvoicesPath(), { refresh: false });
 
 // Initial load with auth check
 async function init() {
@@ -2475,8 +2683,8 @@ async function init() {
     const xeroJustConnected = new URLSearchParams(location.search).get('xero') === 'connected';
     if (xeroJustConnected) {
       navigateToMode(true, { replace: true });
-    } else {
-      showInvoicesView(isInvoicesPath());
+    } else if (isInvoicesPath()) {
+      showInvoicesView(true);
     }
   }
 }
