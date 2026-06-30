@@ -1731,9 +1731,23 @@ h2 {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 
-.bucket-btn:hover {
+.bucket-btn:hover:not(:disabled) {
   border-color: #007aff;
   box-shadow: 0 2px 8px rgba(0, 122, 255, 0.12);
+}
+
+.bucket-btn:disabled {
+  opacity: 0.72;
+  cursor: wait;
+}
+
+.bucket-btn-active {
+  border-color: #007aff;
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.18);
+}
+
+.bucket-btn-label {
+  display: block;
 }
 
 .bucket-meta {
@@ -1846,6 +1860,17 @@ h2 {
 
 .invoice-preview {
   margin-top: 18px;
+  margin-bottom: 18px;
+}
+
+.invoice-preview-loading {
+  margin: 0;
+  padding: 18px 20px;
+  background: #fff;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  color: #64748b;
+  font-size: 0.92rem;
 }
 
 .invoice-doc {
@@ -1929,6 +1954,17 @@ h2 {
   background: #0f172a;
   border-color: #334155;
   color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .bucket-btn-active {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.22);
+}
+
+:root[data-theme="dark"] .invoice-preview-loading {
+  background: #1e293b;
+  border-color: #475569;
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] .invoices-table th {

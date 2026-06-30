@@ -133,15 +133,20 @@
 
       <div class="invoices-buckets">
         <button class="bucket-btn" data-bucket="gst" type="button">
-          Generate GST invoice <span class="bucket-meta" id="bucketGst">(0 · S$0.00)</span>
+          <span class="bucket-btn-label">Generate GST invoice</span>
+          <span class="bucket-meta" id="bucketGst">(0 · S$0.00)</span>
         </button>
         <button class="bucket-btn" data-bucket="nongst" type="button">
-          Generate non-GST invoice <span class="bucket-meta" id="bucketNongst">(0 · S$0.00)</span>
+          <span class="bucket-btn-label">Generate non-GST invoice</span>
+          <span class="bucket-meta" id="bucketNongst">(0 · S$0.00)</span>
         </button>
         <button class="bucket-btn" data-bucket="transport" type="button">
-          Generate transport invoice <span class="bucket-meta" id="bucketTransport">(0 · S$0.00)</span>
+          <span class="bucket-btn-label">Generate transport invoice</span>
+          <span class="bucket-meta" id="bucketTransport">(0 · S$0.00)</span>
         </button>
       </div>
+
+      <div id="invoicePreview" class="invoice-preview" hidden></div>
 
       <div class="invoices-editor-wrap">
         <table class="invoices-table">
@@ -164,8 +169,6 @@
           No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.
         </p>
       </div>
-
-      <div id="invoicePreview" class="invoice-preview" hidden></div>
     </div>
   </div>
 
