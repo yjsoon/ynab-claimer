@@ -2110,7 +2110,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
         </div>
         <div class="invoice-section-status" role="status" aria-live="polite"></div>
         <div class="invoice-doc-actions">
-          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${lines.length === 0 ? 'disabled' : ''}>Push to Xero (draft)</button>
+          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${pushableBucketLines(bucket).length === 0 ? 'disabled' : ''}>Push to Xero (draft)</button>
           <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts.</span>
         </div>
       </div>
@@ -2228,8 +2228,14 @@ function attachAccountEditCell(cell, line, accounts) {
       saveInvoiceEdit(line.id, { accountCode: line.accountCode });
       activeInvoiceEditCell = null;
       const prevSection = getLineSection(line);
-      if (TRANSPORT_CODES.includes(line.accountCode) && line.section !== 'transport') {
+      if (TRANSPORT_CODES.includes(line.accountCode) && getLineSection(line) !== 'transport') {
         setLineSection(line, 'transport');
+        renderInvoiceEditor();
+        return;
+      }
+      if (line.section === 'transport' && !TRANSPORT_CODES.includes(line.accountCode)) {
+        line.section = line.gstShown ? 'gst' : 'nongst';
+        saveInvoiceEdit(line.id, { section: line.section, accountCode: line.accountCode });
         renderInvoiceEditor();
         return;
       }
@@ -2341,7 +2347,7 @@ function updateSectionHeaders() {
     const meta = section.querySelector('.invoice-section-meta');
     if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}`;
     const pushBtn = section.querySelector('.invoice-push-btn');
-    if (pushBtn) pushBtn.disabled = lines.length === 0;
+    if (pushBtn) pushBtn.disabled = pushableBucketLines(bucket).length === 0;
     const totalCell = section.querySelector('tfoot tr td:last-child strong');
     if (totalCell) totalCell.textContent = `S$${total.toFixed(2)}`;
   });
@@ -2371,6 +2377,8 @@ function renderInvoiceEditor() {
     renderInvoiceClaimLoadError();
     return;
   }
+
+  commitActiveInvoiceEdit();
 
   const accounts = invoiceAccounts();
   const generation = ++invoiceRenderGeneration;
@@ -2405,6 +2413,7 @@ function renderInvoiceEditorDeferred() {
 }
 
 async function refreshInvoicesView({ showLoading = true } = {}) {
+  commitActiveInvoiceEdit();
   if (showLoading) setInvoicesLoading(true);
   try {
     await loadReceipts();
@@ -2426,6 +2435,10 @@ function sortBucketLines(lines) {
 
 function bucketLines(bucket) {
   return invoiceLines.filter((l) => getLineSection(l) === bucket && l.include !== false);
+}
+
+function pushableBucketLines(bucket) {
+  return sortBucketLines(bucketLines(bucket)).filter((l) => (Number(l.amount) || 0) > 0);
 }
 
 // YNAB transfer transactions carry a payee like "Transfer : Work Refundables",
@@ -2461,8 +2474,11 @@ async function pushInvoice(bucket, btn) {
 
   commitActiveInvoiceEdit();
 
-  const lines = sortBucketLines(bucketLines(bucket)).filter((l) => (Number(l.amount) || 0) > 0);
-  if (lines.length === 0) return;
+  const lines = pushableBucketLines(bucket);
+  if (lines.length === 0) {
+    showStatus('error', `No ${BUCKET_LABEL[bucket]} lines with an amount above S$0.00 to push.`);
+    return;
+  }
   if (!xeroConnected) {
     showStatus('error', 'Connect Xero first.');
     return;
