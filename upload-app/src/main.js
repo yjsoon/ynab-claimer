@@ -2,6 +2,7 @@ const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
 const THEME_KEY = 'claim_manager_theme';
+const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 
 // Upload constraints (must match server)
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -20,6 +21,9 @@ const refreshBtn = document.getElementById('refreshBtn');
 const themeToggle = document.getElementById('themeToggle');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
+const claimFilterInput = document.getElementById('claimFilterInput');
+const claimFilterPills = document.getElementById('claimFilterPills');
+const claimFilterClear = document.getElementById('claimFilterClear');
 const authOverlay = document.getElementById('authOverlay');
 const passwordInput = document.getElementById('passwordInput');
 const authSubmit = document.getElementById('authSubmit');
@@ -51,6 +55,16 @@ let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
 
 const READY_CLAIM_ID_PREFIX = 'receipt-ready:';
+const DEFAULT_CLAIM_FILTERS = [
+  'Update with actual',
+  'MYR',
+  'USD',
+  'Transfer',
+];
+let claimFilterState = {
+  text: '',
+  quickFilters: [],
+};
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -437,6 +451,80 @@ function escapeHtml(str) {
   const div = document.createElement('div');
   div.textContent = str;
   return div.innerHTML;
+}
+
+function normaliseFilterTerm(term) {
+  return String(term || '').trim().toLowerCase();
+}
+
+function loadClaimFilterState() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(CLAIM_FILTER_KEY) || '{}');
+    return {
+      text: typeof stored.text === 'string' ? stored.text : '',
+      quickFilters: Array.isArray(stored.quickFilters)
+        ? stored.quickFilters.filter((term) => typeof term === 'string' && term.trim())
+        : [],
+    };
+  } catch {
+    return { text: '', quickFilters: [] };
+  }
+}
+
+function saveClaimFilterState() {
+  localStorage.setItem(CLAIM_FILTER_KEY, JSON.stringify(claimFilterState));
+}
+
+function getManualClaimFilterTerms() {
+  return claimFilterState.text
+    .split(/[,;\n]+/)
+    .map(normaliseFilterTerm)
+    .filter(Boolean);
+}
+
+function getClaimFilterTerms() {
+  const quickTerms = claimFilterState.quickFilters.map(normaliseFilterTerm).filter(Boolean);
+  return Array.from(new Set([...getManualClaimFilterTerms(), ...quickTerms]));
+}
+
+function getClaimSearchText(claim) {
+  return [
+    claim.description,
+    claim.payee,
+    claim.accountName,
+    claim.date,
+    Number.isFinite(Number(claim.amount)) ? Number(claim.amount).toFixed(2) : '',
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function claimMatchesHideFilter(claim, terms) {
+  if (terms.length === 0) return false;
+  const text = getClaimSearchText(claim);
+  return terms.some((term) => text.includes(term));
+}
+
+function renderClaimFilterControls() {
+  if (!claimFilterInput || !claimFilterPills || !claimFilterClear) return;
+
+  claimFilterInput.value = claimFilterState.text;
+  const activeQuickFilters = new Set(claimFilterState.quickFilters.map(normaliseFilterTerm));
+  claimFilterPills.innerHTML = DEFAULT_CLAIM_FILTERS.map((term) => {
+    const isActive = activeQuickFilters.has(normaliseFilterTerm(term));
+    return `
+      <button
+        class="claim-filter-pill${isActive ? ' active' : ''}"
+        type="button"
+        data-filter="${escapeHtml(term)}"
+        aria-pressed="${isActive ? 'true' : 'false'}"
+      >${escapeHtml(term)}</button>
+    `;
+  }).join('');
+
+  const hasFilters = claimFilterState.text.trim() || claimFilterState.quickFilters.length > 0;
+  claimFilterClear.hidden = !hasFilters;
 }
 
 function formatDateForLocale(date) {
@@ -1025,12 +1113,12 @@ async function loadYnabTodos() {
       headers: authHeaders(),
     });
 
-    if (response.status === 401) {
+    const data = await response.json();
+
+    if (response.status === 401 && data.error === 'Unauthorized') {
       showPasswordPrompt();
       return;
     }
-
-    const data = await response.json();
 
     if (data.error) {
       todoList.innerHTML = `<li class="empty-state">Error: ${escapeHtml(data.error)}</li>`;
@@ -1039,37 +1127,61 @@ async function loadYnabTodos() {
     }
 
     claimsData = data.todos.sort((a, b) => new Date(b.date) - new Date(a.date));
+    renderOutstandingClaims();
+    renderLinkedPairs();
+  } catch (err) {
+    console.error('Failed to load YNAB todos:', err);
+    todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
+  }
+}
 
-    // Find which claims have linked receipts
-    const linkedReceiptsByClaimId = new Map();
-    receiptsData.forEach((receipt) => {
-      const linkedClaimIds = getLinkedClaimIds(receipt);
-      linkedClaimIds.forEach((linkedClaimId) => {
-        const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
-        linkedReceipts.push(receipt);
-        linkedReceiptsByClaimId.set(linkedClaimId, linkedReceipts);
-      });
+function getOutstandingClaims() {
+  const linkedReceiptsByClaimId = new Map();
+  receiptsData.forEach((receipt) => {
+    const linkedClaimIds = getLinkedClaimIds(receipt);
+    linkedClaimIds.forEach((linkedClaimId) => {
+      const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
+      linkedReceipts.push(receipt);
+      linkedReceiptsByClaimId.set(linkedClaimId, linkedReceipts);
     });
-    const outstandingClaims = claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
-    todoCount.textContent = `(${outstandingClaims.length})`;
-    claimBadge.textContent = outstandingClaims.length || '';
+  });
 
-    if (outstandingClaims.length === 0) {
-      todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
-      applyLinkingHighlights();
-      renderLinkedPairs();
-      return;
-    }
+  return claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
+}
 
-    todoList.innerHTML = outstandingClaims
-      .map((t) => {
-        const accountName = (t.accountName || '').trim();
-        const accountLabel = accountName || 'Unknown account';
-        const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+function renderOutstandingClaims() {
+  renderClaimFilterControls();
+
+  const outstandingClaims = getOutstandingClaims();
+  const filterTerms = getClaimFilterTerms();
+  const visibleClaims = outstandingClaims.filter((claim) => !claimMatchesHideFilter(claim, filterTerms));
+
+  todoCount.textContent = filterTerms.length > 0
+    ? `(${visibleClaims.length} of ${outstandingClaims.length})`
+    : `(${outstandingClaims.length})`;
+  claimBadge.textContent = visibleClaims.length || '';
+
+  if (outstandingClaims.length === 0) {
+    todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
+    applyLinkingHighlights();
+    return;
+  }
+
+  if (visibleClaims.length === 0) {
+    todoList.innerHTML = '<li class="empty-state">No outstanding claims match the current filters</li>';
+    applyLinkingHighlights();
+    return;
+  }
+
+  todoList.innerHTML = visibleClaims
+    .map((t) => {
+      const accountName = (t.accountName || '').trim();
+      const accountLabel = accountName || 'Unknown account';
+      const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>`;
-        return `
+      return `
         <li class="todo-item" data-claim-id="${escapeHtml(t.id)}"
             data-amount="${t.amount}" data-description="${escapeHtml(t.description)}"
             data-date="${t.date}">
@@ -1092,26 +1204,59 @@ async function loadYnabTodos() {
           </div>
         </li>
       `;
-      })
-      .join('');
+    })
+    .join('');
 
-    // Attach click handlers for linking
-    todoList.querySelectorAll('.todo-item[data-claim-id]').forEach(li => {
-      li.addEventListener('click', (e) => handleClaimClick(e, li));
-      li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
-    });
-    applyLinkingHighlights();
-    renderLinkedPairs();
-  } catch (err) {
-    console.error('Failed to load YNAB todos:', err);
-    todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
-  }
+  // Attach click handlers for linking
+  todoList.querySelectorAll('.todo-item[data-claim-id]').forEach(li => {
+    li.addEventListener('click', (e) => handleClaimClick(e, li));
+    li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
+  });
+  applyLinkingHighlights();
 }
 
 refreshBtn.addEventListener('click', async () => {
   await loadReceipts();
   await loadYnabTodos();
 });
+
+if (claimFilterInput) {
+  claimFilterState = loadClaimFilterState();
+  renderClaimFilterControls();
+
+  claimFilterInput.addEventListener('input', () => {
+    claimFilterState.text = claimFilterInput.value;
+    saveClaimFilterState();
+    renderOutstandingClaims();
+  });
+}
+
+if (claimFilterPills) {
+  claimFilterPills.addEventListener('click', (event) => {
+    const button = event.target.closest('.claim-filter-pill');
+    if (!button) return;
+    const filter = button.dataset.filter || '';
+    const normalisedFilter = normaliseFilterTerm(filter);
+    const activeQuickFilters = new Set(claimFilterState.quickFilters.map(normaliseFilterTerm));
+    if (activeQuickFilters.has(normalisedFilter)) {
+      claimFilterState.quickFilters = claimFilterState.quickFilters
+        .filter((term) => normaliseFilterTerm(term) !== normalisedFilter);
+    } else {
+      claimFilterState.quickFilters = [...claimFilterState.quickFilters, filter];
+    }
+    saveClaimFilterState();
+    renderOutstandingClaims();
+  });
+}
+
+if (claimFilterClear) {
+  claimFilterClear.addEventListener('click', () => {
+    claimFilterState = { text: '', quickFilters: [] };
+    saveClaimFilterState();
+    renderOutstandingClaims();
+    claimFilterInput?.focus();
+  });
+}
 
 authSubmit.addEventListener('click', handlePasswordSubmit);
 passwordInput.addEventListener('keydown', (e) => {
