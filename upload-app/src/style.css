@@ -362,6 +362,73 @@ h2 {
   list-style: none;
 }
 
+.claim-filter {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  margin: -2px 0 12px;
+}
+
+.claim-filter-input {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2937;
+  padding: 8px 10px;
+  font-size: var(--font-size-body);
+}
+
+.claim-filter-input:focus {
+  border-color: #007aff;
+  outline: 2px solid rgba(0, 122, 255, 0.15);
+  outline-offset: 0;
+}
+
+.claim-filter-pills {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.claim-filter-pill,
+.claim-filter-clear {
+  border: 1px solid #d1d5db;
+  border-radius: 999px;
+  background: #f9fafb;
+  color: #374151;
+  cursor: pointer;
+  font-size: var(--font-size-chip);
+  font-weight: 600;
+  line-height: 1.2;
+  min-height: 30px;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.claim-filter-pill:hover,
+.claim-filter-clear:hover {
+  background: #eef2f7;
+}
+
+.claim-filter-pill.active {
+  border-color: #007aff;
+  background: #e6f2ff;
+  color: #0056b3;
+}
+
+.claim-filter-clear {
+  grid-column: 2;
+  grid-row: 1;
+  border-color: transparent;
+  background: transparent;
+  color: #6b7280;
+}
+
 .todo-item {
   display: flex;
   align-items: center;
@@ -1090,6 +1157,20 @@ h2 {
     justify-self: start;
   }
 
+  .claim-filter {
+    grid-template-columns: 1fr;
+  }
+
+  .claim-filter-pills,
+  .claim-filter-clear {
+    grid-column: 1;
+    grid-row: auto;
+  }
+
+  .claim-filter-clear {
+    justify-self: start;
+  }
+
   /* Add padding for action bar */
   body.selecting {
     padding-bottom: 80px;
@@ -1185,6 +1266,35 @@ h2 {
   background: #0f172a;
   color: #e2e8f0;
   border-color: #334155;
+}
+
+:root[data-theme="dark"] .claim-filter-input {
+  background: #0f172a;
+  color: #e2e8f0;
+  border-color: #334155;
+}
+
+:root[data-theme="dark"] .claim-filter-input:focus {
+  border-color: #60a5fa;
+  outline-color: rgba(96, 165, 250, 0.22);
+}
+
+:root[data-theme="dark"] .claim-filter-pill,
+:root[data-theme="dark"] .claim-filter-clear {
+  border-color: #334155;
+  background: #1f2937;
+  color: #cbd5e1;
+}
+
+:root[data-theme="dark"] .claim-filter-pill:hover,
+:root[data-theme="dark"] .claim-filter-clear:hover {
+  background: #334155;
+}
+
+:root[data-theme="dark"] .claim-filter-pill.active {
+  border-color: #60a5fa;
+  background: #1e3a8a;
+  color: #bfdbfe;
 }
 
 :root[data-theme="dark"] .tab-toggle {

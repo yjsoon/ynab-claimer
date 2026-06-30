@@ -69,6 +69,18 @@
     <div class="linking-container">
       <div class="list-column active" id="claimsColumn">
         <h2>Outstanding Claims <span id="todoCount">(0)</span></h2>
+        <div class="claim-filter">
+          <input
+            type="search"
+            id="claimFilterInput"
+            class="claim-filter-input"
+            aria-label="Hide outstanding claims by keyword"
+            placeholder="Hide words or phrases"
+            autocomplete="off"
+          >
+          <div id="claimFilterPills" class="claim-filter-pills" role="group" aria-label="Quick hide filters"></div>
+          <button id="claimFilterClear" class="claim-filter-clear" type="button">Clear</button>
+        </div>
         <ul id="todoList" class="todo-list"></ul>
       </div>
 

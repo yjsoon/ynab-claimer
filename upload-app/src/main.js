@@ -2,6 +2,7 @@ const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
 const THEME_KEY = 'claim_manager_theme';
+const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 
 // Upload constraints (must match server)
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
@@ -20,6 +21,9 @@ const refreshBtn = document.getElementById('refreshBtn');
 const themeToggle = document.getElementById('themeToggle');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
+const claimFilterInput = document.getElementById('claimFilterInput');
+const claimFilterPills = document.getElementById('claimFilterPills');
+const claimFilterClear = document.getElementById('claimFilterClear');
 const authOverlay = document.getElementById('authOverlay');
 const passwordInput = document.getElementById('passwordInput');
 const authSubmit = document.getElementById('authSubmit');
@@ -49,8 +53,19 @@ let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let claimsLoadErrorMessage = '';
 
 const READY_CLAIM_ID_PREFIX = 'receipt-ready:';
+const DEFAULT_CLAIM_FILTERS = [
+  'Update with actual',
+  'MYR',
+  'USD',
+  'Transfer',
+];
+let claimFilterState = {
+  text: '',
+  quickFilters: [],
+};
 
 // Preview modal elements
 const previewOverlay = document.getElementById('previewOverlay');
@@ -439,6 +454,122 @@ function escapeHtml(str) {
   return div.innerHTML;
 }
 
+function normaliseFilterTerm(term) {
+  return String(term || '').trim().toLowerCase();
+}
+
+function loadClaimFilterState() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(CLAIM_FILTER_KEY) || '{}');
+    return {
+      text: typeof stored.text === 'string' ? stored.text : '',
+      quickFilters: Array.isArray(stored.quickFilters)
+        ? stored.quickFilters.filter((term) => typeof term === 'string' && term.trim())
+        : [],
+    };
+  } catch {
+    return { text: '', quickFilters: [] };
+  }
+}
+
+function saveClaimFilterState() {
+  try {
+    localStorage.setItem(CLAIM_FILTER_KEY, JSON.stringify(claimFilterState));
+  } catch (error) {
+    console.warn('Claim filter preferences could not be saved:', error);
+  }
+}
+
+function getManualClaimFilterTerms() {
+  return claimFilterState.text
+    .split(/[,;\n]+/)
+    .map(normaliseFilterTerm)
+    .filter(Boolean);
+}
+
+function getClaimFilterTerms() {
+  const quickTerms = claimFilterState.quickFilters.map(normaliseFilterTerm).filter(Boolean);
+  return Array.from(new Set([...getManualClaimFilterTerms(), ...quickTerms]));
+}
+
+function getClaimSearchText(claim) {
+  return [
+    claim.description,
+    claim.payee,
+    claim.accountName,
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase();
+}
+
+function claimMatchesHideFilter(claim, terms) {
+  if (terms.length === 0) return false;
+  const text = getClaimSearchText(claim);
+  return terms.some((term) => {
+    if (term === 'transfer') {
+      return /^\s*transfer\s*:/i.test(claim.payee || '');
+    }
+    return text.includes(term);
+  });
+}
+
+function renderClaimFilterControls() {
+  if (!claimFilterInput || !claimFilterPills || !claimFilterClear) return;
+
+  if (document.activeElement !== claimFilterInput && claimFilterInput.value !== claimFilterState.text) {
+    claimFilterInput.value = claimFilterState.text;
+  }
+  const activeQuickFilters = new Set(claimFilterState.quickFilters.map(normaliseFilterTerm));
+  claimFilterPills.innerHTML = DEFAULT_CLAIM_FILTERS.map((term) => {
+    const isActive = activeQuickFilters.has(normaliseFilterTerm(term));
+    return `
+      <button
+        class="claim-filter-pill${isActive ? ' active' : ''}"
+        type="button"
+        data-filter="${escapeHtml(term)}"
+        aria-pressed="${isActive ? 'true' : 'false'}"
+      >${escapeHtml(term)}</button>
+    `;
+  }).join('');
+
+  const hasFilters = claimFilterState.text.trim() || claimFilterState.quickFilters.length > 0;
+  claimFilterClear.hidden = !hasFilters;
+}
+
+function pruneClaimSelectionToVisibleClaims(visibleClaims) {
+  const visibleClaimIds = new Set(visibleClaims.map((claim) => claim.id));
+
+  if (linkingSource === 'receipt') {
+    selectedClaimIds = new Set(
+      Array.from(selectedClaimIds).filter((claimId) => visibleClaimIds.has(claimId))
+    );
+  }
+
+  if (linkingSource === 'claim' && sourceClaimId && !visibleClaimIds.has(sourceClaimId)) {
+    linkingSource = null;
+    sourceClaimId = null;
+    selectedClaimIds.clear();
+    selectedReceiptKeys.clear();
+  }
+}
+
+function renderClaimLoadError(message) {
+  todoList.innerHTML = `<li class="empty-state">${escapeHtml(message)}</li>`;
+  todoCount.textContent = '(error)';
+  claimBadge.textContent = '';
+}
+
+function resetClaimsAfterLoadFailure(message) {
+  claimsLoadErrorMessage = message || 'Failed to load claims';
+  claimsData = [];
+  clearSelection();
+  renderClaimLoadError(claimsLoadErrorMessage);
+  linkedCount.textContent = '(error)';
+  linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
+  renderInvoiceClaimLoadError();
+}
+
 function formatDateForLocale(date) {
   return new Intl.DateTimeFormat(undefined, {
     year: 'numeric',
@@ -569,6 +700,12 @@ function formatLinkedPairReceiptAmount(receipt) {
 }
 
 function renderLinkedPairs() {
+  if (claimsLoadErrorMessage) {
+    linkedCount.textContent = '(error)';
+    linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
+    return;
+  }
+
   const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const linkedPairs = [];
 
@@ -1025,51 +1162,90 @@ async function loadYnabTodos() {
       headers: authHeaders(),
     });
 
-    if (response.status === 401) {
+    const data = await response.json().catch(() => null);
+
+    if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
+      clearAuthToken();
+      resetClaimsAfterLoadFailure('Authentication required');
       showPasswordPrompt();
       return;
     }
 
-    const data = await response.json();
+    if (!data) {
+      throw new Error(`Failed to fetch claims (${response.status})`);
+    }
 
     if (data.error) {
-      todoList.innerHTML = `<li class="empty-state">Error: ${escapeHtml(data.error)}</li>`;
-      todoCount.textContent = '(error)';
+      resetClaimsAfterLoadFailure(`Error: ${data.error}`);
       return;
     }
 
+    claimsLoadErrorMessage = '';
     claimsData = data.todos.sort((a, b) => new Date(b.date) - new Date(a.date));
+    renderOutstandingClaims();
+    renderLinkedPairs();
+  } catch (err) {
+    console.error('Failed to load YNAB todos:', err);
+    resetClaimsAfterLoadFailure('Failed to load claims');
+  }
+}
 
-    // Find which claims have linked receipts
-    const linkedReceiptsByClaimId = new Map();
-    receiptsData.forEach((receipt) => {
-      const linkedClaimIds = getLinkedClaimIds(receipt);
-      linkedClaimIds.forEach((linkedClaimId) => {
-        const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
-        linkedReceipts.push(receipt);
-        linkedReceiptsByClaimId.set(linkedClaimId, linkedReceipts);
-      });
+function getOutstandingClaims() {
+  const linkedReceiptsByClaimId = new Map();
+  receiptsData.forEach((receipt) => {
+    const linkedClaimIds = getLinkedClaimIds(receipt);
+    linkedClaimIds.forEach((linkedClaimId) => {
+      const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
+      linkedReceipts.push(receipt);
+      linkedReceiptsByClaimId.set(linkedClaimId, linkedReceipts);
     });
-    const outstandingClaims = claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
-    todoCount.textContent = `(${outstandingClaims.length})`;
-    claimBadge.textContent = outstandingClaims.length || '';
+  });
 
-    if (outstandingClaims.length === 0) {
-      todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
-      applyLinkingHighlights();
-      renderLinkedPairs();
-      return;
-    }
+  return claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
+}
 
-    todoList.innerHTML = outstandingClaims
-      .map((t) => {
-        const accountName = (t.accountName || '').trim();
-        const accountLabel = accountName || 'Unknown account';
-        const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+function renderOutstandingClaims() {
+  renderClaimFilterControls();
+
+  if (claimsLoadErrorMessage) {
+    renderClaimLoadError(claimsLoadErrorMessage);
+    applyLinkingHighlights();
+    return;
+  }
+
+  const outstandingClaims = getOutstandingClaims();
+  const filterTerms = getClaimFilterTerms();
+  const visibleClaims = outstandingClaims.filter((claim) => !claimMatchesHideFilter(claim, filterTerms));
+  pruneClaimSelectionToVisibleClaims(visibleClaims);
+
+  todoCount.textContent = filterTerms.length > 0
+    ? `(${visibleClaims.length} of ${outstandingClaims.length})`
+    : `(${outstandingClaims.length})`;
+  claimBadge.textContent = filterTerms.length > 0 && outstandingClaims.length > 0
+    ? `${visibleClaims.length}/${outstandingClaims.length}`
+    : outstandingClaims.length || '';
+
+  if (outstandingClaims.length === 0) {
+    todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
+    applyLinkingHighlights();
+    return;
+  }
+
+  if (visibleClaims.length === 0) {
+    todoList.innerHTML = '<li class="empty-state">No outstanding claims match the current filters</li>';
+    applyLinkingHighlights();
+    return;
+  }
+
+  todoList.innerHTML = visibleClaims
+    .map((t) => {
+      const accountName = (t.accountName || '').trim();
+      const accountLabel = accountName || 'Unknown account';
+      const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>`;
-        return `
+      return `
         <li class="todo-item" data-claim-id="${escapeHtml(t.id)}"
             data-amount="${t.amount}" data-description="${escapeHtml(t.description)}"
             data-date="${t.date}">
@@ -1092,26 +1268,62 @@ async function loadYnabTodos() {
           </div>
         </li>
       `;
-      })
-      .join('');
+    })
+    .join('');
 
-    // Attach click handlers for linking
-    todoList.querySelectorAll('.todo-item[data-claim-id]').forEach(li => {
-      li.addEventListener('click', (e) => handleClaimClick(e, li));
-      li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
-    });
-    applyLinkingHighlights();
-    renderLinkedPairs();
-  } catch (err) {
-    console.error('Failed to load YNAB todos:', err);
-    todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
-  }
+  // Attach click handlers for linking
+  todoList.querySelectorAll('.todo-item[data-claim-id]').forEach(li => {
+    li.addEventListener('click', (e) => handleClaimClick(e, li));
+    li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
+  });
+  applyLinkingHighlights();
 }
 
 refreshBtn.addEventListener('click', async () => {
   await loadReceipts();
   await loadYnabTodos();
 });
+
+if (claimFilterInput) {
+  claimFilterState = loadClaimFilterState();
+  renderClaimFilterControls();
+
+  claimFilterInput.addEventListener('input', () => {
+    claimFilterState.text = claimFilterInput.value;
+    saveClaimFilterState();
+    renderOutstandingClaims();
+  });
+}
+
+if (claimFilterPills) {
+  claimFilterPills.addEventListener('click', (event) => {
+    const button = event.target.closest('.claim-filter-pill');
+    if (!button) return;
+    const filter = button.dataset.filter || '';
+    const normalisedFilter = normaliseFilterTerm(filter);
+    const activeQuickFilters = new Set(claimFilterState.quickFilters.map(normaliseFilterTerm));
+    if (activeQuickFilters.has(normalisedFilter)) {
+      claimFilterState.quickFilters = claimFilterState.quickFilters
+        .filter((term) => normaliseFilterTerm(term) !== normalisedFilter);
+    } else {
+      claimFilterState.quickFilters = [...claimFilterState.quickFilters, filter];
+    }
+    saveClaimFilterState();
+    renderOutstandingClaims();
+    Array.from(claimFilterPills.querySelectorAll('.claim-filter-pill'))
+      .find((pill) => pill.dataset.filter === filter)
+      ?.focus();
+  });
+}
+
+if (claimFilterClear) {
+  claimFilterClear.addEventListener('click', () => {
+    claimFilterState = { text: '', quickFilters: [] };
+    saveClaimFilterState();
+    renderOutstandingClaims();
+    claimFilterInput?.focus();
+  });
+}
 
 authSubmit.addEventListener('click', handlePasswordSubmit);
 passwordInput.addEventListener('keydown', (e) => {
@@ -1604,6 +1816,8 @@ let invoiceLines = [];
 let invoicesActive = false;
 let xeroConnected = false;
 let xeroAccounts = null; // populated from /xero/meta when connected
+const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.';
+const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
 function invoiceAccounts() {
   return xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
@@ -1672,6 +1886,11 @@ function applySavedInvoiceEdits(lines) {
 }
 
 function buildInvoiceLines() {
+  if (claimsLoadErrorMessage) {
+    invoiceLines = [];
+    return;
+  }
+
   const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const lines = [];
 
@@ -1679,6 +1898,8 @@ function buildInvoiceLines() {
     if (receipt.xeroInvoiceId) return; // already billed
     getLinkedClaimIds(receipt).forEach((claimId) => {
       const claim = claimsById.get(claimId) || null;
+      const isReadyOnly = isReadyOnlyClaimId(claimId);
+      if (!claim && !isReadyOnly) return;
       const matchDate = getReceiptMatchDate(receipt).date;
       const date = (claim && claim.date) || (matchDate ? matchDate.toISOString().slice(0, 10) : '');
       const payee = (claim && claim.payee) || receipt.taggedVendor || 'Unknown payee';
@@ -1702,7 +1923,7 @@ function buildInvoiceLines() {
         id: `${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
-        ynabClaimId: isReadyOnlyClaimId(claimId) ? null : claimId,
+        ynabClaimId: isReadyOnly ? null : claimId,
         // Default to excluded when there's no usable amount yet, so we never
         // silently push a $0.00 line.
         include: Number.isFinite(amount) && amount > 0,
@@ -1725,9 +1946,24 @@ function buildInvoiceLines() {
   invoiceLines = lines;
 }
 
+function renderInvoiceClaimLoadError() {
+  invoiceLines = [];
+  invoiceRows.innerHTML = '';
+  invoicesEmpty.hidden = false;
+  invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
+  invoicePreview.hidden = true;
+  renderBucketSummary();
+}
+
 function renderInvoiceEditor() {
+  if (claimsLoadErrorMessage) {
+    renderInvoiceClaimLoadError();
+    return;
+  }
+
   const accounts = invoiceAccounts();
   invoicesEmpty.hidden = invoiceLines.length > 0;
+  invoicesEmpty.textContent = INVOICE_EMPTY_TEXT;
 
   invoiceRows.innerHTML = invoiceLines
     .map((line) => {
@@ -1879,6 +2115,11 @@ function generateInvoice(bucket) {
 }
 
 async function pushInvoice(bucket, btn) {
+  if (claimsLoadErrorMessage) {
+    showStatus('error', INVOICE_CLAIMS_UNAVAILABLE_TEXT);
+    return;
+  }
+
   const lines = sortBucketLines(bucketLines(bucket));
   if (lines.length === 0) return;
   if (!xeroConnected) {
