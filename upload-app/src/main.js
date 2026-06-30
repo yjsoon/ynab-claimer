@@ -1845,6 +1845,7 @@ let xeroConnected = false;
 let xeroAccounts = null;
 let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
+let invoicePushResultsEl = null;
 const TRANSPORT_CODES = ['451', '452'];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
@@ -1979,11 +1980,17 @@ function applySavedInvoiceEdits(lines) {
   const store = loadInvoiceEdits();
   const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
-    if (store[line.id]) Object.assign(line, store[line.id]);
+    if (store[line.id]) {
+      const { include: _include, ...edits } = store[line.id];
+      Object.assign(line, edits);
+    }
   });
   const pruned = {};
   Object.keys(store).forEach((id) => {
-    if (liveIds.has(id)) pruned[id] = store[id];
+    if (liveIds.has(id)) {
+      const { include: _include, ...edits } = store[id];
+      pruned[id] = edits;
+    }
   });
   if (Object.keys(pruned).length !== Object.keys(store).length) writeInvoiceEdits(pruned);
 }
@@ -2348,7 +2355,7 @@ function updateSectionHeaders() {
     if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}`;
     const pushBtn = section.querySelector('.invoice-push-btn');
     if (pushBtn) pushBtn.disabled = pushableBucketLines(bucket).length === 0;
-    const totalCell = section.querySelector('tfoot tr td:last-child strong');
+    const totalCell = section.querySelector('tfoot tr td.num + td.num strong');
     if (totalCell) totalCell.textContent = `S$${total.toFixed(2)}`;
   });
 }
@@ -2434,7 +2441,7 @@ function sortBucketLines(lines) {
 }
 
 function bucketLines(bucket) {
-  return invoiceLines.filter((l) => getLineSection(l) === bucket && l.include !== false);
+  return invoiceLines.filter((l) => getLineSection(l) === bucket);
 }
 
 function pushableBucketLines(bucket) {
@@ -2453,17 +2460,34 @@ function lineToDescription(line) {
   return line.remark ? `${base} — ${line.remark}` : base;
 }
 
+function ensureInvoicePushResultsEl() {
+  if (!invoicePushResultsEl && invoicesSectionsEl) {
+    invoicePushResultsEl = document.createElement('div');
+    invoicePushResultsEl.id = 'invoicePushResults';
+    invoicePushResultsEl.className = 'invoice-push-results';
+    invoicesSectionsEl.insertAdjacentElement('beforebegin', invoicePushResultsEl);
+  }
+  return invoicePushResultsEl;
+}
+
 function showSectionPushResult(bucket, data, warnings) {
-  const section = invoicesSectionsEl?.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
-  const statusEl = section?.querySelector('.invoice-section-status');
-  if (!statusEl) return;
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
-  statusEl.innerHTML = `
+  const html = `
     <div class="invoice-push-result">
       <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
       <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
       ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>⚠️ ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
+  const section = invoicesSectionsEl?.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
+  const statusEl = section?.querySelector('.invoice-section-status');
+  if (statusEl) {
+    if (invoicePushResultsEl) invoicePushResultsEl.innerHTML = '';
+    statusEl.innerHTML = html;
+    return;
+  }
+  const container = ensureInvoicePushResultsEl();
+  if (!container) return;
+  container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
 }
 
 async function pushInvoice(bucket, btn) {
