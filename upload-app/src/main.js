@@ -1898,6 +1898,8 @@ function buildInvoiceLines() {
     if (receipt.xeroInvoiceId) return; // already billed
     getLinkedClaimIds(receipt).forEach((claimId) => {
       const claim = claimsById.get(claimId) || null;
+      const isReadyOnly = isReadyOnlyClaimId(claimId);
+      if (!claim && !isReadyOnly) return;
       const matchDate = getReceiptMatchDate(receipt).date;
       const date = (claim && claim.date) || (matchDate ? matchDate.toISOString().slice(0, 10) : '');
       const payee = (claim && claim.payee) || receipt.taggedVendor || 'Unknown payee';
@@ -1921,7 +1923,7 @@ function buildInvoiceLines() {
         id: `${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
-        ynabClaimId: isReadyOnlyClaimId(claimId) ? null : claimId,
+        ynabClaimId: isReadyOnly ? null : claimId,
         // Default to excluded when there's no usable amount yet, so we never
         // silently push a $0.00 line.
         include: Number.isFinite(amount) && amount > 0,
