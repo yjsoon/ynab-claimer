@@ -281,22 +281,44 @@ async function uploadFiles(files) {
   loadReceipts();
 }
 
-// Load receipt list
-async function loadReceipts() {
-  try {
-    const response = await fetch(`${API_BASE}/list`, {
+async function fetchAllReceipts() {
+  const receipts = [];
+  let cursor = null;
+
+  do {
+    const params = new URLSearchParams({ limit: '1000' });
+    if (cursor) params.set('cursor', cursor);
+
+    const response = await fetch(`${API_BASE}/list?${params.toString()}`, {
       headers: authHeaders(),
     });
 
     if (response.status === 401) {
       showPasswordPrompt();
-      return;
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to load receipts (${response.status})`);
     }
 
     const data = await response.json();
+    receipts.push(...(Array.isArray(data.receipts) ? data.receipts : []));
+    cursor = data.hasMore ? data.cursor : null;
+  } while (cursor);
+
+  return receipts;
+}
+
+// Load receipt list
+async function loadReceipts() {
+  try {
+    const receipts = await fetchAllReceipts();
+    if (!receipts) return;
+
     // Sort: unlinked first, then linked.
     // Unlinked receipts use effective receipt date (manual/AI/upload fallback) descending.
-    receiptsData = data.receipts.sort((a, b) => {
+    receiptsData = receipts.sort((a, b) => {
       const aLinked = getLinkedClaimIds(a).length > 0;
       const bLinked = getLinkedClaimIds(b).length > 0;
       if (aLinked !== bLinked) return aLinked ? 1 : -1;
