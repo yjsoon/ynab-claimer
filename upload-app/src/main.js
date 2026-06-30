@@ -505,7 +505,12 @@ function getClaimSearchText(claim) {
 function claimMatchesHideFilter(claim, terms) {
   if (terms.length === 0) return false;
   const text = getClaimSearchText(claim);
-  return terms.some((term) => text.includes(term));
+  return terms.some((term) => {
+    if (term === 'transfer') {
+      return /^\s*transfer\s*:/i.test(claim.payee || '');
+    }
+    return text.includes(term);
+  });
 }
 
 function renderClaimFilterControls() {
@@ -1186,7 +1191,9 @@ function renderOutstandingClaims() {
   todoCount.textContent = filterTerms.length > 0
     ? `(${visibleClaims.length} of ${outstandingClaims.length})`
     : `(${outstandingClaims.length})`;
-  claimBadge.textContent = outstandingClaims.length || '';
+  claimBadge.textContent = filterTerms.length > 0 && outstandingClaims.length > 0
+    ? `${visibleClaims.length}/${outstandingClaims.length}`
+    : outstandingClaims.length || '';
 
   if (outstandingClaims.length === 0) {
     todoList.innerHTML = '<li class="empty-state">No outstanding claims</li>';
@@ -1273,6 +1280,9 @@ if (claimFilterPills) {
     }
     saveClaimFilterState();
     renderOutstandingClaims();
+    Array.from(claimFilterPills.querySelectorAll('.claim-filter-pill'))
+      .find((pill) => pill.dataset.filter === filter)
+      ?.focus();
   });
 }
 
