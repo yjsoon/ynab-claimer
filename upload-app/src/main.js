@@ -567,6 +567,7 @@ function resetClaimsAfterLoadFailure(message) {
   renderClaimLoadError(claimsLoadErrorMessage);
   linkedCount.textContent = '(error)';
   linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
+  renderInvoiceClaimLoadError();
 }
 
 function formatDateForLocale(date) {
@@ -1815,6 +1816,8 @@ let invoiceLines = [];
 let invoicesActive = false;
 let xeroConnected = false;
 let xeroAccounts = null; // populated from /xero/meta when connected
+const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.';
+const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
 function invoiceAccounts() {
   return xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
@@ -1883,6 +1886,11 @@ function applySavedInvoiceEdits(lines) {
 }
 
 function buildInvoiceLines() {
+  if (claimsLoadErrorMessage) {
+    invoiceLines = [];
+    return;
+  }
+
   const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const lines = [];
 
@@ -1936,9 +1944,24 @@ function buildInvoiceLines() {
   invoiceLines = lines;
 }
 
+function renderInvoiceClaimLoadError() {
+  invoiceLines = [];
+  invoiceRows.innerHTML = '';
+  invoicesEmpty.hidden = false;
+  invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
+  invoicePreview.hidden = true;
+  renderBucketSummary();
+}
+
 function renderInvoiceEditor() {
+  if (claimsLoadErrorMessage) {
+    renderInvoiceClaimLoadError();
+    return;
+  }
+
   const accounts = invoiceAccounts();
   invoicesEmpty.hidden = invoiceLines.length > 0;
+  invoicesEmpty.textContent = INVOICE_EMPTY_TEXT;
 
   invoiceRows.innerHTML = invoiceLines
     .map((line) => {
@@ -2090,6 +2113,11 @@ function generateInvoice(bucket) {
 }
 
 async function pushInvoice(bucket, btn) {
+  if (claimsLoadErrorMessage) {
+    showStatus('error', INVOICE_CLAIMS_UNAVAILABLE_TEXT);
+    return;
+  }
+
   const lines = sortBucketLines(bucketLines(bucket));
   if (lines.length === 0) return;
   if (!xeroConnected) {
