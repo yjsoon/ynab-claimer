@@ -9,6 +9,17 @@ const assetManifest = JSON.parse(manifestJSON);
 // Upload constraints
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+const ALLOWED_MIME_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
+  'application/pdf': '.pdf',
+  'application/x-pdf': '.pdf',
+};
 const DEFAULT_GEMINI_MODEL = 'gemini-3-flash-preview';
 const DEFAULT_AMOUNT_TAG_BATCH = 3;
 const MAX_AMOUNT_TAG_BATCH = 8;
@@ -28,6 +39,7 @@ const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 // Each entry is [offset, bytes[]] to check
 const MAGIC_BYTES: Record<string, { offset: number; bytes: number[] }> = {
   'image/jpeg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
+  'image/jpg': { offset: 0, bytes: [0xff, 0xd8, 0xff] },
   'image/png': { offset: 0, bytes: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] },
   'image/gif': { offset: 0, bytes: [0x47, 0x49, 0x46, 0x38] }, // GIF8
   'image/webp': { offset: 0, bytes: [0x52, 0x49, 0x46, 0x46] }, // RIFF
@@ -49,6 +61,24 @@ function validateMagicBytes(buffer: ArrayBuffer, mimeType: string): boolean {
 function getExtension(filename: string): string {
   const match = filename.toLowerCase().match(/\.[a-z0-9]+$/);
   return match ? match[0] : '';
+}
+
+function normaliseMimeType(mimeType: string): string {
+  return mimeType.toLowerCase().split(';')[0].trim();
+}
+
+function getUploadExtension(filename: string, mimeType: string): string {
+  const ext = getExtension(filename);
+  if (ALLOWED_EXTENSIONS.includes(ext)) return ext;
+  return ALLOWED_MIME_EXTENSIONS[normaliseMimeType(mimeType)] || '';
+}
+
+function buildStorageFilename(filename: string, inferredExt: string): string {
+  if (getExtension(filename)) return filename;
+
+  const trimmed = filename.trim();
+  const base = trimmed.length > 0 ? trimmed : 'receipt';
+  return `${base}${inferredExt}`;
 }
 
 interface Env {
@@ -1427,20 +1457,25 @@ export default {
           );
         }
 
-        // Validate file extension
-        const ext = getExtension(file.name);
-        if (!ALLOWED_EXTENSIONS.includes(ext)) {
+        // Validate file extension, falling back to browser-provided MIME for
+        // mobile uploads that arrive as extensionless "image" or "blob" files.
+        const ext = getUploadExtension(file.name, file.type);
+        if (!ext) {
           return new Response(
-            JSON.stringify({ error: `Invalid file extension: ${ext}. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}` }),
+            JSON.stringify({
+              error: `Invalid file type. Allowed: ${ALLOWED_EXTENSIONS.join(', ')}`,
+            }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         }
 
-        const key = generateKey(file.name);
+        const storageFilename = buildStorageFilename(file.name, ext);
+        const key = generateKey(storageFilename);
         const arrayBuffer = await file.arrayBuffer();
 
         // Validate magic bytes match claimed type
-        if (!validateMagicBytes(arrayBuffer, file.type)) {
+        const mimeType = normaliseMimeType(file.type);
+        if (!validateMagicBytes(arrayBuffer, mimeType)) {
           return new Response(
             JSON.stringify({ error: 'File content does not match declared type' }),
             { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
@@ -1449,7 +1484,7 @@ export default {
 
         await env.RECEIPTS.put(key, arrayBuffer, {
           httpMetadata: {
-            contentType: file.type,
+            contentType: mimeType || EXT_MIME[ext] || 'application/octet-stream',
           },
           customMetadata: {
             originalName: file.name,

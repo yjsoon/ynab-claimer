@@ -7,6 +7,17 @@ const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 // Upload constraints (must match server)
 const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
 const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+const ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/pdf',
+  'application/x-pdf',
+];
 const AMOUNT_TAG_COOLDOWN_MS = 20000;
 const AMOUNT_MATCH_TOLERANCE = 0.01;
 const DATE_NEAR_THRESHOLD_DAYS = 2;
@@ -198,8 +209,9 @@ function validateFile(file) {
   }
 
   const ext = file.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
-  if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    return `${file.name}: invalid type (${ext || 'no extension'})`;
+  const mimeType = (file.type || '').toLowerCase().split(';')[0].trim();
+  if (!ALLOWED_EXTENSIONS.includes(ext) && !ALLOWED_MIME_TYPES.includes(mimeType)) {
+    return `${file.name}: invalid type (${ext || mimeType || 'unknown type'})`;
   }
 
   return null; // Valid
