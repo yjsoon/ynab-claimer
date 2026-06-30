@@ -1980,17 +1980,11 @@ function applySavedInvoiceEdits(lines) {
   const store = loadInvoiceEdits();
   const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
-    if (store[line.id]) {
-      const { include: _include, ...edits } = store[line.id];
-      Object.assign(line, edits);
-    }
+    if (store[line.id]) Object.assign(line, store[line.id]);
   });
   const pruned = {};
   Object.keys(store).forEach((id) => {
-    if (liveIds.has(id)) {
-      const { include: _include, ...edits } = store[id];
-      pruned[id] = edits;
-    }
+    if (liveIds.has(id)) pruned[id] = store[id];
   });
   if (Object.keys(pruned).length !== Object.keys(store).length) writeInvoiceEdits(pruned);
 }
@@ -2034,6 +2028,8 @@ function buildInvoiceLines() {
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
+        // Default excluded when there's no usable amount yet, so we never push $0.00.
+        include: Number.isFinite(amount) && amount > 0,
         date,
         payee,
         description,
@@ -2169,12 +2165,8 @@ function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs 
       line[field] = parsed;
       saveInvoiceEdit(line.id, { [field]: parsed });
       activeInvoiceEditCell = null;
-      if (field === 'amount') {
-        renderInvoiceEditor();
-      } else {
-        renderDisplay();
-        updateSectionHeaders();
-      }
+      renderDisplay();
+      updateSectionHeaders();
     };
 
     const cancel = () => {
@@ -2441,7 +2433,7 @@ function sortBucketLines(lines) {
 }
 
 function bucketLines(bucket) {
-  return invoiceLines.filter((l) => getLineSection(l) === bucket);
+  return invoiceLines.filter((l) => l.include && getLineSection(l) === bucket);
 }
 
 function pushableBucketLines(bucket) {
@@ -2545,8 +2537,17 @@ async function pushInvoice(bucket, btn) {
     }
     showSectionPushResult(bucket, data, warnings);
 
-    await refreshInvoicesView({ showLoading: false });
-    showSectionPushResult(bucket, data, warnings);
+    try {
+      await refreshInvoicesView({ showLoading: false });
+      showSectionPushResult(bucket, data, warnings);
+    } catch (refreshErr) {
+      showStatus(
+        'error',
+        `Draft created, but refreshing the list failed — reload before pushing again: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`,
+      );
+      btn.disabled = false;
+      btn.textContent = 'Push to Xero (draft)';
+    }
   } catch (err) {
     showStatus('error', `Push failed: ${err instanceof Error ? err.message : String(err)}`);
     btn.disabled = false;
