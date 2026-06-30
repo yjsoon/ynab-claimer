@@ -699,6 +699,12 @@ function formatLinkedPairReceiptAmount(receipt) {
 }
 
 function renderLinkedPairs() {
+  if (claimsLoadErrorMessage) {
+    linkedCount.textContent = '(error)';
+    linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
+    return;
+  }
+
   const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const linkedPairs = [];
 
