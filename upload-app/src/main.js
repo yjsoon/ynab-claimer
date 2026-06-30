@@ -1832,6 +1832,20 @@ const bucketMetaEls = {
   nongst: document.getElementById('bucketNongst'),
   transport: document.getElementById('bucketTransport'),
 };
+const invoicesBucketsEl = document.querySelector('.invoices-buckets');
+const BUCKET_BTN_LABEL = {
+  gst: 'Generate GST invoice',
+  nongst: 'Generate non-GST invoice',
+  transport: 'Generate transport invoice',
+};
+let invoicePreviewBusy = false;
+let activeInvoiceBucket = null;
+let invoicePreviewGeneration = 0;
+
+function invalidateInvoicePreviewGeneration() {
+  invoicePreviewGeneration += 1;
+  invoicePreviewBusy = false;
+}
 const TRANSPORT_CODES = ['451', '452'];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
@@ -1992,6 +2006,9 @@ function renderInvoiceClaimLoadError() {
   invoicesEmpty.hidden = false;
   invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
   invoicePreview.hidden = true;
+  invalidateInvoicePreviewGeneration();
+  activeInvoiceBucket = null;
+  updateBucketButtonUi();
   renderBucketSummary();
 }
 
@@ -2111,13 +2128,38 @@ function lineToDescription(line) {
   return line.remark ? `${base} — ${line.remark}` : base;
 }
 
-function generateInvoice(bucket) {
+function bucketButtonEls() {
+  return invoicesBucketsEl ? [...invoicesBucketsEl.querySelectorAll('.bucket-btn')] : [];
+}
+
+function updateBucketButtonUi() {
+  bucketButtonEls().forEach((btn) => {
+    const bucket = btn.dataset.bucket;
+    const isActive = activeInvoiceBucket === bucket && !invoicePreview.hidden;
+    const isGenerating = invoicePreviewBusy && activeInvoiceBucket === bucket;
+    btn.classList.toggle('bucket-btn-active', isActive);
+    btn.disabled = invoicePreviewBusy;
+    btn.setAttribute('aria-busy', isGenerating ? 'true' : 'false');
+    const labelEl = btn.querySelector('.bucket-btn-label');
+    if (labelEl) {
+      labelEl.textContent = isGenerating
+        ? 'Generating preview…'
+        : (BUCKET_BTN_LABEL[bucket] || 'Generate invoice');
+    }
+  });
+}
+
+function renderInvoicePreviewDoc(bucket) {
   const lines = sortBucketLines(bucketLines(bucket));
+  activeInvoiceBucket = bucket;
   invoicePreview.hidden = false;
+
   if (lines.length === 0) {
-    invoicePreview.innerHTML = `<p class="empty-state">No ${BUCKET_LABEL[bucket]} items selected.</p>`;
+    invoicePreview.innerHTML = `<p class="empty-state">No ${BUCKET_LABEL[bucket]} items selected. Tick the include column for lines you want in this bill.</p>`;
+    updateBucketButtonUi();
     return;
   }
+
   const accounts = invoiceAccounts();
   const accName = (code) => (accounts.find((a) => a.code === code) || {}).name || '';
   const total = lines.reduce((s, l) => s + (Number(l.amount) || 0), 0);
@@ -2148,10 +2190,39 @@ function generateInvoice(bucket) {
         <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts. You can still edit it in Xero before approving.</span>
       </div>
     </div>`;
-  invoicePreview.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
   const pushBtn = document.getElementById('pushInvoiceBtn');
   if (pushBtn) pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
+  updateBucketButtonUi();
+}
+
+function generateInvoice(bucket) {
+  if (invoicePreviewBusy) return;
+
+  const generation = ++invoicePreviewGeneration;
+  invoicePreviewBusy = true;
+  activeInvoiceBucket = bucket;
+  invoicePreview.hidden = false;
+  invoicePreview.innerHTML = `<p class="invoice-preview-loading" role="status">Building ${BUCKET_LABEL[bucket]} preview…</p>`;
+  updateBucketButtonUi();
+  invoicePreview.scrollIntoView({ block: 'nearest' });
+
+  requestAnimationFrame(() => {
+    setTimeout(() => {
+      if (generation !== invoicePreviewGeneration) return;
+      try {
+        renderInvoicePreviewDoc(bucket);
+      } catch (err) {
+        if (generation !== invoicePreviewGeneration) return;
+        invoicePreview.innerHTML = `<p class="empty-state">Could not build preview: ${escapeHtml(err instanceof Error ? err.message : String(err))}</p>`;
+      } finally {
+        if (generation !== invoicePreviewGeneration) return;
+        invoicePreviewBusy = false;
+        updateBucketButtonUi();
+        renderBucketSummary();
+      }
+    }, 0);
+  });
 }
 
 async function pushInvoice(bucket, btn) {
@@ -2309,11 +2380,17 @@ function showInvoicesView(show) {
   invoicesView.hidden = !show;
   updateModeNav(show);
   updateAppTitle(show);
+  invalidateInvoicePreviewGeneration();
   if (show) {
     invoicePreview.hidden = true;
+    activeInvoiceBucket = null;
+    updateBucketButtonUi();
     loadXeroStatus();
     buildInvoiceLines();
     renderInvoiceEditor();
+  } else {
+    activeInvoiceBucket = null;
+    updateBucketButtonUi();
   }
 }
 
@@ -2378,9 +2455,13 @@ detectGstBtn.addEventListener('click', async () => {
     setTimeout(() => { detectGstBtn.textContent = 'Detect GST'; }, 4000);
   }
 });
-document.querySelectorAll('.bucket-btn').forEach((btn) => {
-  btn.addEventListener('click', () => generateInvoice(btn.dataset.bucket));
-});
+if (invoicesBucketsEl) {
+  invoicesBucketsEl.addEventListener('click', (event) => {
+    const btn = event.target.closest('.bucket-btn');
+    if (!btn || btn.disabled) return;
+    generateInvoice(btn.dataset.bucket);
+  });
+}
 
 // Apply route on first paint so /invoices shows the invoice shell immediately.
 showInvoicesView(isInvoicesPath());
