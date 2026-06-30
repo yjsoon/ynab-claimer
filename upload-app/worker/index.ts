@@ -1869,7 +1869,7 @@ export default {
           status: 302,
           headers: {
             ...noLeak,
-            Location: `${url.origin}/?xero=connected#invoices`,
+            Location: `${url.origin}/invoices?xero=connected`,
             'Set-Cookie': 'xero_oauth_state=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0',
           },
         });
@@ -2037,11 +2037,24 @@ export default {
       }
 
       // Serve static assets for all other routes
+      const spaPaths = new Set(['/invoices']);
       return await getAssetFromKV(
         { request, waitUntil: ctx.waitUntil.bind(ctx) },
         {
           ASSET_NAMESPACE: env.__STATIC_CONTENT,
           ASSET_MANIFEST: assetManifest,
+          mapRequestToAsset: (req) => {
+            const assetUrl = new URL(req.url);
+            let assetPath = assetUrl.pathname;
+            if (assetPath.length > 1 && assetPath.endsWith('/')) {
+              assetPath = assetPath.slice(0, -1);
+            }
+            if (assetPath === '/' || spaPaths.has(assetPath)) {
+              assetUrl.pathname = '/index.html';
+              return new Request(assetUrl.toString(), req);
+            }
+            return req;
+          },
         }
       );
     } catch (error) {

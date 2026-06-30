@@ -2,6 +2,13 @@ const API_BASE = ''; // Same origin when deployed, or set to worker URL for dev
 const AUTH_KEY = 'claim_manager_auth';
 const REMEMBER_KEY = 'claim_manager_remember';
 const THEME_KEY = 'claim_manager_theme';
+const THEME_CYCLE = ['light', 'dark', 'auto'];
+const THEME_LABELS = { light: 'Light', dark: 'Dark', auto: 'System' };
+const THEME_ICONS = {
+  light: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>',
+  dark: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>',
+  auto: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>',
+};
 const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 
 // Upload constraints (must match server)
@@ -42,6 +49,7 @@ const receiptBadge = document.getElementById('receiptBadge');
 const claimBadge = document.getElementById('claimBadge');
 const linkedList = document.getElementById('linkedList');
 const linkedCount = document.getElementById('linkedCount');
+const invoicesNavBadge = document.getElementById('invoicesNavBadge');
 
 // Linking state
 let sourceReceiptKey = null;
@@ -101,33 +109,39 @@ function shouldRemember() {
   return localStorage.getItem(REMEMBER_KEY) === 'true';
 }
 
-function getStoredTheme() {
-  const storedTheme = localStorage.getItem(THEME_KEY);
-  return storedTheme === 'dark' || storedTheme === 'light' ? storedTheme : null;
+function getThemePreference() {
+  const stored = localStorage.getItem(THEME_KEY);
+  return stored === 'light' || stored === 'dark' || stored === 'auto' ? stored : 'auto';
 }
 
-function getInitialTheme() {
-  const storedTheme = getStoredTheme();
-  if (storedTheme) return storedTheme;
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-}
-
-function applyTheme(theme) {
-  const isDark = theme === 'dark';
-  const nextTheme = isDark ? 'dark' : 'light';
-  document.documentElement.dataset.theme = nextTheme;
-  document.body.dataset.theme = nextTheme;
-  if (themeToggle) {
-    themeToggle.textContent = isDark ? 'Light mode' : 'Dark mode';
-    themeToggle.setAttribute('aria-pressed', String(isDark));
+function resolveTheme(preference) {
+  if (preference === 'auto') {
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   }
+  return preference;
 }
 
-function toggleTheme() {
-  const currentTheme = document.documentElement.dataset.theme === 'dark' ? 'dark' : 'light';
-  const nextTheme = currentTheme === 'dark' ? 'light' : 'dark';
-  localStorage.setItem(THEME_KEY, nextTheme);
-  applyTheme(nextTheme);
+function updateThemeToggleUi(preference) {
+  if (!themeToggle) return;
+  const label = THEME_LABELS[preference] || 'System';
+  themeToggle.innerHTML = THEME_ICONS[preference] || THEME_ICONS.auto;
+  themeToggle.setAttribute('aria-label', `Colour theme: ${label}. Click to change.`);
+  themeToggle.setAttribute('title', `${label} theme`);
+}
+
+function applyTheme(preference) {
+  const resolved = resolveTheme(preference);
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.dataset.themePreference = preference;
+  document.body.dataset.theme = resolved;
+  updateThemeToggleUi(preference);
+}
+
+function cycleTheme() {
+  const current = getThemePreference();
+  const next = THEME_CYCLE[(THEME_CYCLE.indexOf(current) + 1) % THEME_CYCLE.length];
+  localStorage.setItem(THEME_KEY, next);
+  applyTheme(next);
 }
 
 function authHeaders() {
@@ -699,10 +713,31 @@ function formatLinkedPairReceiptAmount(receipt) {
   return formatCurrencyAmount('USD', taggedAmount);
 }
 
+function countReadyToClaimPairs() {
+  if (claimsLoadErrorMessage) return 0;
+  let count = 0;
+  receiptsData.forEach((receipt) => {
+    count += getLinkedClaimIds(receipt).length;
+  });
+  return count;
+}
+
+function updateInvoicesNavBadge() {
+  if (!invoicesNavBadge) return;
+  const count = countReadyToClaimPairs();
+  if (count > 0) {
+    invoicesNavBadge.textContent = String(count);
+    invoicesNavBadge.hidden = false;
+  } else {
+    invoicesNavBadge.hidden = true;
+  }
+}
+
 function renderLinkedPairs() {
   if (claimsLoadErrorMessage) {
     linkedCount.textContent = '(error)';
     linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
+    updateInvoicesNavBadge();
     return;
   }
 
@@ -731,6 +766,7 @@ function renderLinkedPairs() {
   });
 
   linkedCount.textContent = `(${linkedPairs.length})`;
+  updateInvoicesNavBadge();
 
   if (linkedPairs.length === 0) {
     linkedList.innerHTML = '<li class="empty-state">No linked claim-receipt pairs yet</li>';
@@ -1128,9 +1164,14 @@ document.addEventListener('keydown', (e) => {
   }
 });
 if (themeToggle) {
-  themeToggle.addEventListener('click', toggleTheme);
+  themeToggle.addEventListener('click', cycleTheme);
 }
-applyTheme(getInitialTheme());
+applyTheme(getThemePreference());
+if (window.matchMedia) {
+  window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => {
+    if (getThemePreference() === 'auto') applyTheme('auto');
+  });
+}
 
 // Event listeners
 fileInput.addEventListener('change', (e) => {
@@ -1775,7 +1816,10 @@ tabBtns.forEach(btn => {
 
 // ===== Invoices (Xero claim bills) =====
 
-const invoicesToggle = document.getElementById('invoicesToggle');
+const claimsView = document.getElementById('claimsView');
+const navClaims = document.getElementById('navClaims');
+const navInvoices = document.getElementById('navInvoices');
+const INVOICES_PATH = '/invoices';
 const invoicesView = document.getElementById('invoicesView');
 const xeroStatusEl = document.getElementById('xeroStatus');
 const invoicesRefreshBtn = document.getElementById('invoicesRefreshBtn');
@@ -1788,10 +1832,6 @@ const bucketMetaEls = {
   nongst: document.getElementById('bucketNongst'),
   transport: document.getElementById('bucketTransport'),
 };
-const linkingContainerEl = document.querySelector('.linking-container');
-const linkedSectionEl = document.querySelector('.linked-section');
-const tabToggleEl = document.querySelector('.tab-toggle');
-
 const TRANSPORT_CODES = ['451', '452'];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
@@ -2230,15 +2270,45 @@ async function disconnectXero() {
   await loadXeroStatus();
 }
 
+function isInvoicesPath(pathname = location.pathname) {
+  return pathname === INVOICES_PATH || pathname === INVOICES_PATH + '/';
+}
+
+function updateModeNav(activeInvoices) {
+  if (navClaims) {
+    navClaims.classList.toggle('active', !activeInvoices);
+    if (!activeInvoices) navClaims.setAttribute('aria-current', 'page');
+    else navClaims.removeAttribute('aria-current');
+  }
+  if (navInvoices) {
+    navInvoices.classList.toggle('active', activeInvoices);
+    if (activeInvoices) navInvoices.setAttribute('aria-current', 'page');
+    else navInvoices.removeAttribute('aria-current');
+  }
+}
+
+function updateAppTitle(invoices) {
+  document.title = invoices ? 'Invoices — Receipt Upload' : 'Claims — Receipt Upload';
+}
+
+function navigateToMode(invoices, { replace = false } = {}) {
+  const targetPath = invoices ? INVOICES_PATH : '/';
+  const state = { mode: invoices ? 'invoices' : 'claims' };
+  if (replace) {
+    history.replaceState(state, '', targetPath);
+  } else if (location.pathname !== targetPath) {
+    history.pushState(state, '', targetPath);
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  showInvoicesView(invoices);
+}
+
 function showInvoicesView(show) {
   invoicesActive = show;
+  if (claimsView) claimsView.hidden = show;
   invoicesView.hidden = !show;
-  if (linkingContainerEl) linkingContainerEl.style.display = show ? 'none' : '';
-  if (linkedSectionEl) linkedSectionEl.style.display = show ? 'none' : '';
-  if (tabToggleEl) tabToggleEl.style.display = show ? 'none' : '';
-  if (dropzone) dropzone.style.display = show ? 'none' : '';
-  invoicesToggle.textContent = show ? 'Back to claims' : 'Invoices';
-  invoicesToggle.classList.toggle('active', show);
+  updateModeNav(show);
+  updateAppTitle(show);
   if (show) {
     invoicePreview.hidden = true;
     loadXeroStatus();
@@ -2247,7 +2317,19 @@ function showInvoicesView(show) {
   }
 }
 
-invoicesToggle.addEventListener('click', () => showInvoicesView(!invoicesActive));
+document.querySelectorAll('.app-nav-link').forEach((link) => {
+  link.addEventListener('click', (event) => {
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    navigateToMode(link.dataset.mode === 'invoices');
+  });
+});
+
+window.addEventListener('popstate', () => {
+  showInvoicesView(isInvoicesPath());
+});
 invoicesRefreshBtn.addEventListener('click', async () => {
   await loadReceipts();
   await loadYnabTodos();
@@ -2300,15 +2382,20 @@ document.querySelectorAll('.bucket-btn').forEach((btn) => {
   btn.addEventListener('click', () => generateInvoice(btn.dataset.bucket));
 });
 
+// Apply route on first paint so /invoices shows the invoice shell immediately.
+showInvoicesView(isInvoicesPath());
+
 // Initial load with auth check
 async function init() {
   if (await checkAuth()) {
     hidePasswordPrompt();
     await loadReceipts();
     await loadYnabTodos();
-    // Returning from the Xero OAuth round-trip opens the Invoices view.
-    if (new URLSearchParams(location.search).get('xero') === 'connected') {
-      showInvoicesView(true);
+    const xeroJustConnected = new URLSearchParams(location.search).get('xero') === 'connected';
+    if (xeroJustConnected) {
+      navigateToMode(true, { replace: true });
+    } else {
+      showInvoicesView(isInvoicesPath());
     }
   }
 }
