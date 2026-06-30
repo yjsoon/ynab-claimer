@@ -53,6 +53,7 @@ let receiptsData = [];
 let claimsData = [];
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let claimsLoadErrorMessage = '';
 
 const READY_CLAIM_ID_PREFIX = 'receipt-ready:';
 const DEFAULT_CLAIM_FILTERS = [
@@ -551,6 +552,21 @@ function pruneClaimSelectionToVisibleClaims(visibleClaims) {
     selectedClaimIds.clear();
     selectedReceiptKeys.clear();
   }
+}
+
+function renderClaimLoadError(message) {
+  todoList.innerHTML = `<li class="empty-state">${escapeHtml(message)}</li>`;
+  todoCount.textContent = '(error)';
+  claimBadge.textContent = '';
+}
+
+function resetClaimsAfterLoadFailure(message) {
+  claimsLoadErrorMessage = message || 'Failed to load claims';
+  claimsData = [];
+  clearSelection();
+  renderClaimLoadError(claimsLoadErrorMessage);
+  linkedCount.textContent = '(error)';
+  linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
 }
 
 function formatDateForLocale(date) {
@@ -1143,6 +1159,7 @@ async function loadYnabTodos() {
 
     if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
       clearAuthToken();
+      resetClaimsAfterLoadFailure('Authentication required');
       showPasswordPrompt();
       return;
     }
@@ -1152,20 +1169,17 @@ async function loadYnabTodos() {
     }
 
     if (data.error) {
-      todoList.innerHTML = `<li class="empty-state">Error: ${escapeHtml(data.error)}</li>`;
-      todoCount.textContent = '(error)';
-      claimBadge.textContent = '';
+      resetClaimsAfterLoadFailure(`Error: ${data.error}`);
       return;
     }
 
+    claimsLoadErrorMessage = '';
     claimsData = data.todos.sort((a, b) => new Date(b.date) - new Date(a.date));
     renderOutstandingClaims();
     renderLinkedPairs();
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
-    todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
-    todoCount.textContent = '(error)';
-    claimBadge.textContent = '';
+    resetClaimsAfterLoadFailure('Failed to load claims');
   }
 }
 
@@ -1185,6 +1199,12 @@ function getOutstandingClaims() {
 
 function renderOutstandingClaims() {
   renderClaimFilterControls();
+
+  if (claimsLoadErrorMessage) {
+    renderClaimLoadError(claimsLoadErrorMessage);
+    applyLinkingHighlights();
+    return;
+  }
 
   const outstandingClaims = getOutstandingClaims();
   const filterTerms = getClaimFilterTerms();
