@@ -1154,6 +1154,7 @@ async function loadYnabTodos() {
     if (data.error) {
       todoList.innerHTML = `<li class="empty-state">Error: ${escapeHtml(data.error)}</li>`;
       todoCount.textContent = '(error)';
+      claimBadge.textContent = '';
       return;
     }
 
@@ -1163,6 +1164,8 @@ async function loadYnabTodos() {
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
     todoList.innerHTML = '<li class="empty-state">Failed to load claims</li>';
+    todoCount.textContent = '(error)';
+    claimBadge.textContent = '';
   }
 }
 
