@@ -1067,6 +1067,17 @@ function lineToDescription(line) {
   return line.remark ? `${base} — ${line.remark}` : base;
 }
 
+function formatReceiptPageReference(ref) {
+  if (!ref || !Number.isFinite(ref.start) || !Number.isFinite(ref.end)) return '';
+  return ref.start === ref.end ? `receipt p. ${ref.start}` : `receipt pp. ${ref.start}-${ref.end}`;
+}
+
+function lineToDescriptionWithPageRef(line, pageRefs) {
+  const base = lineToDescription(line);
+  const pageRef = formatReceiptPageReference(pageRefs?.get?.(line.receiptKey));
+  return pageRef ? `${base} — ${pageRef}` : base;
+}
+
 function ensureInvoicePushResultsEl() {
   if (!invoicePushResultsEl && invoicesSectionsEl) {
     invoicePushResultsEl = document.createElement('div');
@@ -1083,7 +1094,7 @@ function lineTaxTypeForPush(line, bucket) {
   return deriveTaxType(line);
 }
 
-function pushPayloadForLines(bucket, reference, lines) {
+function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
   return {
     bucket,
     reference,
@@ -1091,7 +1102,7 @@ function pushPayloadForLines(bucket, reference, lines) {
       receiptKey: l.receiptKey,
       ynabClaimId: l.ynabClaimId,
       date: l.date,
-      description: lineToDescription(l),
+      description: lineToDescriptionWithPageRef(l, pageRefs),
       accountCode: l.accountCode,
       taxType: lineTaxTypeForPush(l, bucket),
       currency: l.currency,
@@ -1169,6 +1180,78 @@ async function loadPdfLib() {
   return pdfLibModule;
 }
 
+function isEmbeddableReceiptMime(mime) {
+  return mime === 'application/pdf'
+    || mime === 'image/jpeg'
+    || mime === 'image/jpg'
+    || mime === 'image/png';
+}
+
+async function receiptPdfPageCount(PDFDocument, receipt) {
+  const { bytes, mime } = receipt;
+  if (mime === 'application/pdf') {
+    const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+    return src.getPageCount();
+  }
+  if (mime === 'image/jpeg' || mime === 'image/jpg' || mime === 'image/png') return 1;
+  return 0;
+}
+
+async function buildReceiptPdfPlan(payload, { statusPrefix = 'Reading receipt pages' } = {}) {
+  const { PDFDocument } = await loadPdfLib();
+  const keys = uniquePayloadReceiptKeys(payload);
+  const entries = [];
+  const warnings = [];
+  let nextPage = 1;
+
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    const name = receiptFilenameFromKey(key, i);
+    showStatus('uploading', `${statusPrefix} (${i + 1}/${keys.length})...`);
+    try {
+      const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(key)}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = await res.arrayBuffer();
+      const mime = (res.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+      if (!isEmbeddableReceiptMime(mime)) {
+        warnings.push(`Skipped unsupported receipt type (${mime}): ${name}`);
+        entries.push({ key, name, mime, bytes, pageCount: 0, pageStart: null, pageEnd: null });
+        continue;
+      }
+      const pageCount = await receiptPdfPageCount(PDFDocument, { bytes, mime });
+      if (pageCount <= 0) {
+        warnings.push(`Could not find any pages in ${name}`);
+        entries.push({ key, name, mime, bytes, pageCount: 0, pageStart: null, pageEnd: null });
+        continue;
+      }
+      const pageStart = nextPage;
+      const pageEnd = nextPage + pageCount - 1;
+      nextPage = pageEnd + 1;
+      entries.push({ key, name, mime, bytes, pageCount, pageStart, pageEnd });
+    } catch (err) {
+      warnings.push(`${name}: ${err instanceof Error ? err.message : String(err)}`);
+      entries.push({ key, name, mime: '', bytes: null, pageCount: 0, pageStart: null, pageEnd: null });
+    }
+  }
+
+  const pageRefs = new Map();
+  entries.forEach((entry) => {
+    if (entry.pageStart && entry.pageEnd) {
+      pageRefs.set(entry.key, { start: entry.pageStart, end: entry.pageEnd });
+    }
+  });
+
+  return {
+    entries,
+    pageRefs,
+    warnings,
+    included: entries.filter((entry) => entry.pageCount > 0).length,
+    totalPages: nextPage - 1,
+  };
+}
+
 async function appendReceiptToPdf(PDFDocument, doc, receipt, warnings) {
   const { bytes, mime, name } = receipt;
   try {
@@ -1197,30 +1280,17 @@ async function appendReceiptToPdf(PDFDocument, doc, receipt, warnings) {
 async function compileReceiptsPdfInBrowser(payload) {
   const { PDFDocument } = await loadPdfLib();
   const doc = await PDFDocument.create();
-  const keys = uniquePayloadReceiptKeys(payload);
-  const warnings = [];
+  const plan = await buildReceiptPdfPlan(payload, { statusPrefix: 'Building receipts PDF' });
+  const warnings = [...plan.warnings];
   let included = 0;
 
-  for (let i = 0; i < keys.length; i++) {
-    const key = keys[i];
-    showStatus('uploading', `Building receipts PDF (${i + 1}/${keys.length})...`);
-    try {
-      const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(key)}`, {
-        headers: authHeaders(),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const bytes = await res.arrayBuffer();
-      const mime = (res.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
-      const beforeCount = doc.getPageCount();
-      await appendReceiptToPdf(PDFDocument, doc, {
-        bytes,
-        mime,
-        name: receiptFilenameFromKey(key, i),
-      }, warnings);
-      if (doc.getPageCount() > beforeCount) included += 1;
-    } catch (err) {
-      warnings.push(`${receiptFilenameFromKey(key, i)}: ${err instanceof Error ? err.message : String(err)}`);
-    }
+  for (let i = 0; i < plan.entries.length; i++) {
+    const entry = plan.entries[i];
+    if (!entry.pageCount || !entry.bytes) continue;
+    showStatus('uploading', `Writing receipts PDF (${i + 1}/${plan.entries.length})...`);
+    const beforeCount = doc.getPageCount();
+    await appendReceiptToPdf(PDFDocument, doc, entry, warnings);
+    if (doc.getPageCount() > beforeCount) included += 1;
   }
 
   if (included === 0) {
@@ -1231,8 +1301,10 @@ async function compileReceiptsPdfInBrowser(payload) {
   return {
     blob: new Blob([pdfBytes], { type: 'application/pdf' }),
     included,
-    skipped: keys.length - included,
+    skipped: plan.entries.length - included,
     warnings,
+    pageRefs: plan.pageRefs,
+    totalPages: doc.getPageCount(),
   };
 }
 
@@ -1373,7 +1445,7 @@ function invoicePushSummary(bucket, lines) {
   const receiptLabel = receiptCount === 1 ? '1 receipt' : `${receiptCount} receipts`;
   return [
     `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
-    `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF; tax-inclusive.`,
+    `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
     'YNAB TODO memos change only when you click Mark everything as claimed.',
   ].join('\n');
 }
@@ -1414,7 +1486,13 @@ async function pushInvoice(bucket, btn) {
   showStatus('uploading', `Creating ${BUCKET_LABEL[bucket]} draft and attaching ${lines.length} receipt(s)...`);
   try {
     lines.forEach(normaliseLineForSection);
-    const payload = pushPayloadForLines(bucket, reference, lines);
+    const pagePlanSeed = pushPayloadForLines(bucket, reference, lines);
+    btn.textContent = 'Reading pages…';
+    const pagePlan = await buildReceiptPdfPlan(pagePlanSeed, {
+      statusPrefix: 'Preparing receipt page references',
+    });
+    btn.textContent = 'Pushing…';
+    const payload = pushPayloadForLines(bucket, reference, lines, pagePlan.pageRefs);
     const res = await fetch(`${API_BASE}/xero/invoices/push`, {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
@@ -1424,7 +1502,10 @@ async function pushInvoice(bucket, btn) {
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
 
     const attachments = Array.isArray(data.attachments) ? data.attachments : [];
-    const warnings = Array.isArray(data.warnings) ? data.warnings : [];
+    const warnings = [
+      ...(Array.isArray(data.warnings) ? data.warnings : []),
+      ...pagePlan.warnings,
+    ];
     const attachedCount = attachments.filter((a) => a.status === 'attached').length;
     if (data.allAttached === false) {
       showStatus('error', `Draft bill ${data.invoiceNumber || ''} created, but not all receipts were attached — items kept in the tab for retry (see notes).`);
