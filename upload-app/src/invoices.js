@@ -45,10 +45,16 @@ let invoicesLoading = false;
 let invoiceLoadingRequests = 0;
 let xeroConnected = false;
 let xeroAccounts = null;
+let xeroTaxTypes = null;
 let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
 let invoicePushResultsEl = null;
 const TRANSPORT_CODES = ['451', '452'];
+const FALLBACK_TAX_TYPES = [
+  { taxType: 'INPUTY24', name: 'Standard-Rated Purchases' },
+  { taxType: 'NRINPUT', name: 'Purchases from Non-GST Registered Suppliers' },
+  { taxType: 'OPINPUT', name: 'Out Of Scope Purchases' },
+];
 const FALLBACK_ACCOUNTS = [
   { code: '463', name: 'Computer Software' },
   { code: '320', name: 'Cost of Sales' },
@@ -73,6 +79,15 @@ function invoiceAccounts() {
   return xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
 }
 
+function invoiceTaxTypes() {
+  const merged = new Map();
+  FALLBACK_TAX_TYPES.forEach((tax) => merged.set(tax.taxType, tax));
+  (xeroTaxTypes || []).forEach((tax) => {
+    if (tax.taxType) merged.set(tax.taxType, tax);
+  });
+  return Array.from(merged.values());
+}
+
 function guessAccountCode(text) {
   const hay = (text || '').toLowerCase();
   for (const hint of ACCOUNT_HINTS) {
@@ -84,6 +99,7 @@ function guessAccountCode(text) {
 // Input tax code: GST shown -> standard-rated; USD with no GST -> out of scope;
 // SGD with no GST -> non-GST-registered supplier.
 function deriveTaxType(line) {
+  if (line.taxType) return line.taxType;
   if (line.gstShown) return 'INPUTY24';
   const currency = (line.currency || 'SGD').toUpperCase();
   return currency !== 'SGD' && currency !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
@@ -91,7 +107,7 @@ function deriveTaxType(line) {
 
 function lineBucket(line) {
   if (TRANSPORT_CODES.includes(line.accountCode)) return 'transport';
-  return line.gstShown ? 'gst' : 'nongst';
+  return deriveTaxType(line) === 'INPUTY24' ? 'gst' : 'nongst';
 }
 
 function getLineSection(line) {
@@ -107,16 +123,20 @@ function setLineSection(line, section) {
   if (section === 'transport') {
     if (!TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '451';
     line.gstShown = false;
+    line.taxType = deriveTaxType({ ...line, gstShown: false, taxType: null });
   } else if (section === 'gst') {
     line.gstShown = true;
+    line.taxType = 'INPUTY24';
     if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
   } else {
     line.gstShown = false;
+    line.taxType = deriveTaxType({ ...line, gstShown: false, taxType: null });
     if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
   }
   saveInvoiceEdit(line.id, {
     section: line.section,
     gstShown: line.gstShown,
+    taxType: line.taxType,
     accountCode: line.accountCode,
   });
 }
@@ -191,7 +211,7 @@ function lineReviewSnapshot(line) {
     date: line.date || '',
     description: line.description || '',
     accountCode: line.accountCode || '',
-    gstShown: line.gstShown === true,
+    taxType: deriveTaxType(line),
     remark: line.remark || '',
     section: getLineSection(line),
   };
@@ -284,6 +304,10 @@ function buildInvoiceLines() {
         amount: Number.isFinite(amount) ? Number(amount) : 0,
         accountCode: guessAccountCode(`${payee} ${description}`),
         gstShown: receipt.taggedGstShown === true,
+        taxType: deriveTaxType({
+          gstShown: receipt.taggedGstShown === true,
+          currency,
+        }),
         remark: defaultForeignCurrencyRemark(receipt),
       });
       lines[lines.length - 1].sourceSnapshot = lineReviewSnapshot(lines[lines.length - 1]);
@@ -305,7 +329,12 @@ export function renderInvoiceClaimLoadError() {
 
 function accountLabel(code, accounts) {
   const match = accounts.find((a) => a.code === code);
-  return match ? `${match.code} ${match.name}` : code;
+  return match ? `${match.name} - ${match.code}` : code;
+}
+
+function taxTypeLabel(taxType, taxTypes = invoiceTaxTypes()) {
+  const match = taxTypes.find((t) => t.taxType === taxType);
+  return match ? `${match.taxType} - ${match.name}` : taxType;
 }
 
 function isLineReviewed(line) {
@@ -405,7 +434,7 @@ function renderInvoiceLineRow(line, accounts) {
       <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
       <td class="inv-cell-editable" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
       <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
-      <td data-label="Tax" class="inv-cell-readonly"><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
+      <td class="inv-cell-editable" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(taxTypeLabel(deriveTaxType(line)))}</span></td>
       <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
       <td class="col-preview" data-label="Receipt"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
     </tr>`;
@@ -561,7 +590,7 @@ function attachAccountEditCell(cell, line, accounts) {
     activeInvoiceEditCell = cell;
     cell.classList.add('is-editing');
     const options = accounts
-      .map((a) => `<option value="${escapeHtml(a.code)}" ${a.code === line.accountCode ? 'selected' : ''}>${escapeHtml(a.code)} — ${escapeHtml(a.name)}</option>`)
+      .map((a) => `<option value="${escapeHtml(a.code)}" ${a.code === line.accountCode ? 'selected' : ''}>${escapeHtml(accountLabel(a.code, accounts))}</option>`)
       .join('');
     cell.innerHTML = `<select class="inv-edit-select">${options}</select>`;
     const select = cell.querySelector('.inv-edit-select');
@@ -569,18 +598,18 @@ function attachAccountEditCell(cell, line, accounts) {
     const originalCode = line.accountCode;
     const commit = () => {
       const nextCode = select.value;
+      const prevSection = getLineSection(line);
       if (nextCode !== originalCode) invalidateLineReviewAfterEdit(line, cell);
       line.accountCode = nextCode;
       saveInvoiceEdit(line.id, { accountCode: line.accountCode });
       activeInvoiceEditCell = null;
-      const prevSection = getLineSection(line);
       if (TRANSPORT_CODES.includes(line.accountCode) && getLineSection(line) !== 'transport') {
         setLineSection(line, 'transport');
         renderInvoiceEditor();
         return;
       }
       if (line.section === 'transport' && !TRANSPORT_CODES.includes(line.accountCode)) {
-        line.section = line.gstShown ? 'gst' : 'nongst';
+        line.section = lineBucket(line);
         saveInvoiceEdit(line.id, { section: line.section, accountCode: line.accountCode });
         renderInvoiceEditor();
         return;
@@ -588,6 +617,64 @@ function attachAccountEditCell(cell, line, accounts) {
       renderDisplay();
       if (getLineSection(line) !== prevSection) renderInvoiceEditor();
       else updateSectionHeaders();
+    };
+    cell._cancelEdit = () => {
+      activeInvoiceEditCell = null;
+      renderDisplay();
+    };
+    cell._commitEdit = commit;
+    select.addEventListener('change', commit);
+    select.addEventListener('blur', () => {
+      window.setTimeout(() => {
+        if (cell.classList.contains('is-editing')) commit();
+      }, 0);
+    });
+    select.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        cell._cancelEdit();
+      }
+    });
+  };
+
+  renderDisplay();
+}
+
+function attachTaxTypeEditCell(cell, line) {
+  const taxTypes = invoiceTaxTypes();
+  const renderDisplay = () => {
+    cell.classList.remove('is-editing');
+    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(taxTypeLabel(deriveTaxType(line), taxTypes))}</span>`;
+    cell.onclick = () => startEdit();
+  };
+
+  const startEdit = () => {
+    if (cell.classList.contains('is-editing')) return;
+    closeActiveInvoiceEdit({ commit: true });
+    activeInvoiceEditCell = cell;
+    cell.classList.add('is-editing');
+    const current = deriveTaxType(line);
+    const options = taxTypes
+      .map((t) => `<option value="${escapeHtml(t.taxType)}" ${t.taxType === current ? 'selected' : ''}>${escapeHtml(taxTypeLabel(t.taxType, taxTypes))}</option>`)
+      .join('');
+    cell.innerHTML = `<select class="inv-edit-select">${options}</select>`;
+    const select = cell.querySelector('.inv-edit-select');
+    select.focus();
+    const commit = () => {
+      const next = select.value;
+      const prevSection = getLineSection(line);
+      if (next !== current) invalidateLineReviewAfterEdit(line, cell);
+      line.taxType = next;
+      line.gstShown = next === 'INPUTY24';
+      saveInvoiceEdit(line.id, { taxType: line.taxType, gstShown: line.gstShown });
+      activeInvoiceEditCell = null;
+      if (getLineSection(line) !== lineBucket(line)) {
+        line.section = lineBucket(line);
+        saveInvoiceEdit(line.id, { section: line.section });
+      }
+      if (getLineSection(line) !== prevSection) renderInvoiceEditor();
+      else renderDisplay();
+      updateSectionHeaders();
     };
     cell._cancelEdit = () => {
       activeInvoiceEditCell = null;
@@ -676,6 +763,7 @@ function attachInvoiceRowEditors(tr, line, accounts) {
   attachAccountEditCell(tr.querySelector('[data-field="accountCode"]'), line, accounts);
   attachTypeEditCell(tr.querySelector('[data-field="section"]'), line);
   attachTextEditCell(tr.querySelector('[data-field="remark"]'), line, 'remark', { inputType: 'text' });
+  attachTaxTypeEditCell(tr.querySelector('[data-field="taxType"]'), line);
   attachTextEditCell(tr.querySelector('[data-field="amount"]'), line, 'amount', {
     inputType: 'number',
     inputAttrs: 'step="0.01" min="0"',
@@ -908,7 +996,7 @@ async function pushInvoice(bucket, btn) {
         date: l.date,
         description: lineToDescription(l),
         accountCode: l.accountCode,
-        taxType: deriveTaxType(l),
+        taxType: l.taxType || deriveTaxType(l),
         amount: Number(l.amount),
       })),
     };
@@ -975,8 +1063,11 @@ async function loadXeroMeta() {
     const data = await res.json();
     if (Array.isArray(data.accounts) && data.accounts.length) {
       xeroAccounts = data.accounts.map((a) => ({ code: a.code, name: a.name }));
-      if (invoicesActive) renderInvoiceEditor();
     }
+    if (Array.isArray(data.taxRates) && data.taxRates.length) {
+      xeroTaxTypes = data.taxRates.map((t) => ({ taxType: t.taxType, name: t.name || t.taxType }));
+    }
+    if (invoicesActive) renderInvoiceEditor();
   } catch (_err) {
     /* keep fallback accounts */
   }

@@ -179,8 +179,20 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('push should enable after review');
 
-  const taxText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"] .inv-cell-static').textContent();
-  if (taxText !== 'OPINPUT') throw new Error(`foreign non-GST tax type should be OPINPUT, got ${taxText}`);
+  const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
+  if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
+
+  const taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
+  const taxText = await taxCell.locator('.inv-cell-text').textContent();
+  if (!taxText.startsWith('OPINPUT')) throw new Error(`foreign non-GST tax type should be OPINPUT, got ${taxText}`);
+
+  await taxCell.click();
+  await taxCell.locator('select').selectOption('NRINPUT');
+  const editedTaxText = await taxCell.locator('.inv-cell-text').textContent();
+  if (!editedTaxText.startsWith('NRINPUT')) throw new Error(`tax type should be editable to NRINPUT, got ${editedTaxText}`);
+
+  const disabledAfterTaxEdit = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
+  if (!disabledAfterTaxEdit) throw new Error('editing the tax type should require review again before push');
   if (failedSubresources.length > 0) throw new Error(`subresource load failures: ${failedSubresources.join(', ')}`);
 
   const authPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
