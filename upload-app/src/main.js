@@ -2148,10 +2148,52 @@ function accountLabel(code, accounts) {
   return match ? `${match.code} ${match.name}` : code;
 }
 
+function isLineReviewed(line) {
+  return line.reviewed === true;
+}
+
+function bucketReviewState(bucket) {
+  const pushable = pushableBucketLines(bucket);
+  const reviewedCount = pushable.filter(isLineReviewed).length;
+  return {
+    pushable,
+    reviewedCount,
+    allReviewed: pushable.length > 0 && reviewedCount === pushable.length,
+  };
+}
+
+function invoicePushNote(bucket) {
+  const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
+  if (pushable.length === 0) return '';
+  if (allReviewed) return 'Creates a DRAFT bill in Xero and attaches the receipts.';
+  return `Review every line before pushing (${reviewedCount}/${pushable.length} checked).`;
+}
+
+function setLineReviewed(line, reviewed, btn) {
+  line.reviewed = reviewed;
+  saveInvoiceEdit(line.id, { reviewed });
+  if (btn) {
+    btn.classList.toggle('is-reviewed', reviewed);
+    btn.setAttribute('aria-pressed', reviewed ? 'true' : 'false');
+    btn.setAttribute('aria-label', reviewed ? 'Reviewed — tap to unmark' : 'Mark as reviewed');
+  }
+  const row = btn?.closest('tr[data-id]');
+  if (row) row.classList.toggle('inv-row-reviewed', reviewed);
+  updateSectionHeaders();
+}
+
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
+  const reviewed = isLineReviewed(line);
   return `
-    <tr data-id="${escapeHtml(line.id)}">
+    <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}">
+      <td class="col-reviewed" data-label="Reviewed">
+        <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
+            aria-pressed="${reviewed ? 'true' : 'false'}"
+            aria-label="${reviewed ? 'Reviewed — tap to unmark' : 'Mark as reviewed'}">
+          <span class="inv-review-check" aria-hidden="true">✓</span>
+        </button>
+      </td>
       <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
@@ -2167,18 +2209,20 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
   const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
   const rowsHtml = lines.map((line) => renderInvoiceLineRow(line, accounts)).join('');
-  const pushable = pushableBucketLines(bucket);
+  const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
+  const reviewMeta = pushable.length > 0 ? ` · ${reviewedCount}/${pushable.length} reviewed` : '';
+  const noteClass = pushable.length > 0 && !allReviewed ? 'invoice-doc-note invoice-doc-note-warn' : 'invoice-doc-note';
   const actionsHtml = pushable.length > 0
     ? `<div class="invoice-doc-actions">
-          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}">Push to Xero (draft)</button>
-          <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts.</span>
+          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${allReviewed ? '' : 'disabled'}>Push to Xero (draft)</button>
+          <span class="${noteClass}">${escapeHtml(invoicePushNote(bucket))}</span>
         </div>`
     : '';
   return `
     <details class="invoice-section invoice-section-${bucket}" data-bucket="${bucket}" ${collapsed ? '' : 'open'}>
       <summary class="invoice-section-header">
         <span class="invoice-section-title">${BUCKET_HEADING[bucket]}</span>
-        <span class="invoice-section-meta">${lines.length} line items · S$${total.toFixed(2)}</span>
+        <span class="invoice-section-meta">${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}</span>
       </summary>
       <div class="invoice-section-body">
         <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
@@ -2186,6 +2230,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
           <table class="invoice-doc-table">
             <thead>
               <tr>
+                <th class="col-reviewed" aria-label="Reviewed">✓</th>
                 <th>Date</th>
                 <th>Description</th>
                 <th>Account</th>
@@ -2196,10 +2241,10 @@ function renderInvoiceSection(bucket, lines, accounts) {
                 <th class="col-preview"></th>
               </tr>
             </thead>
-            <tbody>${rowsHtml || `<tr><td colspan="8" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
+            <tbody>${rowsHtml || `<tr><td colspan="9" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
             <tfoot>
               <tr>
-                <td colspan="6" class="num"><strong>Total</strong></td>
+                <td colspan="7" class="num"><strong>Total</strong></td>
                 <td class="num"><strong>S$${total.toFixed(2)}</strong></td>
                 <td></td>
               </tr>
@@ -2408,6 +2453,13 @@ function attachTypeEditCell(cell, line) {
 }
 
 function attachInvoiceRowEditors(tr, line, accounts) {
+  const reviewBtn = tr.querySelector('.inv-review-btn');
+  if (reviewBtn) {
+    reviewBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setLineReviewed(line, !isLineReviewed(line), reviewBtn);
+    });
+  }
   attachTextEditCell(tr.querySelector('[data-field="date"]'), line, 'date', { inputType: 'date' });
   attachTextEditCell(tr.querySelector('[data-field="description"]'), line, 'description', { inputType: 'text' });
   attachAccountEditCell(tr.querySelector('[data-field="accountCode"]'), line, accounts);
@@ -2435,10 +2487,17 @@ function updateSectionHeaders() {
     if (!section) return;
     const lines = sortBucketLines(bucketLines(bucket));
     const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+    const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
+    const reviewMeta = pushable.length > 0 ? ` · ${reviewedCount}/${pushable.length} reviewed` : '';
     const meta = section.querySelector('.invoice-section-meta');
-    if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}`;
+    if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}`;
     const pushBtn = section.querySelector('.invoice-push-btn');
-    if (pushBtn) pushBtn.disabled = pushableBucketLines(bucket).length === 0;
+    if (pushBtn) pushBtn.disabled = pushable.length === 0 || !allReviewed;
+    const note = section.querySelector('.invoice-doc-note');
+    if (note) {
+      note.textContent = invoicePushNote(bucket);
+      note.classList.toggle('invoice-doc-note-warn', pushable.length > 0 && !allReviewed);
+    }
     const totalCell = section.querySelector('tfoot tr td.num + td.num strong');
     if (totalCell) totalCell.textContent = `S$${total.toFixed(2)}`;
   });
@@ -2585,6 +2644,14 @@ async function pushInvoice(bucket, btn) {
   const lines = pushableBucketLines(bucket);
   if (lines.length === 0) {
     showStatus('error', `No ${BUCKET_LABEL[bucket]} lines with an amount above S$0.00 to push.`);
+    return;
+  }
+  const unreviewed = lines.filter((l) => !isLineReviewed(l));
+  if (unreviewed.length > 0) {
+    showStatus(
+      'error',
+      `Review all ${BUCKET_LABEL[bucket]} lines before pushing (${lines.length - unreviewed.length}/${lines.length} checked).`,
+    );
     return;
   }
   if (!xeroConnected) {

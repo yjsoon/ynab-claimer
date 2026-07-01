@@ -307,6 +307,24 @@ async function runWorkflows() {
       });
       await page.waitForTimeout(350);
       screenshots.push(await shot(page, '07-invoices-gst-cards'));
+
+      const gstPush = page.locator('.invoice-section[data-bucket="gst"] .invoice-push-btn');
+      const reviewBtns = page.locator('.invoice-section[data-bucket="gst"] .inv-review-btn');
+      const reviewCount = await reviewBtns.count();
+      if (reviewCount > 0) {
+        if (await gstPush.isEnabled()) {
+          throw new Error('GST push should be disabled until all lines are reviewed');
+        }
+        for (let i = 0; i < reviewCount; i++) {
+          await reviewBtns.nth(i).click();
+          await page.waitForTimeout(120);
+        }
+        if (!(await gstPush.isEnabled())) {
+          throw new Error('GST push should be enabled after all lines are reviewed');
+        }
+        await page.waitForTimeout(250);
+        screenshots.push(await shot(page, '07b-invoices-all-reviewed'));
+      }
     }
 
     await page.click('#themeToggle');
