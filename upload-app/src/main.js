@@ -605,6 +605,10 @@ function formatCurrencyAmount(currency, amount) {
   return amount.toFixed(2);
 }
 
+function formatClaimAmount(amount) {
+  return formatCurrencyAmount('SGD', Number(amount));
+}
+
 function parseDateOnly(value) {
   if (!value) return null;
   const normalised = RECEIPT_DATE_RE.test(value) ? `${value}T00:00:00Z` : value;
@@ -793,12 +797,12 @@ function renderLinkedPairs() {
       const claimDate = claim
         ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
         : isReadyOnly
-          ? 'Ready'
+          ? formatReceiptDateLabel(receipt).text.replace(/^(Manual|AI) /, '')
           : 'Unknown date';
       const claimAmount = claim && Number.isFinite(Number(claim.amount))
-        ? `$${Number(claim.amount).toFixed(2)}`
+        ? formatClaimAmount(Number(claim.amount))
         : isReadyOnly
-          ? 'Receipt amount'
+          ? getReceiptAmountLabel(receipt) || 'Amount pending'
           : 'Unknown amount';
 
       const receiptName = getReceiptDisplayName(receipt);
@@ -1018,7 +1022,7 @@ function updateLinkingContext() {
       return;
     }
     const dateStr = formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date));
-    linkingContextText.textContent = `Linking claim: ${claim.description} · $${claim.amount.toFixed(2)} · ${dateStr}`;
+    linkingContextText.textContent = `Linking claim: ${claim.description} · ${formatClaimAmount(claim.amount)} · ${dateStr}`;
     if (linkingContextPreview) linkingContextPreview.hidden = true;
     linkingDock.hidden = false;
     return;
@@ -1371,7 +1375,7 @@ function renderOutstandingClaims() {
           <div class="todo-actions">
             <div class="todo-meta">
               <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
-              <span class="todo-amount">$${t.amount.toFixed(2)}</span>
+              <span class="todo-amount">${escapeHtml(formatClaimAmount(t.amount))}</span>
             </div>
             <button class="link-btn claim-link-btn" title="Link receipts to this claim">
               ${linkBtnIcon}
@@ -2148,13 +2152,13 @@ function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   return `
     <tr data-id="${escapeHtml(line.id)}">
-      <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
-      <td class="inv-cell-editable" data-label="Type" data-field="section" data-input="type"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
-      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
-      <td data-label="Tax"><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
-      <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
+      <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
+      <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
+      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
+      <td class="inv-cell-editable" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
+      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
+      <td data-label="Tax" class="inv-cell-readonly"><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
+      <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
       <td class="col-preview" data-label="Receipt"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
     </tr>`;
 }
@@ -2163,6 +2167,13 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
   const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
   const rowsHtml = lines.map((line) => renderInvoiceLineRow(line, accounts)).join('');
+  const pushable = pushableBucketLines(bucket);
+  const actionsHtml = pushable.length > 0
+    ? `<div class="invoice-doc-actions">
+          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}">Push to Xero (draft)</button>
+          <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts.</span>
+        </div>`
+    : '';
   return `
     <details class="invoice-section invoice-section-${bucket}" data-bucket="${bucket}" ${collapsed ? '' : 'open'}>
       <summary class="invoice-section-header">
@@ -2196,10 +2207,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
           </table>
         </div>
         <div class="invoice-section-status" role="status" aria-live="polite"></div>
-        <div class="invoice-doc-actions">
-          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${pushableBucketLines(bucket).length === 0 ? 'disabled' : ''}>Push to Xero (draft)</button>
-          <span class="invoice-doc-note">Creates a DRAFT bill in Xero and attaches the receipts.</span>
-        </div>
+        ${actionsHtml}
       </div>
     </details>`;
 }
