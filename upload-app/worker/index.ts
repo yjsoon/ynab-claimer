@@ -1346,6 +1346,61 @@ interface AttachmentUpload {
   mime: string;
 }
 
+interface BrowserReceiptPdfUpload {
+  name?: unknown;
+  mime?: unknown;
+  byteLength?: unknown;
+  base64?: unknown;
+  warnings?: unknown;
+}
+
+function decodeBase64Bytes(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+function uploadFromBrowserReceiptPdf(raw: unknown): { upload?: AttachmentUpload; warnings: string[] } {
+  const warnings: string[] = [];
+  if (!raw || typeof raw !== 'object') return { warnings };
+  const pdf = raw as BrowserReceiptPdfUpload;
+  const mime = typeof pdf.mime === 'string' ? normaliseMimeType(pdf.mime) : '';
+  const base64 = typeof pdf.base64 === 'string' ? pdf.base64 : '';
+  const clientWarnings = Array.isArray(pdf.warnings)
+    ? pdf.warnings.filter((w): w is string => typeof w === 'string' && w.trim().length > 0).map((w) => w.trim())
+    : [];
+  warnings.push(...clientWarnings);
+
+  if (mime !== 'application/pdf' || !base64) {
+    warnings.push('Optimised receipts PDF was missing or not a PDF; using server attachment fallback.');
+    return { warnings };
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64Bytes(base64);
+  } catch (_err) {
+    warnings.push('Could not decode optimised receipts PDF; using server attachment fallback.');
+    return { warnings };
+  }
+
+  if (bytes.byteLength === 0) {
+    warnings.push('Optimised receipts PDF was empty; using server attachment fallback.');
+    return { warnings };
+  }
+  if (bytes.byteLength > XERO_ATTACH_MAX_BYTES) {
+    warnings.push(`Optimised receipts PDF is ${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB, above Xero's 25 MB attachment limit; using server attachment fallback.`);
+    return { warnings };
+  }
+
+  const requestedName = typeof pdf.name === 'string' ? sanitiseFileName(pdf.name) : '';
+  const name = requestedName.toLowerCase().endsWith('.pdf')
+    ? requestedName
+    : `${requestedName || 'receipts'}.pdf`;
+  return { upload: { name, bytes, mime: 'application/pdf' }, warnings };
+}
+
 // Prepares receipt attachments within Xero's caps (25 MB each, 10 per bill).
 // Within caps -> individual named files; otherwise merge embeddable receipts
 // into chunked combined PDFs and warn about anything that can't be attached.
@@ -2128,6 +2183,7 @@ export default {
             bucket?: string;
             reference?: string;
             lineItems?: PushLineItem[];
+            receiptPdf?: unknown;
           };
           const lineItems = parsePushLineItems(body.lineItems).map((l) => ({
             ...l,
@@ -2168,7 +2224,17 @@ export default {
           });
 
           // Attach receipts serially (Xero allows 5 concurrent; serial is safe).
-          const { uploads, warnings } = await buildClaimAttachments(env, lineItems, `${bucketLabel} ${today}`);
+          const browserPdf = uploadFromBrowserReceiptPdf(body.receiptPdf);
+          let uploads: AttachmentUpload[];
+          let warnings: string[];
+          if (browserPdf.upload) {
+            uploads = [browserPdf.upload];
+            warnings = browserPdf.warnings;
+          } else {
+            const fallback = await buildClaimAttachments(env, lineItems, `${bucketLabel} ${today}`);
+            uploads = fallback.uploads;
+            warnings = [...browserPdf.warnings, ...fallback.warnings];
+          }
           const attachments: Array<{ name: string; status: string }> = [];
           for (const up of uploads) {
             try {

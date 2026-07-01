@@ -63,6 +63,7 @@ let pdfLibModule = null;
 let activeReceiptPdfUrl = null;
 const RECEIPT_PDF_PAGE_WIDTH = 800;
 const RECEIPT_JPEG_QUALITY = 0.5;
+const XERO_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024;
 const TRANSPORT_CODES = ['451', '452'];
 const ALLOWED_TAX_TYPES = ['NRINPUT', 'INPUTY24', 'OPINPUT'];
 const FALLBACK_TAX_TYPES = [
@@ -1422,10 +1423,9 @@ async function appendReceiptToPdf(PDFDocument, degrees, doc, receipt, warnings) 
   }
 }
 
-async function compileReceiptsPdfInBrowser(payload) {
+async function compileReceiptPlanToPdf(plan) {
   const { PDFDocument, degrees } = await loadPdfLib();
   const doc = await PDFDocument.create();
-  const plan = await buildReceiptPdfPlan(payload, { statusPrefix: 'Building receipts PDF' });
   const warnings = [...plan.warnings];
   let included = 0;
 
@@ -1450,6 +1450,34 @@ async function compileReceiptsPdfInBrowser(payload) {
     warnings,
     pageRefs: plan.pageRefs,
     totalPages: doc.getPageCount(),
+  };
+}
+
+async function compileReceiptsPdfInBrowser(payload, plan = null) {
+  const receiptPlan = plan || await buildReceiptPdfPlan(payload, { statusPrefix: 'Building receipts PDF' });
+  return await compileReceiptPlanToPdf(receiptPlan);
+}
+
+async function blobToBase64(blob) {
+  const dataUrl = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('Could not read PDF'));
+    reader.readAsDataURL(blob);
+  });
+  return dataUrl.split(',')[1] || '';
+}
+
+async function receiptPdfUploadPayload(blob, filename, warnings) {
+  if (blob.size > XERO_ATTACHMENT_MAX_BYTES) {
+    throw new Error(`Optimised receipts PDF is ${(blob.size / (1024 * 1024)).toFixed(1)} MB, above Xero's 25 MB attachment limit`);
+  }
+  return {
+    name: filename,
+    mime: 'application/pdf',
+    byteLength: blob.size,
+    base64: await blobToBase64(blob),
+    warnings,
   };
 }
 
@@ -1641,8 +1669,20 @@ async function pushInvoice(bucket, btn) {
     const pagePlan = await buildReceiptPdfPlan(pagePlanSeed, {
       statusPrefix: 'Preparing receipt page references',
     });
+    btn.textContent = 'Optimising PDF…';
+    const compiledReceipts = await compileReceiptsPdfInBrowser(pagePlanSeed, pagePlan);
+    const optimisedPdfName = safeReceiptBundleName(pagePlanSeed);
     btn.textContent = 'Pushing…';
     const payload = pushPayloadForLines(bucket, reference, lines, pagePlan.pageRefs);
+    try {
+      payload.receiptPdf = await receiptPdfUploadPayload(
+        compiledReceipts.blob,
+        optimisedPdfName,
+        compiledReceipts.warnings,
+      );
+    } catch (pdfErr) {
+      payload.receiptPdfWarning = pdfErr instanceof Error ? pdfErr.message : String(pdfErr);
+    }
     const res = await fetch(`${API_BASE}/xero/invoices/push`, {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
@@ -1654,7 +1694,7 @@ async function pushInvoice(bucket, btn) {
     const attachments = Array.isArray(data.attachments) ? data.attachments : [];
     const warnings = [
       ...(Array.isArray(data.warnings) ? data.warnings : []),
-      ...pagePlan.warnings,
+      ...(payload.receiptPdfWarning ? [`Optimised receipt PDF was not sent to Xero: ${payload.receiptPdfWarning}`] : []),
     ];
     const attachedCount = attachments.filter((a) => a.status === 'attached').length;
     if (data.allAttached === false) {
