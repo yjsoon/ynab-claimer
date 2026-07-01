@@ -38,6 +38,7 @@ const BUCKET_HEADING = {
 const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
 const INVOICE_SECTIONS_KEY = 'claim_manager_invoice_sections';
 const INVOICE_SORTS_KEY = 'claim_manager_invoice_sorts';
+const INVOICE_LAST_PUSH_KEY = 'claim_manager_invoice_last_push';
 const INVOICE_SORT_OPTIONS = [
   { value: 'account-date', label: 'Account, then date' },
   { value: 'date-asc', label: 'Date oldest first' },
@@ -248,6 +249,35 @@ function saveInvoiceEdit(lineId, patch) {
   const store = loadInvoiceEdits();
   store[lineId] = { ...(store[lineId] || {}), ...patch };
   writeInvoiceEdits(store);
+}
+
+function saveLastPushResult(data, warnings, payload) {
+  try {
+    localStorage.setItem(INVOICE_LAST_PUSH_KEY, JSON.stringify({
+      data,
+      warnings,
+      payload,
+      savedAt: new Date().toISOString(),
+    }));
+  } catch (_err) {
+    /* ignore storage quota / availability errors */
+  }
+}
+
+function loadLastPushResult() {
+  try {
+    return JSON.parse(localStorage.getItem(INVOICE_LAST_PUSH_KEY) || 'null');
+  } catch (_err) {
+    return null;
+  }
+}
+
+function clearLastPushResult() {
+  try {
+    localStorage.removeItem(INVOICE_LAST_PUSH_KEY);
+  } catch (_err) {
+    /* ignore storage quota / availability errors */
+  }
 }
 
 function lineReviewSnapshot(line) {
@@ -537,6 +567,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const actionsHtml = pushable.length > 0
     ? `<div class="invoice-doc-actions">
           <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${allReviewed ? '' : 'disabled'}>Push to Xero (draft)</button>
+          <button type="button" class="btn-secondary invoice-download-btn" data-bucket="${bucket}">Download receipts PDF</button>
           <span class="${noteClass}">${escapeHtml(invoicePushNote(bucket))}</span>
         </div>`
     : '';
@@ -908,6 +939,10 @@ function bindInvoiceSectionEvents() {
     if (pushBtn) {
       pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
     }
+    const downloadBtn = section.querySelector('.invoice-download-btn');
+    if (downloadBtn) {
+      downloadBtn.addEventListener('click', () => downloadBucketReceiptsPdf(bucket, downloadBtn));
+    }
     const sortSelect = section.querySelector('.invoice-sort-select');
     if (sortSelect) {
       sortSelect.addEventListener('change', () => {
@@ -949,6 +984,7 @@ function renderInvoiceEditor() {
 
   if (generation !== invoiceRenderGeneration) return;
   bindInvoiceSectionEvents();
+  restoreLastPushResult();
 }
 
 function renderInvoiceEditorDeferred() {
@@ -1132,6 +1168,7 @@ async function markEverythingClaimed(data, payload, btn) {
     } else {
       showStatus('success', `Marked everything claimed for ${result.claimedDate}${skippedYnab.length ? ` (${skippedYnab.length} YNAB subtransaction(s) skipped)` : ''}.`);
     }
+    clearLastPushResult();
     await refreshInvoicesView({ showLoading: false });
     if (btn) btn.textContent = 'Marked claimed';
   } catch (err) {
@@ -1156,7 +1193,7 @@ function bindPushResultActions(data, payload) {
   }
 }
 
-function showSectionPushResult(bucket, data, warnings, payload) {
+function showSectionPushResult(bucket, data, warnings, payload, { persist = true, scroll = true } = {}) {
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const failedAttachments = attachments.filter((a) => a.status !== 'attached');
   const attachedCount = attachments.length - failedAttachments.length;
@@ -1180,8 +1217,30 @@ function showSectionPushResult(bucket, data, warnings, payload) {
   const container = ensureInvoicePushResultsEl();
   if (!container) return;
   container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
+  if (persist) saveLastPushResult(data, warnings, payload);
   bindPushResultActions(data, payload);
-  container.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  if (scroll) container.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+}
+
+function restoreLastPushResult() {
+  const saved = loadLastPushResult();
+  if (!saved?.data || !saved?.payload) return;
+  showSectionPushResult(saved.payload.bucket, saved.data, saved.warnings || [], saved.payload, {
+    persist: false,
+    scroll: false,
+  });
+}
+
+async function downloadBucketReceiptsPdf(bucket, btn) {
+  commitActiveInvoiceEdit();
+  const lines = pushableBucketLines(bucket);
+  if (lines.length === 0) {
+    showStatus('error', `No ${BUCKET_LABEL[bucket]} lines with an amount above S$0.00 to download.`);
+    return;
+  }
+  lines.forEach(normaliseLineForSection);
+  const payload = pushPayloadForLines(bucket, `${BUCKET_LABEL[bucket]} receipts`, lines);
+  await downloadReceiptsPdf(payload, btn);
 }
 
 function invoicePushSummary(bucket, lines) {
