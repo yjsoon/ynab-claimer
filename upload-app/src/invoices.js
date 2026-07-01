@@ -85,7 +85,7 @@ function guessAccountCode(text) {
 // SGD with no GST -> non-GST-registered supplier.
 function deriveTaxType(line) {
   if (line.gstShown) return 'INPUTY24';
-  return line.currency === 'USD' ? 'OPINPUT' : 'NRINPUT';
+  return line.currency && line.currency !== 'SGD' ? 'OPINPUT' : 'NRINPUT';
 }
 
 function lineBucket(line) {
@@ -184,19 +184,55 @@ function saveInvoiceEdit(lineId, patch) {
   writeInvoiceEdits(store);
 }
 
+function lineReviewSnapshot(line) {
+  return {
+    amount: Number(line.amount || 0).toFixed(2),
+    date: line.date || '',
+    description: line.description || '',
+    accountCode: line.accountCode || '',
+    gstShown: line.gstShown === true,
+    remark: line.remark || '',
+    section: getLineSection(line),
+  };
+}
+
+function snapshotsMatch(a, b) {
+  return JSON.stringify(a || null) === JSON.stringify(b || null);
+}
+
 // Re-apply saved manual edits onto freshly-built lines, and prune saved edits
 // for lines that no longer exist (e.g. once a receipt has been invoiced).
 function applySavedInvoiceEdits(lines) {
   const store = loadInvoiceEdits();
   const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
-    if (store[line.id]) Object.assign(line, store[line.id]);
+    const saved = store[line.id];
+    if (!saved) return;
+    const sourceSnapshot = lineReviewSnapshot(line);
+    line.sourceSnapshot = sourceSnapshot;
+    Object.assign(line, saved);
+    if (line.reviewed !== true) return;
+
+    const effectiveSnapshot = lineReviewSnapshot(line);
+    const missingReviewSnapshot = !saved.reviewedSnapshot || !saved.reviewedSourceSnapshot;
+    const sourceChanged = !snapshotsMatch(sourceSnapshot, saved.reviewedSourceSnapshot);
+    const effectiveChanged = !snapshotsMatch(effectiveSnapshot, saved.reviewedSnapshot);
+    if (missingReviewSnapshot || sourceChanged || effectiveChanged) {
+      store[line.id] = {
+        ...saved,
+        reviewed: false,
+        reviewedSnapshot: null,
+        reviewedSourceSnapshot: null,
+        reviewInvalidated: true,
+      };
+      Object.assign(line, store[line.id]);
+    }
   });
   const pruned = {};
   Object.keys(store).forEach((id) => {
     if (liveIds.has(id)) pruned[id] = store[id];
   });
-  if (Object.keys(pruned).length !== Object.keys(store).length) writeInvoiceEdits(pruned);
+  writeInvoiceEdits(pruned);
 }
 
 function buildInvoiceLines() {
@@ -249,6 +285,7 @@ function buildInvoiceLines() {
         gstShown: receipt.taggedGstShown === true,
         remark: defaultForeignCurrencyRemark(receipt),
       });
+      lines[lines.length - 1].sourceSnapshot = lineReviewSnapshot(lines[lines.length - 1]);
     });
   });
 
@@ -291,9 +328,25 @@ function invoicePushNote(bucket) {
   return `Review every line before pushing (${reviewedCount}/${pushable.length} reviewed).`;
 }
 
+function invoiceSectionMeta(bucket, lines, total) {
+  const { pushable, reviewedCount } = bucketReviewState(bucket);
+  const amount = `S$${total.toFixed(2)}`;
+  if (pushable.length === 0) return `${lines.length} items · ${amount}`;
+  if (pushable.length === lines.length) {
+    return `${pushable.length} bill lines · ${amount} · ${reviewedCount}/${pushable.length} reviewed`;
+  }
+  return `${lines.length} items · ${pushable.length} will push · ${amount} · ${reviewedCount}/${pushable.length} reviewed`;
+}
+
 function setLineReviewed(line, reviewed, btn) {
   line.reviewed = reviewed;
-  saveInvoiceEdit(line.id, { reviewed });
+  line.reviewInvalidated = false;
+  saveInvoiceEdit(line.id, {
+    reviewed,
+    reviewedSnapshot: reviewed ? lineReviewSnapshot(line) : null,
+    reviewedSourceSnapshot: reviewed ? (line.sourceSnapshot || lineReviewSnapshot(line)) : null,
+    reviewInvalidated: false,
+  });
   if (btn) {
     btn.classList.toggle('is-reviewed', reviewed);
     btn.setAttribute('aria-pressed', reviewed ? 'true' : 'false');
@@ -315,9 +368,12 @@ function setLineReviewed(line, reviewed, btn) {
 
 function invalidateLineReviewAfterEdit(line, contextEl) {
   if (!isLineReviewed(line)) return;
+  line.reviewInvalidated = true;
   const tr = contextEl?.closest?.('tr[data-id]');
   const btn = tr?.querySelector('.inv-review-btn');
   setLineReviewed(line, false, btn);
+  line.reviewInvalidated = true;
+  saveInvoiceEdit(line.id, { reviewInvalidated: true });
   if (!tr) return;
   tr.classList.add('inv-row-stale');
   const reviewedCell = tr.querySelector('.col-reviewed');
@@ -332,14 +388,16 @@ function invalidateLineReviewAfterEdit(line, contextEl) {
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   const reviewed = isLineReviewed(line);
+  const invalidated = line.reviewInvalidated === true;
   return `
-    <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}">
+    <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
       <td class="col-reviewed" data-label="Reviewed">
         <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
             aria-pressed="${reviewed ? 'true' : 'false'}"
             aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
           <span class="inv-review-check" aria-hidden="true">✓</span>
         </button>
+        ${invalidated ? '<p class="inv-review-stale">Receipt data changed — review again before pushing.</p>' : ''}
       </td>
       <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
@@ -356,8 +414,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
   const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
   const rowsHtml = lines.map((line) => renderInvoiceLineRow(line, accounts)).join('');
-  const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
-  const reviewMeta = pushable.length > 0 ? ` · ${reviewedCount}/${pushable.length} reviewed` : '';
+  const { pushable, allReviewed } = bucketReviewState(bucket);
   const noteClass = pushable.length > 0 && !allReviewed ? 'invoice-doc-note invoice-doc-note-warn' : 'invoice-doc-note';
   const actionsHtml = pushable.length > 0
     ? `<div class="invoice-doc-actions">
@@ -369,7 +426,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
     <details class="invoice-section invoice-section-${bucket}" data-bucket="${bucket}" ${collapsed ? '' : 'open'}>
       <summary class="invoice-section-header">
         <span class="invoice-section-title">${BUCKET_HEADING[bucket]}</span>
-        <span class="invoice-section-meta" aria-live="polite">${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}</span>
+        <span class="invoice-section-meta" aria-live="polite">${invoiceSectionMeta(bucket, lines, total)}</span>
       </summary>
       <div class="invoice-section-body">
         <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
@@ -640,10 +697,9 @@ function updateSectionHeaders() {
     if (!section) return;
     const lines = sortBucketLines(bucketLines(bucket));
     const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
-    const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
-    const reviewMeta = pushable.length > 0 ? ` · ${reviewedCount}/${pushable.length} reviewed` : '';
+    const { pushable, allReviewed } = bucketReviewState(bucket);
     const meta = section.querySelector('.invoice-section-meta');
-    if (meta) meta.textContent = `${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}`;
+    if (meta) meta.textContent = invoiceSectionMeta(bucket, lines, total);
     const pushBtn = section.querySelector('.invoice-push-btn');
     if (pushBtn) pushBtn.disabled = pushable.length === 0 || !allReviewed;
     const note = section.querySelector('.invoice-doc-note');
@@ -792,6 +848,18 @@ function showSectionPushResult(bucket, data, warnings) {
   container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
 }
 
+function invoicePushSummary(bucket, lines) {
+  const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
+  const receiptCount = new Set(lines.map((line) => line.receiptKey)).size;
+  const lineLabel = lines.length === 1 ? '1 line' : `${lines.length} lines`;
+  const receiptLabel = receiptCount === 1 ? '1 receipt' : `${receiptCount} receipts`;
+  return [
+    `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
+    `Attaches ${receiptLabel}; tax-inclusive.`,
+    'On success, linked YNAB TODO memos become CLAIMED and these items leave the tab.',
+  ].join('\n');
+}
+
 async function pushInvoice(bucket, btn) {
   if (claimsLoadErrorMessage) {
     showStatus('error', INVOICE_CLAIMS_UNAVAILABLE_TEXT);
@@ -817,7 +885,10 @@ async function pushInvoice(bucket, btn) {
     showStatus('error', 'Connect Xero first.');
     return;
   }
-  const reference = window.prompt(`Reference / note for the ${BUCKET_LABEL[bucket]} bill:`, `${BUCKET_LABEL[bucket]} claims`);
+  const reference = window.prompt(
+    `${invoicePushSummary(bucket, lines)}\n\nReference / note for this Xero DRAFT bill:`,
+    `${BUCKET_LABEL[bucket]} claims`,
+  );
   if (reference === null) return;
 
   btn.disabled = true;
