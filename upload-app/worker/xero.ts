@@ -303,6 +303,7 @@ export interface XeroBillLine {
 export interface XeroBillInput {
   contactName: string;
   date: string; // YYYY-MM-DD
+  dueDate?: string; // YYYY-MM-DD
   reference?: string;
   lineItems: XeroBillLine[];
   idempotencyKey?: string;
@@ -322,7 +323,7 @@ export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<Xer
     Type: 'ACCPAY',
     Contact: { Name: bill.contactName },
     Date: bill.date,
-    DueDate: bill.date,
+    DueDate: bill.dueDate || bill.date,
     Status: 'DRAFT',
     Reference: bill.reference || '',
     LineAmountTypes: 'Inclusive',

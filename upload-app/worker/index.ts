@@ -1255,6 +1255,13 @@ function singaporeToday(): string {
   return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
 }
 
+function addCalendarDays(date: string, days: number): string {
+  const [year, month, day] = date.split('-').map((part) => Number(part));
+  if (!year || !month || !day) return date;
+  const utc = new Date(Date.UTC(year, month - 1, day + days));
+  return utc.toISOString().slice(0, 10);
+}
+
 function parsePushLineItems(raw: unknown): PushLineItem[] {
   return (Array.isArray(raw) ? raw : [])
     .filter(
@@ -2137,6 +2144,7 @@ export default {
           // Bill date in Singapore time — toISOString() is UTC and would backdate
           // the bill by a day when pushing between 00:00 and 07:59 SGT.
           const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
+          const dueDate = addCalendarDays(today, 30);
           // Deterministic key over the full line shape (sorted, order-independent):
           // an identical re-push dedupes, but editing account/tax/description/amount
           // produces a new key so edits aren't silently swallowed by Xero.
@@ -2148,6 +2156,7 @@ export default {
           const bill = await xero.createBill(env, {
             contactName: 'Soon Yin Jie',
             date: today,
+            dueDate,
             reference: body.reference || `${bucketLabel} claims`,
             idempotencyKey: idem,
             lineItems: lineItems.map((l) => ({

@@ -61,6 +61,8 @@ let invoiceRenderGeneration = 0;
 let invoicePushResultsEl = null;
 let pdfLibModule = null;
 let activeReceiptPdfUrl = null;
+const RECEIPT_PDF_PAGE_WIDTH = 800;
+const RECEIPT_JPEG_QUALITY = 0.5;
 const TRANSPORT_CODES = ['451', '452'];
 const ALLOWED_TAX_TYPES = ['NRINPUT', 'INPUTY24', 'OPINPUT'];
 const FALLBACK_TAX_TYPES = [
@@ -1070,13 +1072,19 @@ function lineToDescription(line) {
 
 function formatReceiptPageReference(ref) {
   if (!ref || !Number.isFinite(ref.start) || !Number.isFinite(ref.end)) return '';
-  return ref.start === ref.end ? `receipt p. ${ref.start}` : `receipt pp. ${ref.start}-${ref.end}`;
+  return ref.start === ref.end ? `Receipt: p. ${ref.start}` : `Receipt: pp. ${ref.start}-${ref.end}`;
+}
+
+function lineRemarkSuffix(line) {
+  const remark = String(line.remark || '').trim();
+  return remark ? `Remark: ${remark}` : '';
 }
 
 function lineToDescriptionWithPageRef(line, pageRefs) {
-  const base = lineToDescription(line);
-  const pageRef = formatReceiptPageReference(pageRefs?.get?.(line.receiptKey));
-  return pageRef ? `${base} — ${pageRef}` : base;
+  const hasRealPayee = line.payee && !isTransferPayee(line.payee);
+  const base = hasRealPayee ? `${line.description} — ${line.payee} (${line.date})` : line.description;
+  const suffixes = [lineRemarkSuffix(line), formatReceiptPageReference(pageRefs?.get?.(line.receiptKey))].filter(Boolean);
+  return suffixes.length ? `${base} — ${suffixes.join(' — ')}` : base;
 }
 
 function ensureInvoicePushResultsEl() {
@@ -1215,6 +1223,80 @@ function isEmbeddableReceiptMime(mime) {
     || mime === 'image/png';
 }
 
+function isImageReceiptMime(mime) {
+  return mime === 'image/jpeg' || mime === 'image/jpg' || mime === 'image/png';
+}
+
+async function decodeReceiptImage(bytes, mime) {
+  const blob = new Blob([bytes], { type: mime });
+  if ('createImageBitmap' in window) {
+    try {
+      return await createImageBitmap(blob, { imageOrientation: 'from-image' });
+    } catch (_err) {
+      // Fall through to the HTMLImageElement path below.
+    }
+  }
+
+  return await new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const image = new Image();
+    image.onload = () => {
+      URL.revokeObjectURL(url);
+      resolve(image);
+    };
+    image.onerror = () => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Could not decode image receipt'));
+    };
+    image.src = url;
+  });
+}
+
+async function canvasToJpegBytes(canvas) {
+  const blob = await new Promise((resolve, reject) => {
+    canvas.toBlob((result) => {
+      if (result) resolve(result);
+      else reject(new Error('Could not encode receipt as JPEG'));
+    }, 'image/jpeg', RECEIPT_JPEG_QUALITY);
+  });
+  return await blob.arrayBuffer();
+}
+
+async function processReceiptImage(bytes, mime) {
+  const image = await decodeReceiptImage(bytes, mime);
+  const sourceWidth = image.width || image.naturalWidth;
+  const sourceHeight = image.height || image.naturalHeight;
+  const landscape = sourceWidth > sourceHeight;
+  const rotatedWidth = landscape ? sourceHeight : sourceWidth;
+  const rotatedHeight = landscape ? sourceWidth : sourceHeight;
+  const targetWidth = RECEIPT_PDF_PAGE_WIDTH;
+  const targetHeight = Math.max(1, Math.round((rotatedHeight / rotatedWidth) * targetWidth));
+  const canvas = document.createElement('canvas');
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext('2d', { alpha: false });
+  if (!ctx) throw new Error('Canvas is unavailable');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, targetWidth, targetHeight);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+
+  if (landscape) {
+    ctx.translate(targetWidth, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(image, 0, 0, targetHeight, targetWidth);
+  } else {
+    ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+  }
+
+  if (typeof image.close === 'function') image.close();
+  return {
+    bytes: await canvasToJpegBytes(canvas),
+    width: targetWidth,
+    height: targetHeight,
+  };
+}
+
 async function receiptPdfPageCount(PDFDocument, receipt) {
   const { bytes, mime } = receipt;
   if (mime === 'application/pdf') {
@@ -1280,23 +1362,58 @@ async function buildReceiptPdfPlan(payload, { statusPrefix = 'Reading receipt pa
   };
 }
 
-async function appendReceiptToPdf(PDFDocument, doc, receipt, warnings) {
+async function appendPdfReceiptToPdf(PDFDocument, degrees, doc, receipt) {
+  const src = await PDFDocument.load(receipt.bytes, { ignoreEncryption: true });
+  const pages = await doc.embedPdf(receipt.bytes, src.getPageIndices());
+  pages.forEach((embeddedPage) => {
+    const { width, height } = embeddedPage;
+    const landscape = width > height;
+    if (landscape) {
+      const scale = RECEIPT_PDF_PAGE_WIDTH / height;
+      const pageHeight = Math.max(1, width * scale);
+      const page = doc.addPage([RECEIPT_PDF_PAGE_WIDTH, pageHeight]);
+      page.drawPage(embeddedPage, {
+        x: RECEIPT_PDF_PAGE_WIDTH,
+        y: 0,
+        width: width * scale,
+        height: height * scale,
+        rotate: degrees(90),
+      });
+      return;
+    }
+
+    const scale = RECEIPT_PDF_PAGE_WIDTH / width;
+    const pageHeight = Math.max(1, height * scale);
+    const page = doc.addPage([RECEIPT_PDF_PAGE_WIDTH, pageHeight]);
+    page.drawPage(embeddedPage, {
+      x: 0,
+      y: 0,
+      width: RECEIPT_PDF_PAGE_WIDTH,
+      height: pageHeight,
+    });
+  });
+}
+
+async function appendImageReceiptToPdf(PDFDocument, doc, receipt) {
+  const processed = await processReceiptImage(receipt.bytes, receipt.mime);
+  const image = await doc.embedJpg(processed.bytes);
+  doc.addPage([processed.width, processed.height]).drawImage(image, {
+    x: 0,
+    y: 0,
+    width: processed.width,
+    height: processed.height,
+  });
+}
+
+async function appendReceiptToPdf(PDFDocument, degrees, doc, receipt, warnings) {
   const { bytes, mime, name } = receipt;
   try {
     if (mime === 'application/pdf') {
-      const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
-      const pages = await doc.copyPages(src, src.getPageIndices());
-      pages.forEach((page) => doc.addPage(page));
+      await appendPdfReceiptToPdf(PDFDocument, degrees, doc, receipt);
       return;
     }
-    if (mime === 'image/jpeg' || mime === 'image/jpg') {
-      const image = await doc.embedJpg(bytes);
-      doc.addPage([image.width, image.height]).drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
-      return;
-    }
-    if (mime === 'image/png') {
-      const image = await doc.embedPng(bytes);
-      doc.addPage([image.width, image.height]).drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+    if (isImageReceiptMime(mime)) {
+      await appendImageReceiptToPdf(PDFDocument, doc, receipt);
       return;
     }
     warnings.push(`Skipped unsupported receipt type (${mime}): ${name}`);
@@ -1306,7 +1423,7 @@ async function appendReceiptToPdf(PDFDocument, doc, receipt, warnings) {
 }
 
 async function compileReceiptsPdfInBrowser(payload) {
-  const { PDFDocument } = await loadPdfLib();
+  const { PDFDocument, degrees } = await loadPdfLib();
   const doc = await PDFDocument.create();
   const plan = await buildReceiptPdfPlan(payload, { statusPrefix: 'Building receipts PDF' });
   const warnings = [...plan.warnings];
@@ -1317,7 +1434,7 @@ async function compileReceiptsPdfInBrowser(payload) {
     if (!entry.pageCount || !entry.bytes) continue;
     showStatus('uploading', `Writing receipts PDF (${i + 1}/${plan.entries.length})...`);
     const beforeCount = doc.getPageCount();
-    await appendReceiptToPdf(PDFDocument, doc, entry, warnings);
+    await appendReceiptToPdf(PDFDocument, degrees, doc, entry, warnings);
     if (doc.getPageCount() > beforeCount) included += 1;
   }
 
