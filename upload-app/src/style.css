@@ -154,6 +154,12 @@ h2 {
   background: #dee2e6;
 }
 
+.invoice-save-pdf-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 /* App header & mode navigation */
 .app-header {
   margin-bottom: 20px;

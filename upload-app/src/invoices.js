@@ -60,6 +60,7 @@ let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
 let invoicePushResultsEl = null;
 let pdfLibModule = null;
+let activeReceiptPdfUrl = null;
 const TRANSPORT_CODES = ['451', '452'];
 const ALLOWED_TAX_TYPES = ['NRINPUT', 'INPUTY24', 'OPINPUT'];
 const FALLBACK_TAX_TYPES = [
@@ -1122,6 +1123,33 @@ function downloadBlob(blob, filename) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function clearReceiptPdfLinks() {
+  document.querySelectorAll('.invoice-save-pdf-link').forEach((link) => link.remove());
+  if (activeReceiptPdfUrl) {
+    URL.revokeObjectURL(activeReceiptPdfUrl);
+    activeReceiptPdfUrl = null;
+  }
+}
+
+function showReceiptPdfLink(blob, filename, btn) {
+  clearReceiptPdfLinks();
+  activeReceiptPdfUrl = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = activeReceiptPdfUrl;
+  link.download = filename;
+  link.className = 'btn-secondary invoice-save-pdf-link';
+  link.textContent = 'Save PDF';
+  link.setAttribute('role', 'button');
+  link.setAttribute('aria-label', `Save ${filename}`);
+  const actions = btn?.closest?.('.invoice-doc-actions, .invoice-result-actions');
+  if (actions) {
+    btn.insertAdjacentElement('afterend', link);
+  } else {
+    document.body.appendChild(link);
+  }
+  return link;
+}
+
 function safeReceiptBundleName(payload) {
   const safeBucket = BUCKET_LABEL[payload.bucket] || 'Claims';
   const safeReference = (payload.reference || `${safeBucket} receipts`).replace(/[^a-z0-9 _.-]/gi, ' ').replace(/\s+/g, ' ').trim();
@@ -1316,12 +1344,15 @@ async function downloadReceiptsPdf(payload, btn) {
   }
   try {
     const compiled = await compileReceiptsPdfInBrowser(payload);
-    downloadBlob(compiled.blob, safeReceiptBundleName(payload));
+    const filename = safeReceiptBundleName(payload);
+    const saveLink = showReceiptPdfLink(compiled.blob, filename, btn);
+    downloadBlob(compiled.blob, filename);
     if (compiled.warnings.length) {
-      showStatus('error', `PDF downloaded with ${compiled.included} receipt(s); ${compiled.skipped} skipped: ${compiled.warnings.slice(0, 2).join(', ')}`);
+      showStatus('error', `PDF ready with ${compiled.included} receipt(s); ${compiled.skipped} skipped. If it did not save automatically, click Save PDF. ${compiled.warnings.slice(0, 2).join(', ')}`);
     } else {
-      showStatus('success', `Downloaded one PDF with ${compiled.included} receipt(s).`);
+      showStatus('success', `PDF ready with ${compiled.included} receipt(s). If it did not save automatically, click Save PDF.`);
     }
+    saveLink.focus({ preventScroll: true });
   } catch (err) {
     showStatus('uploading', `Could not build one PDF in the browser (${err instanceof Error ? err.message : String(err)}). Downloading original receipts instead...`);
     await downloadOriginalReceipts(payload);
