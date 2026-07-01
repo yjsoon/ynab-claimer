@@ -2064,14 +2064,14 @@ function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   return `
     <tr data-id="${escapeHtml(line.id)}">
-      <td class="inv-cell-editable" data-field="date" data-input="text"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
-      <td class="inv-cell-editable" data-field="description" data-input="text"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
-      <td class="inv-cell-editable" data-field="accountCode" data-input="select"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
-      <td class="inv-cell-editable" data-field="section" data-input="type"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
-      <td class="inv-cell-editable" data-field="remark" data-input="text"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
-      <td><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
-      <td class="num inv-cell-editable" data-field="amount" data-input="text"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
-      <td class="col-preview"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
+      <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
+      <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
+      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
+      <td class="inv-cell-editable" data-label="Type" data-field="section" data-input="type"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
+      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
+      <td data-label="Tax"><span class="inv-cell-static">${escapeHtml(deriveTaxType(line))}</span></td>
+      <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
+      <td class="col-preview" data-label="Receipt"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
     </tr>`;
 }
 
