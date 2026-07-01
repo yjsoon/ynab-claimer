@@ -115,6 +115,11 @@ function deriveTaxType(line) {
   return currency !== 'SGD' && currency !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
 }
 
+function nonGstTaxType(line) {
+  const currency = (line.currency || 'SGD').toUpperCase();
+  return currency !== 'SGD' && currency !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
+}
+
 function lineBucket(line) {
   if (TRANSPORT_CODES.includes(line.accountCode)) return 'transport';
   return deriveTaxType(line) === 'INPUTY24' ? 'gst' : 'nongst';
@@ -124,25 +129,30 @@ function getLineSection(line) {
   return line.section || lineBucket(line);
 }
 
+function normaliseLineForSection(line) {
+  const section = getLineSection(line);
+  if (section === 'gst') {
+    line.gstShown = true;
+    line.taxType = 'INPUTY24';
+    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
+  } else if (section === 'transport') {
+    if (!TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '451';
+    line.gstShown = false;
+    if (deriveTaxType(line) === 'INPUTY24') line.taxType = nonGstTaxType(line);
+  } else {
+    line.gstShown = false;
+    if (deriveTaxType(line) === 'INPUTY24') line.taxType = nonGstTaxType(line);
+    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
+  }
+}
+
 function setLineSection(line, section) {
   if (getLineSection(line) !== section && isLineReviewed(line)) {
     line.reviewed = false;
     saveInvoiceEdit(line.id, { reviewed: false });
   }
   line.section = section;
-  if (section === 'transport') {
-    if (!TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '451';
-    line.gstShown = false;
-    line.taxType = deriveTaxType({ ...line, gstShown: false, taxType: null });
-  } else if (section === 'gst') {
-    line.gstShown = true;
-    line.taxType = 'INPUTY24';
-    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
-  } else {
-    line.gstShown = false;
-    line.taxType = deriveTaxType({ ...line, gstShown: false, taxType: null });
-    if (TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '463';
-  }
+  normaliseLineForSection(line);
   saveInvoiceEdit(line.id, {
     section: line.section,
     gstShown: line.gstShown,
@@ -278,11 +288,32 @@ function applySavedInvoiceEdits(lines) {
   const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
     const saved = store[line.id];
-    if (!saved) return;
     const sourceSnapshot = lineSourceSnapshot(line);
     line.sourceSnapshot = sourceSnapshot;
-    Object.assign(line, saved);
-    if (line.reviewed !== true) return;
+    if (saved) Object.assign(line, saved);
+    const before = JSON.stringify({
+      section: line.section,
+      gstShown: line.gstShown,
+      taxType: line.taxType,
+      accountCode: line.accountCode,
+    });
+    normaliseLineForSection(line);
+    const after = JSON.stringify({
+      section: line.section,
+      gstShown: line.gstShown,
+      taxType: line.taxType,
+      accountCode: line.accountCode,
+    });
+    if (saved && before !== after) {
+      store[line.id] = {
+        ...saved,
+        section: line.section,
+        gstShown: line.gstShown,
+        taxType: line.taxType,
+        accountCode: line.accountCode,
+      };
+    }
+    if (!saved || line.reviewed !== true) return;
 
     const effectiveSnapshot = lineReviewSnapshot(line);
     const missingReviewSnapshot = !saved.reviewedSnapshot || !saved.reviewedSourceSnapshot;
@@ -1009,7 +1040,123 @@ function ensureInvoicePushResultsEl() {
   return invoicePushResultsEl;
 }
 
-function showSectionPushResult(bucket, data, warnings) {
+function lineTaxTypeForPush(line, bucket) {
+  if (bucket === 'gst' || getLineSection(line) === 'gst') return 'INPUTY24';
+  if (deriveTaxType(line) === 'INPUTY24') return nonGstTaxType(line);
+  return deriveTaxType(line);
+}
+
+function pushPayloadForLines(bucket, reference, lines) {
+  return {
+    bucket,
+    reference,
+    lineItems: lines.map((l) => ({
+      receiptKey: l.receiptKey,
+      ynabClaimId: l.ynabClaimId,
+      date: l.date,
+      description: lineToDescription(l),
+      accountCode: l.accountCode,
+      taxType: lineTaxTypeForPush(l, bucket),
+      currency: l.currency,
+      amount: Number(l.amount),
+    })),
+  };
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function downloadReceiptsPdf(payload, btn) {
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Preparing PDF...';
+  }
+  try {
+    const res = await fetch(`${API_BASE}/xero/invoices/receipts-pdf`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    const blob = await res.blob();
+    const safeBucket = BUCKET_LABEL[payload.bucket] || 'Claims';
+    const safeReference = (payload.reference || `${safeBucket} receipts`).replace(/[^a-z0-9 _.-]/gi, ' ').replace(/\s+/g, ' ').trim();
+    downloadBlob(blob, `${safeReference || safeBucket} receipts.pdf`);
+    const warnings = res.headers.get('X-Receipt-Warnings');
+    showStatus(warnings ? 'error' : 'success', warnings ? `PDF downloaded with warnings: ${warnings}` : 'Receipts PDF downloaded');
+  } catch (err) {
+    showStatus('error', `Could not download receipts PDF: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Download receipts PDF';
+    }
+  }
+}
+
+async function markEverythingClaimed(data, payload, btn) {
+  if (!data.invoiceID) {
+    showStatus('error', 'Missing Xero invoice ID; cannot mark claimed.');
+    return;
+  }
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Marking...';
+  }
+  try {
+    const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
+      method: 'POST',
+      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ invoiceID: data.invoiceID, lineItems: payload.lineItems }),
+    });
+    const result = await res.json().catch(() => ({}));
+    if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+    const failedYnab = (result.claimedYnab || []).filter((r) => r.status === 'failed');
+    const skippedYnab = (result.claimedYnab || []).filter((r) => r.status === 'skipped');
+    const failedReceipts = (result.taggedReceipts || []).filter((r) => r.status === 'failed');
+    if (failedYnab.length || failedReceipts.length) {
+      showStatus('error', `Marked with issues: ${failedReceipts.length} receipt tag failure(s), ${failedYnab.length} YNAB failure(s), ${skippedYnab.length} skipped.`);
+    } else {
+      showStatus('success', `Marked everything claimed for ${result.claimedDate}${skippedYnab.length ? ` (${skippedYnab.length} YNAB subtransaction(s) skipped)` : ''}.`);
+    }
+    await refreshInvoicesView({ showLoading: false });
+    if (btn) btn.textContent = 'Marked claimed';
+  } catch (err) {
+    showStatus('error', `Could not mark claimed: ${err instanceof Error ? err.message : String(err)}`);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Mark everything as claimed';
+    }
+  }
+}
+
+function bindPushResultActions(data, payload) {
+  const container = ensureInvoicePushResultsEl();
+  if (!container) return;
+  const downloadBtn = container.querySelector('[data-action="download-receipts-pdf"]');
+  if (downloadBtn) {
+    downloadBtn.addEventListener('click', () => downloadReceiptsPdf(payload, downloadBtn));
+  }
+  const markBtn = container.querySelector('[data-action="mark-everything-claimed"]');
+  if (markBtn) {
+    markBtn.addEventListener('click', () => markEverythingClaimed(data, payload, markBtn));
+  }
+}
+
+function showSectionPushResult(bucket, data, warnings, payload) {
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
   const failedAttachments = attachments.filter((a) => a.status !== 'attached');
   const attachedCount = attachments.length - failedAttachments.length;
@@ -1021,13 +1168,19 @@ function showSectionPushResult(bucket, data, warnings) {
     : `Draft created with ${attachedCount} receipt${attachedCount === 1 ? '' : 's'} attached.`;
   const html = `
     <div class="${resultClass}">
-      <p><strong>${escapeHtml(summary)}</strong> <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">Open in Xero</a></p>
+      <p><strong>${escapeHtml(summary)}</strong></p>
+      <div class="invoice-result-actions">
+        <a class="btn-secondary invoice-result-link" href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">Open draft in Xero</a>
+        <button type="button" class="btn-secondary" data-action="download-receipts-pdf">Download receipts PDF</button>
+        <button type="button" class="btn-primary" data-action="mark-everything-claimed">Mark everything as claimed</button>
+      </div>
       ${attachments.length ? `<ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} - ${escapeHtml(a.status)}</li>`).join('')}</ul>` : '<p class="attach-list">No attachments were uploaded.</p>'}
       ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>Warning: ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
   const container = ensureInvoicePushResultsEl();
   if (!container) return;
   container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
+  bindPushResultActions(data, payload);
   container.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
@@ -1038,8 +1191,8 @@ function invoicePushSummary(bucket, lines) {
   const receiptLabel = receiptCount === 1 ? '1 receipt' : `${receiptCount} receipts`;
   return [
     `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
-    `Attaches ${receiptLabel}; tax-inclusive.`,
-    'On success, linked YNAB TODO memos become CLAIMED and these items leave the tab.',
+    `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF; tax-inclusive.`,
+    'YNAB TODO memos change only when you click Mark everything as claimed.',
   ].join('\n');
 }
 
@@ -1078,20 +1231,8 @@ async function pushInvoice(bucket, btn) {
   btn.textContent = 'Pushing…';
   showStatus('uploading', `Creating ${BUCKET_LABEL[bucket]} draft and attaching ${lines.length} receipt(s)...`);
   try {
-    const payload = {
-      bucket,
-      reference,
-      markClaimed: true,
-      lineItems: lines.map((l) => ({
-        receiptKey: l.receiptKey,
-        ynabClaimId: l.ynabClaimId,
-        date: l.date,
-        description: lineToDescription(l),
-        accountCode: l.accountCode,
-        taxType: l.taxType || deriveTaxType(l),
-        amount: Number(l.amount),
-      })),
-    };
+    lines.forEach(normaliseLineForSection);
+    const payload = pushPayloadForLines(bucket, reference, lines);
     const res = await fetch(`${API_BASE}/xero/invoices/push`, {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
@@ -1108,21 +1249,20 @@ async function pushInvoice(bucket, btn) {
     } else {
       showStatus('success', `Created draft bill ${data.invoiceNumber || ''} (${attachedCount} receipts attached).`);
     }
-    showSectionPushResult(bucket, data, warnings);
+    showSectionPushResult(bucket, data, warnings, payload);
 
     try {
       await refreshInvoicesView({ showLoading: false });
-      showSectionPushResult(bucket, data, warnings);
+      showSectionPushResult(bucket, data, warnings, payload);
     } catch (refreshErr) {
       showStatus(
         'error',
         `Draft created, but refreshing the list failed — reload before pushing again: ${refreshErr instanceof Error ? refreshErr.message : String(refreshErr)}`,
       );
-      btn.disabled = false;
-      btn.textContent = 'Push to Xero (draft)';
     }
   } catch (err) {
     showStatus('error', `Push failed: ${err instanceof Error ? err.message : String(err)}`);
+  } finally {
     btn.disabled = false;
     btn.textContent = 'Push to Xero (draft)';
   }

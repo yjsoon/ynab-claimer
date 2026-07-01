@@ -2464,6 +2464,19 @@ body.selecting .claims-view {
   border-color: #fcd34d;
 }
 
+.invoice-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.invoice-result-link {
+  display: inline-flex;
+  align-items: center;
+  text-decoration: none;
+}
+
 .inv-cell-editable {
   cursor: pointer;
   position: relative;

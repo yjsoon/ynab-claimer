@@ -192,6 +192,7 @@ interface PushLineItem {
   description: string;
   accountCode: string;
   taxType: string;
+  currency?: string;
   amount: number;
 }
 
@@ -1250,6 +1251,46 @@ function sanitiseFileName(value: string): string {
   return value.replace(/[^a-zA-Z0-9 _.-]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
+function singaporeToday(): string {
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
+}
+
+function parsePushLineItems(raw: unknown): PushLineItem[] {
+  return (Array.isArray(raw) ? raw : [])
+    .filter(
+      (l) =>
+        l &&
+        typeof l.receiptKey === 'string' && l.receiptKey &&
+        typeof l.description === 'string' && l.description.trim() &&
+        typeof l.accountCode === 'string' && l.accountCode &&
+        typeof l.taxType === 'string' && l.taxType &&
+        Number(l.amount) > 0
+    )
+    .map((l) => ({
+      receiptKey: l.receiptKey,
+      ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
+      date: typeof l.date === 'string' ? l.date : '',
+      description: l.description.trim(),
+      accountCode: l.accountCode,
+      taxType: l.taxType,
+      currency: typeof l.currency === 'string' ? l.currency : undefined,
+      amount: Number(l.amount),
+    }));
+}
+
+function nonGstTaxTypeForCurrency(currency?: string): string {
+  const normalized = (currency || 'SGD').toUpperCase();
+  return normalized !== 'SGD' && normalized !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
+}
+
+function taxTypeForBucket(bucket: string | undefined, line: PushLineItem): string {
+  if (bucket === 'gst') return 'INPUTY24';
+  if ((bucket === 'nongst' || bucket === 'transport') && line.taxType === 'INPUTY24') {
+    return nonGstTaxTypeForCurrency(line.currency);
+  }
+  return line.taxType;
+}
+
 interface ReceiptFile {
   key: string;
   name: string;
@@ -1376,8 +1417,47 @@ async function buildClaimAttachments(
   return { uploads, warnings };
 }
 
-// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED: ...".
-async function markYnabClaimed(env: Env, transactionId: string): Promise<'claimed' | 'skipped' | 'failed'> {
+async function buildClaimReceiptPdf(
+  env: Env,
+  lineItems: PushLineItem[],
+  bucketLabel: string
+): Promise<{ name: string; bytes: Uint8Array; warnings: string[] }> {
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  const files: ReceiptFile[] = [];
+
+  for (const li of lineItems) {
+    if (!li.receiptKey || seen.has(li.receiptKey)) continue;
+    seen.add(li.receiptKey);
+    const file = await loadReceiptFile(env, li.receiptKey, `${li.date || ''} ${li.description || ''}`);
+    if (!file) {
+      warnings.push(`Receipt not found, skipped: ${li.receiptKey}`);
+      continue;
+    }
+    if (!EMBEDDABLE_MIME.has(file.mime)) {
+      warnings.push(`Not included (${file.mime}); download/upload separately: ${file.name}`);
+      continue;
+    }
+    files.push(file);
+  }
+
+  if (files.length === 0) {
+    throw new Error('No PDF/JPG/PNG receipts are available to compile.');
+  }
+
+  const { bytes, skipped } = await buildCombinedPdf(files);
+  for (const s of skipped) warnings.push(`Could not embed ${s} into the combined PDF.`);
+  if (bytes.byteLength === 0) throw new Error('The compiled receipts PDF was empty.');
+
+  return {
+    name: `${bucketLabel} receipts.pdf`,
+    bytes,
+    warnings,
+  };
+}
+
+// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
+async function markYnabClaimed(env: Env, transactionId: string, claimedDate = singaporeToday()): Promise<'claimed' | 'skipped' | 'failed'> {
   if (transactionId.includes('_st_')) return 'skipped'; // subtransaction: update manually
   try {
     const base = `https://api.ynab.com/v1/budgets/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
@@ -1385,10 +1465,10 @@ async function markYnabClaimed(env: Env, transactionId: string): Promise<'claime
     if (!getRes.ok) return 'failed';
     const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
     const memo = getData.data?.transaction?.memo || '';
-    if (/^\s*CLAIMED:/i.test(memo)) return 'claimed'; // already done
+    if (/^\s*CLAIMED\b/i.test(memo)) return 'claimed'; // already done
     const newMemo = /^\s*TODO:?/i.test(memo)
-      ? memo.replace(/^\s*TODO:?\s*/i, 'CLAIMED: ')
-      : `CLAIMED: ${memo}`.trim();
+      ? memo.replace(/^\s*TODO:?\s*/i, `CLAIMED - ${claimedDate}: `)
+      : `CLAIMED - ${claimedDate}: ${memo}`.trim();
     const putRes = await fetch(base, {
       method: 'PUT',
       headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
@@ -1942,35 +2022,110 @@ export default {
         }
       }
 
-      // POST /xero/invoices/push - create a DRAFT bill, attach receipts,
-      // tag the receipts as invoiced, and flip linked YNAB TODOs to CLAIMED.
+      // POST /xero/invoices/receipts-pdf - compile selected receipts into one PDF
+      // for manual upload in Xero when direct attachment upload is unsuitable.
+      if (path === '/xero/invoices/receipts-pdf' && request.method === 'POST') {
+        try {
+          const body = (await request.json()) as {
+            bucket?: string;
+            lineItems?: PushLineItem[];
+          };
+          const lineItems = parsePushLineItems(body.lineItems);
+          if (lineItems.length === 0) {
+            return new Response(JSON.stringify({ error: 'No valid line items to compile' }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
+          const compiled = await buildClaimReceiptPdf(env, lineItems, `${bucketLabel} ${singaporeToday()}`);
+          const headers = new Headers(corsHeaders);
+          headers.set('Content-Type', 'application/pdf');
+          headers.set('Content-Disposition', `attachment; filename="${compiled.name}"`);
+          if (compiled.warnings.length) {
+            headers.set('X-Receipt-Warnings', compiled.warnings.slice(0, 10).join(' | ').replace(/[^\x20-\x7E]/g, '?'));
+          }
+          const bodyBytes = new ArrayBuffer(compiled.bytes.byteLength);
+          new Uint8Array(bodyBytes).set(compiled.bytes);
+          return new Response(bodyBytes, { headers });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Failed to compile receipts PDF';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 502,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // POST /xero/invoices/mark-claimed - after the draft bill and receipts
+      // have been reviewed, tag receipts as invoiced and flip linked YNAB TODOs.
+      if (path === '/xero/invoices/mark-claimed' && request.method === 'POST') {
+        try {
+          const body = (await request.json()) as {
+            invoiceID?: string;
+            lineItems?: PushLineItem[];
+          };
+          const invoiceID = typeof body.invoiceID === 'string' ? body.invoiceID : '';
+          const lineItems = parsePushLineItems(body.lineItems);
+          if (!invoiceID || lineItems.length === 0) {
+            return new Response(JSON.stringify({ error: 'invoiceID and at least one line item are required' }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+
+          const claimedDate = singaporeToday();
+          const invoicedAt = new Date().toISOString();
+          const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
+          const taggedReceipts: Array<{ key: string; status: string }> = [];
+          for (const key of uniqueKeys) {
+            try {
+              await patchReceiptMetadata(env, key, { xeroInvoiceId: invoiceID, invoicedAt });
+              taggedReceipts.push({ key, status: 'tagged' });
+            } catch (_err) {
+              taggedReceipts.push({ key, status: 'failed' });
+            }
+          }
+
+          const claimIds = Array.from(
+            new Set(
+              lineItems
+                .map((l) => l.ynabClaimId)
+                .filter((id): id is string => typeof id === 'string' && id.length > 0)
+            )
+          );
+          const claimedYnab: Array<{ id: string; status: string }> = [];
+          for (const id of claimIds) {
+            claimedYnab.push({ id, status: await markYnabClaimed(env, id, claimedDate) });
+          }
+
+          return new Response(
+            JSON.stringify({ success: true, claimedDate, taggedReceipts, claimedYnab }),
+            { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : 'Failed to mark claims as claimed';
+          return new Response(JSON.stringify({ error: message }), {
+            status: 502,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+      }
+
+      // POST /xero/invoices/push - create a DRAFT bill and attempt to attach
+      // receipts. YNAB/receipt state is changed only by /mark-claimed.
       if (path === '/xero/invoices/push' && request.method === 'POST') {
         try {
           const body = (await request.json()) as {
             bucket?: string;
             reference?: string;
-            markClaimed?: boolean;
             lineItems?: PushLineItem[];
           };
-          const lineItems = (Array.isArray(body.lineItems) ? body.lineItems : [])
-            .filter(
-              (l) =>
-                l &&
-                typeof l.receiptKey === 'string' && l.receiptKey &&
-                typeof l.description === 'string' && l.description.trim() &&
-                typeof l.accountCode === 'string' && l.accountCode &&
-                typeof l.taxType === 'string' && l.taxType &&
-                Number(l.amount) > 0
-            )
-            .map((l) => ({
-              receiptKey: l.receiptKey,
-              ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
-              date: typeof l.date === 'string' ? l.date : '',
-              description: l.description.trim(),
-              accountCode: l.accountCode,
-              taxType: l.taxType,
-              amount: Number(l.amount),
-            }));
+          const lineItems = parsePushLineItems(body.lineItems).map((l) => ({
+            ...l,
+            taxType: taxTypeForBucket(body.bucket, l),
+          }));
           if (lineItems.length === 0) {
             return new Response(JSON.stringify({ error: 'No valid line items to invoice (each needs a positive amount, account and tax code)' }), {
               status: 400,
@@ -2017,37 +2172,13 @@ export default {
 
           // "Fully attached" means buildClaimAttachments dropped nothing
           // (unattachable type, missing, oversize, embed/merge failure all add a
-          // warning) AND every upload succeeded. Only then do we mark items done;
-          // otherwise leave them in the Invoices tab (untagged, YNAB still TODO)
-          // so the user can retry — the deterministic idempotency key reuses this
-          // draft rather than creating a duplicate.
+          // warning) AND every upload succeeded.
           const failedUploads = attachments.filter((a) => a.status !== 'attached');
           const allAttached = warnings.length === 0 && failedUploads.length === 0;
 
-          const claimedYnab: Array<{ id: string; status: string }> = [];
-          if (allAttached) {
-            // Tag receipts as invoiced so they drop off the Invoices tab.
-            const invoicedAt = new Date().toISOString();
-            const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
-            for (const key of uniqueKeys) {
-              await patchReceiptMetadata(env, key, { xeroInvoiceId: bill.invoiceID, invoicedAt });
-            }
-            // Flip linked YNAB TODOs to CLAIMED.
-            if (body.markClaimed !== false) {
-              const claimIds = Array.from(
-                new Set(
-                  lineItems
-                    .map((l) => l.ynabClaimId)
-                    .filter((id): id is string => typeof id === 'string' && id.length > 0)
-                )
-              );
-              for (const id of claimIds) {
-                claimedYnab.push({ id, status: await markYnabClaimed(env, id) });
-              }
-            }
-          } else {
+          if (!allAttached) {
             warnings.push(
-              'Not every receipt was attached (see the attachment notes), so the receipts were left in the Invoices tab and YNAB was not marked CLAIMED. Review the draft bill in Xero, attach anything missing, then retry (the same draft is reused).'
+              'Not every receipt was attached through the Xero API. Download the compiled receipts PDF and upload it manually in Xero before marking everything claimed.'
             );
           }
 
@@ -2058,7 +2189,6 @@ export default {
               url: bill.url,
               allAttached,
               attachments,
-              claimedYnab,
               warnings,
             }),
             { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
