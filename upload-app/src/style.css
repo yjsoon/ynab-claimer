@@ -401,6 +401,12 @@ h2 {
   font-style: italic;
 }
 
+.empty-state[hidden],
+.invoices-loading[hidden],
+.invoices-sections[hidden] {
+  display: none;
+}
+
 .loading-state {
   color: #666;
   text-align: center;
