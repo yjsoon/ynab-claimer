@@ -1671,7 +1671,7 @@ function invoicePushSummary(bucket, lines) {
   return [
     `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
     `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
-    'YNAB TODO memos change only when you click Mark everything as claimed.',
+    'YNAB TODO memos change only when you click Mark checked as claimed.',
   ].join('\n');
 }
 
