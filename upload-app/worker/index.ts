@@ -2204,7 +2204,7 @@ export default {
 
       // Serve static assets for all other routes
       const spaPaths = new Set(['/invoices']);
-      return await getAssetFromKV(
+      const assetResponse = await getAssetFromKV(
         { request, waitUntil: ctx.waitUntil.bind(ctx) },
         {
           ASSET_NAMESPACE: env.__STATIC_CONTENT,
@@ -2223,6 +2223,13 @@ export default {
           },
         }
       );
+      const headers = new Headers(assetResponse.headers);
+      headers.set('Cache-Control', 'no-store');
+      return new Response(assetResponse.body, {
+        status: assetResponse.status,
+        statusText: assetResponse.statusText,
+        headers,
+      });
     } catch (error) {
       // If asset not found, return 404
       if (error instanceof Error && error.message.includes('could not find')) {

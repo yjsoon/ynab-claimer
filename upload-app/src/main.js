@@ -12,7 +12,7 @@ import {
   isInvoicesPath,
   navigateToMode,
   renderInvoiceClaimLoadError,
-} from './invoices.js';
+} from './invoices.js?v=20260701-1200';
 
 initTheme();
 initPreview();
