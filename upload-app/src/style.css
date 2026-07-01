@@ -1669,6 +1669,22 @@ body.selecting .claims-view {
     line-height: 1.45;
   }
 
+  .invoice-section-tools {
+    justify-content: stretch;
+    margin: 0 0 12px;
+  }
+
+  .invoice-sort-label {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .invoice-sort-select {
+    min-height: 44px;
+    max-width: 68%;
+    font-size: 16px;
+  }
+
   .btn-connect {
     display: block;
     width: 100%;
@@ -2397,6 +2413,32 @@ body.selecting .claims-view {
   font-size: 0.88rem;
 }
 
+.invoice-section-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin: -4px 0 10px;
+}
+
+.invoice-sort-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #64748b;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.invoice-sort-select {
+  min-height: 34px;
+  padding: 5px 28px 5px 9px;
+  border: 1px solid #cbd5e1;
+  border-radius: 7px;
+  background: #fff;
+  color: #1f2937;
+  font: inherit;
+  font-weight: 500;
+}
+
 .invoice-section-table-wrap {
   overflow-x: auto;
 }
@@ -2754,6 +2796,16 @@ body.selecting .claims-view {
 
 :root[data-theme="dark"] .invoice-doc-table tbody td.col-reviewed {
   border-bottom-color: #334155;
+}
+
+:root[data-theme="dark"] .invoice-sort-label {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .invoice-sort-select {
+  background: #0f172a;
+  border-color: #475569;
+  color: #e2e8f0;
 }
 
 :root[data-theme="dark"] .btn-primary:disabled {

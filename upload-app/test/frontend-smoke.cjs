@@ -114,7 +114,19 @@ async function main() {
 
       if (url.pathname === '/ynab/todos') return route.fulfill({ json: { todos } });
       if (url.pathname === '/xero/status') return route.fulfill({ json: { connected: true, tenantName: 'Test Xero' } });
-      if (url.pathname === '/xero/meta') return route.fulfill({ json: { accounts: [] } });
+      if (url.pathname === '/xero/meta') {
+        return route.fulfill({
+          json: {
+            accounts: [],
+            taxRates: [
+              { taxType: 'INPUTY24', name: 'Standard-Rated Purchases' },
+              { taxType: 'NONE', name: 'No Tax' },
+              { taxType: 'NRINPUT', name: 'Purchases from Non-GST Registered Suppliers' },
+              { taxType: 'OPINPUT', name: 'Out Of Scope Purchases' },
+            ],
+          },
+        });
+      }
       if (url.pathname === '/amount-tags/pending') return route.fulfill({ json: { processed: 0, remaining: 0 } });
       return route.continue();
     });
@@ -182,10 +194,49 @@ async function main() {
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
-  const taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
+  let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
   const taxText = await taxCell.locator('.inv-cell-text').textContent();
   if (!taxText.startsWith('OPINPUT')) throw new Error(`foreign non-GST tax type should be OPINPUT, got ${taxText}`);
 
+  await taxCell.click();
+  const taxOptions = await taxCell.locator('select option').evaluateAll((options) => options.map((option) => option.value));
+  if (taxOptions.join(',') !== 'NRINPUT,INPUTY24,OPINPUT') {
+    throw new Error(`tax type dropdown should only show purchase tax types, got ${taxOptions.join(',')}`);
+  }
+  await page.keyboard.press('Escape');
+  await taxCell.locator('.inv-cell-text').waitFor();
+
+  await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem('claim_manager_invoice_edits') || '{}');
+    const entry = store['receipt-2.pdf::claim-1'];
+    if (!entry) throw new Error('missing persisted invoice review');
+    entry.reviewedSourceSnapshot = {
+      ...entry.reviewedSourceSnapshot,
+      accountCode: '999',
+      taxType: 'LEGACYTAX',
+      section: 'gst',
+    };
+    localStorage.setItem('claim_manager_invoice_edits', JSON.stringify(store));
+  });
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  const metaAfterReload = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
+  if (!metaAfterReload.includes('1/1 reviewed')) {
+    throw new Error(`review should survive legacy derived snapshot differences, got ${metaAfterReload}`);
+  }
+  const disabledAfterReload = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
+  if (disabledAfterReload) throw new Error('push should remain enabled after legacy derived snapshot differences');
+
+  const sortSelect = page.locator('.invoice-section[data-bucket="nongst"] .invoice-sort-select');
+  await sortSelect.selectOption('date-desc');
+  const storedSort = await page.evaluate(() => JSON.parse(localStorage.getItem('claim_manager_invoice_sorts') || '{}').nongst);
+  if (storedSort !== 'date-desc') throw new Error(`invoice sort choice should persist, got ${storedSort}`);
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  const selectedSort = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-sort-select').inputValue();
+  if (selectedSort !== 'date-desc') throw new Error(`invoice sort choice should restore after reload, got ${selectedSort}`);
+
+  taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
   await taxCell.click();
   await taxCell.locator('select').selectOption('NRINPUT');
   const editedTaxText = await taxCell.locator('.inv-cell-text').textContent();

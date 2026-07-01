@@ -37,6 +37,15 @@ const BUCKET_HEADING = {
 };
 const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
 const INVOICE_SECTIONS_KEY = 'claim_manager_invoice_sections';
+const INVOICE_SORTS_KEY = 'claim_manager_invoice_sorts';
+const INVOICE_SORT_OPTIONS = [
+  { value: 'account-date', label: 'Account, then date' },
+  { value: 'date-asc', label: 'Date oldest first' },
+  { value: 'date-desc', label: 'Date newest first' },
+  { value: 'amount-desc', label: 'Amount high to low' },
+  { value: 'amount-asc', label: 'Amount low to high' },
+  { value: 'description-asc', label: 'Description A-Z' },
+];
 const EYE_ICON = '<svg class="inv-eye-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
 
 let invoiceLines = [];
@@ -50,9 +59,10 @@ let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
 let invoicePushResultsEl = null;
 const TRANSPORT_CODES = ['451', '452'];
+const ALLOWED_TAX_TYPES = ['NRINPUT', 'INPUTY24', 'OPINPUT'];
 const FALLBACK_TAX_TYPES = [
-  { taxType: 'INPUTY24', name: 'Standard-Rated Purchases' },
   { taxType: 'NRINPUT', name: 'Purchases from Non-GST Registered Suppliers' },
+  { taxType: 'INPUTY24', name: 'Standard-Rated Purchases' },
   { taxType: 'OPINPUT', name: 'Out Of Scope Purchases' },
 ];
 const FALLBACK_ACCOUNTS = [
@@ -83,9 +93,9 @@ function invoiceTaxTypes() {
   const merged = new Map();
   FALLBACK_TAX_TYPES.forEach((tax) => merged.set(tax.taxType, tax));
   (xeroTaxTypes || []).forEach((tax) => {
-    if (tax.taxType) merged.set(tax.taxType, tax);
+    if (ALLOWED_TAX_TYPES.includes(tax.taxType)) merged.set(tax.taxType, tax);
   });
-  return Array.from(merged.values());
+  return ALLOWED_TAX_TYPES.map((taxType) => merged.get(taxType)).filter(Boolean);
 }
 
 function guessAccountCode(text) {
@@ -99,7 +109,7 @@ function guessAccountCode(text) {
 // Input tax code: GST shown -> standard-rated; USD with no GST -> out of scope;
 // SGD with no GST -> non-GST-registered supplier.
 function deriveTaxType(line) {
-  if (line.taxType) return line.taxType;
+  if (ALLOWED_TAX_TYPES.includes(line.taxType)) return line.taxType;
   if (line.gstShown) return 'INPUTY24';
   const currency = (line.currency || 'SGD').toUpperCase();
   return currency !== 'SGD' && currency !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
@@ -167,6 +177,31 @@ function saveSectionCollapsed(bucket, collapsed) {
   }
 }
 
+function loadInvoiceSortState() {
+  try {
+    return JSON.parse(localStorage.getItem(INVOICE_SORTS_KEY) || '{}') || {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+function invoiceSortForBucket(bucket) {
+  const state = loadInvoiceSortState();
+  return INVOICE_SORT_OPTIONS.some((option) => option.value === state[bucket])
+    ? state[bucket]
+    : 'account-date';
+}
+
+function saveInvoiceSort(bucket, sort) {
+  const state = loadInvoiceSortState();
+  state[bucket] = sort;
+  try {
+    localStorage.setItem(INVOICE_SORTS_KEY, JSON.stringify(state));
+  } catch (_err) {
+    /* ignore */
+  }
+}
+
 function setInvoicesLoading(loading) {
   invoicesLoading = loading;
   updateInvoicesVisibility();
@@ -217,6 +252,21 @@ function lineReviewSnapshot(line) {
   };
 }
 
+function lineSourceSnapshot(line) {
+  return {
+    amount: Number(line.amount || 0).toFixed(2),
+    date: line.date || '',
+    description: line.description || '',
+  };
+}
+
+function sourceSnapshotsMatch(current, saved) {
+  if (!saved) return false;
+  return current.amount === saved.amount
+    && current.date === saved.date
+    && current.description === saved.description;
+}
+
 function snapshotsMatch(a, b) {
   return JSON.stringify(a || null) === JSON.stringify(b || null);
 }
@@ -229,14 +279,14 @@ function applySavedInvoiceEdits(lines) {
   lines.forEach((line) => {
     const saved = store[line.id];
     if (!saved) return;
-    const sourceSnapshot = lineReviewSnapshot(line);
+    const sourceSnapshot = lineSourceSnapshot(line);
     line.sourceSnapshot = sourceSnapshot;
     Object.assign(line, saved);
     if (line.reviewed !== true) return;
 
     const effectiveSnapshot = lineReviewSnapshot(line);
     const missingReviewSnapshot = !saved.reviewedSnapshot || !saved.reviewedSourceSnapshot;
-    const sourceChanged = !snapshotsMatch(sourceSnapshot, saved.reviewedSourceSnapshot);
+    const sourceChanged = !sourceSnapshotsMatch(sourceSnapshot, saved.reviewedSourceSnapshot);
     const effectiveChanged = !snapshotsMatch(effectiveSnapshot, saved.reviewedSnapshot);
     if (missingReviewSnapshot || sourceChanged || effectiveChanged) {
       store[line.id] = {
@@ -440,6 +490,13 @@ function renderInvoiceLineRow(line, accounts) {
     </tr>`;
 }
 
+function renderInvoiceSortOptions(bucket) {
+  const selected = invoiceSortForBucket(bucket);
+  return INVOICE_SORT_OPTIONS
+    .map((option) => `<option value="${escapeHtml(option.value)}" ${option.value === selected ? 'selected' : ''}>${escapeHtml(option.label)}</option>`)
+    .join('');
+}
+
 function renderInvoiceSection(bucket, lines, accounts) {
   const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
   const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
@@ -460,6 +517,14 @@ function renderInvoiceSection(bucket, lines, accounts) {
       </summary>
       <div class="invoice-section-body">
         <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
+        <div class="invoice-section-tools">
+          <label class="invoice-sort-label">
+            <span>Sort</span>
+            <select class="invoice-sort-select" data-sort-bucket="${bucket}">
+              ${renderInvoiceSortOptions(bucket)}
+            </select>
+          </label>
+        </div>
         <div class="invoice-section-table-wrap">
           <table class="invoice-doc-table">
             <thead>
@@ -784,7 +849,7 @@ function updateSectionHeaders() {
   INVOICE_BUCKETS.forEach((bucket) => {
     const section = invoicesSectionsEl.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
     if (!section) return;
-    const lines = sortBucketLines(bucketLines(bucket));
+    const lines = sortBucketLines(bucketLines(bucket), bucket);
     const total = lines.reduce((sum, l) => sum + (Number(l.amount) || 0), 0);
     const { pushable, allReviewed } = bucketReviewState(bucket);
     const meta = section.querySelector('.invoice-section-meta');
@@ -811,6 +876,13 @@ function bindInvoiceSectionEvents() {
     const pushBtn = section.querySelector('.invoice-push-btn');
     if (pushBtn) {
       pushBtn.addEventListener('click', () => pushInvoice(bucket, pushBtn));
+    }
+    const sortSelect = section.querySelector('.invoice-sort-select');
+    if (sortSelect) {
+      sortSelect.addEventListener('change', () => {
+        saveInvoiceSort(bucket, sortSelect.value);
+        renderInvoiceEditor();
+      });
     }
     const tbody = section.querySelector('tbody');
     tbody.querySelectorAll('tr[data-id]').forEach((tr) => {
@@ -841,7 +913,7 @@ function renderInvoiceEditor() {
   }
 
   invoicesSectionsEl.innerHTML = INVOICE_BUCKETS
-    .map((bucket) => renderInvoiceSection(bucket, sortBucketLines(bucketLines(bucket)), accounts))
+    .map((bucket) => renderInvoiceSection(bucket, sortBucketLines(bucketLines(bucket), bucket), accounts))
     .join('');
 
   if (generation !== invoiceRenderGeneration) return;
@@ -879,11 +951,31 @@ async function refreshInvoicesView({ showLoading = true } = {}) {
   }
 }
 
-// Group by account code, then date ascending within the account.
-function sortBucketLines(lines) {
+function compareText(a, b) {
+  return String(a || '').localeCompare(String(b || ''), undefined, { sensitivity: 'base' });
+}
+
+function compareDate(a, b, direction = 'asc') {
+  const cmp = compareText(a.date, b.date) || compareText(a.description, b.description);
+  return direction === 'desc' ? -cmp : cmp;
+}
+
+function compareAmount(a, b, direction = 'desc') {
+  const cmp = (Number(a.amount) || 0) - (Number(b.amount) || 0);
+  if (cmp !== 0) return direction === 'desc' ? -cmp : cmp;
+  return compareDate(a, b, 'asc');
+}
+
+function sortBucketLines(lines, bucket) {
+  const sort = invoiceSortForBucket(bucket);
   return lines.slice().sort((a, b) => {
-    if (a.accountCode !== b.accountCode) return a.accountCode < b.accountCode ? -1 : 1;
-    return a.date < b.date ? -1 : a.date > b.date ? 1 : 0;
+    if (sort === 'date-asc') return compareDate(a, b, 'asc');
+    if (sort === 'date-desc') return compareDate(a, b, 'desc');
+    if (sort === 'amount-desc') return compareAmount(a, b, 'desc');
+    if (sort === 'amount-asc') return compareAmount(a, b, 'asc');
+    if (sort === 'description-asc') return compareText(a.description, b.description) || compareDate(a, b, 'asc');
+    if (a.accountCode !== b.accountCode) return compareText(a.accountCode, b.accountCode);
+    return compareDate(a, b, 'asc');
   });
 }
 
@@ -892,7 +984,7 @@ function bucketLines(bucket) {
 }
 
 function pushableBucketLines(bucket) {
-  return sortBucketLines(bucketLines(bucket)).filter((l) => (Number(l.amount) || 0) > 0);
+  return sortBucketLines(bucketLines(bucket), bucket).filter((l) => (Number(l.amount) || 0) > 0);
 }
 
 // YNAB transfer transactions carry a payee like "Transfer : Work Refundables",
