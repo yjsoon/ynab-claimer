@@ -52,6 +52,10 @@ const claimFilterPills = document.getElementById('claimFilterPills');
 const claimFilterClear = document.getElementById('claimFilterClear');
 
 // Linking elements
+const linkingDock = document.getElementById('linkingDock');
+const linkingContextText = document.getElementById('linkingContextText');
+const linkingContextPreview = document.getElementById('linkingContextPreview');
+const linkingContextChange = document.getElementById('linkingContextChange');
 const actionBar = document.getElementById('actionBar');
 const actionText = document.getElementById('actionText');
 const confirmSelection = document.getElementById('confirmSelection');
@@ -198,6 +202,7 @@ export async function loadReceipts() {
       receiptList.innerHTML = '<li class="empty-state">No outstanding receipts</li>';
       applyLinkingHighlights();
       renderLinkedPairs();
+      updateUploadZoneCompact();
       triggerPendingAmountTagging();
       return;
     }
@@ -287,6 +292,7 @@ export async function loadReceipts() {
 
     applyLinkingHighlights();
     renderLinkedPairs();
+    updateUploadZoneCompact();
     triggerPendingAmountTagging();
   } catch (err) {
     console.error('Failed to load receipts:', err);
@@ -520,12 +526,12 @@ function renderLinkedPairs() {
       const claimDate = claim
         ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
         : isReadyOnly
-          ? 'Ready'
+          ? formatReceiptDateLabel(receipt).text.replace(/^(Manual|AI) /, '')
           : 'Unknown date';
       const claimAmount = claim && Number.isFinite(Number(claim.amount))
-        ? `$${Number(claim.amount).toFixed(2)}`
+        ? formatClaimAmount(Number(claim.amount))
         : isReadyOnly
-          ? 'Receipt amount'
+          ? getReceiptAmountLabel(receipt) || 'Amount pending'
           : 'Unknown amount';
 
       const receiptName = getReceiptDisplayName(receipt);
@@ -610,8 +616,78 @@ function appendMatchBadge(li, label, listType) {
   }
 }
 
+function getReceiptAmountLabel(receipt) {
+  const parsed = Number(receipt.taggedAmount);
+  const currency = (receipt.taggedCurrency || 'SGD').toUpperCase();
+  if (receipt.taggedCurrency === 'USD' && Number.isFinite(Number(receipt.taggedAmountSgdApprox))) {
+    return `S$${Number(receipt.taggedAmountSgdApprox).toFixed(2)}`;
+  }
+  if (Number.isFinite(parsed)) {
+    return formatCurrencyAmount(currency, parsed);
+  }
+  return '';
+}
+
+function formatClaimAmount(amount) {
+  return formatCurrencyAmount('SGD', Number(amount));
+}
+
+function updateUploadZoneCompact() {
+  if (!dropzone) return;
+  const outstandingClaims = claimsLoadErrorMessage ? 0 : getOutstandingClaims().length;
+  const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0).length;
+  const compact = outstandingClaims > 0 || outstandingReceipts > 0;
+  dropzone.classList.toggle('is-compact', compact);
+  const compactLabel = dropzone.querySelector('.dropzone-compact-label');
+  if (compactLabel) compactLabel.hidden = !compact;
+}
+
+function updateLinkingContext() {
+  if (!linkingDock || !linkingContextText) return;
+
+  if (!linkingSource) {
+    linkingDock.hidden = true;
+    return;
+  }
+
+  if (linkingSource === 'receipt' && sourceReceiptKey) {
+    const receipt = receiptsData.find((r) => r.key === sourceReceiptKey);
+    if (!receipt) {
+      linkingDock.hidden = true;
+      return;
+    }
+    const name = getReceiptDisplayName(receipt);
+    const amount = getReceiptAmountLabel(receipt);
+    const dateInfo = getReceiptMatchDate(receipt);
+    const dateStr = dateInfo.date ? formatDateForLocale(dateInfo.date) : '';
+    linkingContextText.textContent = ['Linking receipt:', name, amount, dateStr].filter(Boolean).join(' · ');
+    if (linkingContextPreview) {
+      linkingContextPreview.hidden = false;
+      linkingContextPreview.onclick = () => openPreview(receipt.key, name);
+    }
+    linkingDock.hidden = false;
+    return;
+  }
+
+  if (linkingSource === 'claim' && sourceClaimId) {
+    const claim = claimsData.find((c) => c.id === sourceClaimId);
+    if (!claim) {
+      linkingDock.hidden = true;
+      return;
+    }
+    const dateStr = formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date));
+    linkingContextText.textContent = `Linking claim: ${claim.description} · ${formatCurrencyAmount('SGD', Number(claim.amount))} · ${dateStr}`;
+    if (linkingContextPreview) linkingContextPreview.hidden = true;
+    linkingDock.hidden = false;
+    return;
+  }
+
+  linkingDock.hidden = true;
+}
+
 function updateActionBar() {
   if (!linkingSource) {
+    if (linkingDock) linkingDock.hidden = true;
     actionBar.classList.remove('visible');
     confirmSelection.hidden = true;
     confirmSelection.disabled = true;
@@ -620,6 +696,7 @@ function updateActionBar() {
     return;
   }
 
+  updateLinkingContext();
   actionBar.classList.add('visible');
 
   if (linkingSource === 'receipt') {
@@ -806,6 +883,7 @@ export async function loadYnabTodos() {
     setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)));
     renderOutstandingClaims();
     renderLinkedPairs();
+    updateUploadZoneCompact();
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
@@ -882,7 +960,7 @@ function renderOutstandingClaims() {
           <div class="todo-actions">
             <div class="todo-meta">
               <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
-              <span class="todo-amount">$${t.amount.toFixed(2)}</span>
+              <span class="todo-amount">${escapeHtml(formatClaimAmount(t.amount))}</span>
             </div>
             <button class="link-btn claim-link-btn" title="Link receipts to this claim">
               ${linkBtnIcon}
@@ -1374,6 +1452,13 @@ async function unlinkReceipt(receiptKey) {
 cancelSelection.addEventListener('click', clearSelection);
 confirmSelection.addEventListener('click', handleConfirmSelection);
 markReadySelection.addEventListener('click', markSourceReceiptReady);
+if (linkingContextChange) {
+  linkingContextChange.addEventListener('click', () => {
+    const returnTab = linkingSource === 'receipt' ? 'receipts' : 'claims';
+    clearSelection();
+    switchTab(returnTab);
+  });
+}
 
 // ===== Mobile Tab Toggle =====
 
