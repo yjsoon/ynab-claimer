@@ -2459,6 +2459,11 @@ body.selecting .claims-view {
   font-size: 0.88rem;
 }
 
+.invoice-result-title {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+
 .invoice-push-result-warn {
   background: #fffbeb;
   border-color: #fcd34d;
@@ -2475,6 +2480,14 @@ body.selecting .claims-view {
   display: inline-flex;
   align-items: center;
   text-decoration: none;
+}
+
+.invoice-result-url {
+  margin: 8px 0 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  color: #4b5563;
 }
 
 .inv-cell-editable {
@@ -2849,6 +2862,10 @@ body.selecting .claims-view {
   background: #422006;
   border-color: #92400e;
   color: #fde68a;
+}
+
+:root[data-theme="dark"] .invoice-result-url {
+  color: #cbd5e1;
 }
 
 :root[data-theme="dark"] .invoice-doc-table th,

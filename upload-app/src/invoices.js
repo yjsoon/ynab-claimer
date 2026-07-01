@@ -1203,14 +1203,18 @@ function showSectionPushResult(bucket, data, warnings, payload, { persist = true
   const summary = data.allAttached === false || failedAttachments.length || warnings.length
     ? `Draft created, but ${failedAttachments.length ? `${failedAttachments.length} attachment upload${failedAttachments.length === 1 ? '' : 's'} failed` : 'some receipts need manual attachment'}.`
     : `Draft created with ${attachedCount} receipt${attachedCount === 1 ? '' : 's'} attached.`;
+  const xeroUrl = data.url || '#';
+  const invoiceLabel = data.invoiceNumber ? ` ${data.invoiceNumber}` : '';
   const html = `
     <div class="${resultClass}">
+      <h3 class="invoice-result-title">Draft bill${escapeHtml(invoiceLabel)} created in Xero</h3>
       <p><strong>${escapeHtml(summary)}</strong></p>
       <div class="invoice-result-actions">
-        <a class="btn-secondary invoice-result-link" href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">Open draft in Xero</a>
+        <a class="btn-primary invoice-result-link" href="${escapeHtml(xeroUrl)}" target="_blank" rel="noopener">Open draft in Xero</a>
         <button type="button" class="btn-secondary" data-action="download-receipts-pdf">Download receipts PDF</button>
         <button type="button" class="btn-primary" data-action="mark-everything-claimed">Mark everything as claimed</button>
       </div>
+      <p class="invoice-result-url">${escapeHtml(xeroUrl)}</p>
       ${attachments.length ? `<ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} - ${escapeHtml(a.status)}</li>`).join('')}</ul>` : '<p class="attach-list">No attachments were uploaded.</p>'}
       ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>Warning: ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
