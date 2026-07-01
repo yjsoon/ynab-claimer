@@ -59,6 +59,7 @@ let xeroTaxTypes = null;
 let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
 let invoicePushResultsEl = null;
+let pdfLibModule = null;
 const TRANSPORT_CODES = ['451', '452'];
 const ALLOWED_TAX_TYPES = ['NRINPUT', 'INPUTY24', 'OPINPUT'];
 const FALLBACK_TAX_TYPES = [
@@ -1110,6 +1111,12 @@ function downloadBlob(blob, filename) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function safeReceiptBundleName(payload) {
+  const safeBucket = BUCKET_LABEL[payload.bucket] || 'Claims';
+  const safeReference = (payload.reference || `${safeBucket} receipts`).replace(/[^a-z0-9 _.-]/gi, ' ').replace(/\s+/g, ' ').trim();
+  return `${safeReference || safeBucket} receipts.pdf`;
+}
+
 function receiptFilenameFromKey(key, index) {
   const fallback = `receipt-${String(index + 1).padStart(2, '0')}`;
   const raw = decodeURIComponent(String(key || '')).split('/').pop() || fallback;
@@ -1155,30 +1162,96 @@ async function downloadOriginalReceipts(payload) {
   }
 }
 
+async function loadPdfLib() {
+  if (!pdfLibModule) {
+    pdfLibModule = await import('./lib/pdf-lib.esm.min.js');
+  }
+  return pdfLibModule;
+}
+
+async function appendReceiptToPdf(PDFDocument, doc, receipt, warnings) {
+  const { bytes, mime, name } = receipt;
+  try {
+    if (mime === 'application/pdf') {
+      const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+      const pages = await doc.copyPages(src, src.getPageIndices());
+      pages.forEach((page) => doc.addPage(page));
+      return;
+    }
+    if (mime === 'image/jpeg' || mime === 'image/jpg') {
+      const image = await doc.embedJpg(bytes);
+      doc.addPage([image.width, image.height]).drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+      return;
+    }
+    if (mime === 'image/png') {
+      const image = await doc.embedPng(bytes);
+      doc.addPage([image.width, image.height]).drawImage(image, { x: 0, y: 0, width: image.width, height: image.height });
+      return;
+    }
+    warnings.push(`Skipped unsupported receipt type (${mime}): ${name}`);
+  } catch (err) {
+    warnings.push(`Could not include ${name}: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function compileReceiptsPdfInBrowser(payload) {
+  const { PDFDocument } = await loadPdfLib();
+  const doc = await PDFDocument.create();
+  const keys = uniquePayloadReceiptKeys(payload);
+  const warnings = [];
+  let included = 0;
+
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    showStatus('uploading', `Building receipts PDF (${i + 1}/${keys.length})...`);
+    try {
+      const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(key)}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const bytes = await res.arrayBuffer();
+      const mime = (res.headers.get('Content-Type') || '').split(';')[0].trim().toLowerCase();
+      const beforeCount = doc.getPageCount();
+      await appendReceiptToPdf(PDFDocument, doc, {
+        bytes,
+        mime,
+        name: receiptFilenameFromKey(key, i),
+      }, warnings);
+      if (doc.getPageCount() > beforeCount) included += 1;
+    } catch (err) {
+      warnings.push(`${receiptFilenameFromKey(key, i)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  if (included === 0) {
+    throw new Error(warnings.slice(0, 2).join(', ') || 'No receipts could be compiled');
+  }
+
+  const pdfBytes = await doc.save();
+  return {
+    blob: new Blob([pdfBytes], { type: 'application/pdf' }),
+    included,
+    skipped: keys.length - included,
+    warnings,
+  };
+}
+
 async function downloadReceiptsPdf(payload, btn) {
   const originalText = btn?.textContent;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Preparing PDF...';
+    btn.textContent = 'Building PDF...';
   }
   try {
-    const res = await fetch(`${API_BASE}/xero/invoices/receipts-pdf`, {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `HTTP ${res.status}`);
+    const compiled = await compileReceiptsPdfInBrowser(payload);
+    downloadBlob(compiled.blob, safeReceiptBundleName(payload));
+    if (compiled.warnings.length) {
+      showStatus('error', `PDF downloaded with ${compiled.included} receipt(s); ${compiled.skipped} skipped: ${compiled.warnings.slice(0, 2).join(', ')}`);
+    } else {
+      showStatus('success', `Downloaded one PDF with ${compiled.included} receipt(s).`);
     }
-    const blob = await res.blob();
-    const safeBucket = BUCKET_LABEL[payload.bucket] || 'Claims';
-    const safeReference = (payload.reference || `${safeBucket} receipts`).replace(/[^a-z0-9 _.-]/gi, ' ').replace(/\s+/g, ' ').trim();
-    downloadBlob(blob, `${safeReference || safeBucket} receipts.pdf`);
-    const warnings = res.headers.get('X-Receipt-Warnings');
-    showStatus(warnings ? 'error' : 'success', warnings ? `PDF downloaded with warnings: ${warnings}` : 'Receipts PDF downloaded');
   } catch (err) {
-    showStatus('uploading', `Could not compile one PDF (${err instanceof Error ? err.message : String(err)}). Downloading original receipts instead...`);
+    showStatus('uploading', `Could not build one PDF in the browser (${err instanceof Error ? err.message : String(err)}). Downloading original receipts instead...`);
     await downloadOriginalReceipts(payload);
   } finally {
     if (btn) {
