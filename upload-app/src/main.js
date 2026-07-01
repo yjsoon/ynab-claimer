@@ -1984,6 +1984,10 @@ function getLineSection(line) {
 }
 
 function setLineSection(line, section) {
+  if (getLineSection(line) !== section && isLineReviewed(line)) {
+    line.reviewed = false;
+    saveInvoiceEdit(line.id, { reviewed: false });
+  }
   line.section = section;
   if (section === 'transport') {
     if (!TRANSPORT_CODES.includes(line.accountCode)) line.accountCode = '451';
@@ -2166,7 +2170,7 @@ function invoicePushNote(bucket) {
   const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
   if (pushable.length === 0) return '';
   if (allReviewed) return 'Creates a DRAFT bill in Xero and attaches the receipts.';
-  return `Review every line before pushing (${reviewedCount}/${pushable.length} checked).`;
+  return `Review every line before pushing (${reviewedCount}/${pushable.length} reviewed).`;
 }
 
 function setLineReviewed(line, reviewed, btn) {
@@ -2175,11 +2179,36 @@ function setLineReviewed(line, reviewed, btn) {
   if (btn) {
     btn.classList.toggle('is-reviewed', reviewed);
     btn.setAttribute('aria-pressed', reviewed ? 'true' : 'false');
-    btn.setAttribute('aria-label', reviewed ? 'Reviewed — tap to unmark' : 'Mark as reviewed');
+    btn.setAttribute(
+      'aria-label',
+      reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt',
+    );
   }
   const row = btn?.closest('tr[data-id]');
-  if (row) row.classList.toggle('inv-row-reviewed', reviewed);
+  if (row) {
+    row.classList.toggle('inv-row-reviewed', reviewed);
+    if (reviewed) {
+      row.classList.remove('inv-row-stale');
+      row.querySelector('.inv-review-stale')?.remove();
+    }
+  }
   updateSectionHeaders();
+}
+
+function invalidateLineReviewAfterEdit(line, contextEl) {
+  if (!isLineReviewed(line)) return;
+  const tr = contextEl?.closest?.('tr[data-id]');
+  const btn = tr?.querySelector('.inv-review-btn');
+  setLineReviewed(line, false, btn);
+  if (!tr) return;
+  tr.classList.add('inv-row-stale');
+  const reviewedCell = tr.querySelector('.col-reviewed');
+  if (reviewedCell && !reviewedCell.querySelector('.inv-review-stale')) {
+    const notice = document.createElement('p');
+    notice.className = 'inv-review-stale';
+    notice.textContent = 'Edited — open the receipt, then mark reviewed again.';
+    reviewedCell.appendChild(notice);
+  }
 }
 
 function renderInvoiceLineRow(line, accounts) {
@@ -2190,7 +2219,7 @@ function renderInvoiceLineRow(line, accounts) {
       <td class="col-reviewed" data-label="Reviewed">
         <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
             aria-pressed="${reviewed ? 'true' : 'false'}"
-            aria-label="${reviewed ? 'Reviewed — tap to unmark' : 'Mark as reviewed'}">
+            aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
           <span class="inv-review-check" aria-hidden="true">✓</span>
         </button>
       </td>
@@ -2222,7 +2251,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
     <details class="invoice-section invoice-section-${bucket}" data-bucket="${bucket}" ${collapsed ? '' : 'open'}>
       <summary class="invoice-section-header">
         <span class="invoice-section-title">${BUCKET_HEADING[bucket]}</span>
-        <span class="invoice-section-meta">${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}</span>
+        <span class="invoice-section-meta" aria-live="polite">${lines.length} line items · S$${total.toFixed(2)}${reviewMeta}</span>
       </summary>
       <div class="invoice-section-body">
         <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
@@ -2289,7 +2318,7 @@ function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs 
       <div class="inv-edit-wrap">
         <input type="${inputType}" class="inv-edit-input" value="${escapeHtml(String(editValue))}" ${inputAttrs}>
         <div class="inv-edit-actions">
-          <button type="button" class="inv-edit-confirm" title="Save">✓</button>
+          <button type="button" class="inv-edit-confirm" title="Save">Save</button>
           <button type="button" class="inv-edit-cancel" title="Cancel">✕</button>
         </div>
       </div>`;
@@ -2299,8 +2328,10 @@ function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs 
 
     const commit = () => {
       const parsed = parse ? parse(input.value) : input.value;
+      const changed = parsed !== original;
       line[field] = parsed;
       saveInvoiceEdit(line.id, { [field]: parsed });
+      if (changed) invalidateLineReviewAfterEdit(line, cell);
       activeInvoiceEditCell = null;
       renderDisplay();
       updateSectionHeaders();
@@ -2359,8 +2390,11 @@ function attachAccountEditCell(cell, line, accounts) {
     cell.innerHTML = `<select class="inv-edit-select">${options}</select>`;
     const select = cell.querySelector('.inv-edit-select');
     select.focus();
+    const originalCode = line.accountCode;
     const commit = () => {
-      line.accountCode = select.value;
+      const nextCode = select.value;
+      if (nextCode !== originalCode) invalidateLineReviewAfterEdit(line, cell);
+      line.accountCode = nextCode;
       saveInvoiceEdit(line.id, { accountCode: line.accountCode });
       activeInvoiceEditCell = null;
       const prevSection = getLineSection(line);
@@ -2422,6 +2456,7 @@ function attachTypeEditCell(cell, line) {
     select.focus();
     const commit = () => {
       const next = select.value;
+      if (next !== current) invalidateLineReviewAfterEdit(line, cell);
       activeInvoiceEditCell = null;
       if (next !== getLineSection(line)) {
         setLineSection(line, next);
@@ -2650,7 +2685,7 @@ async function pushInvoice(bucket, btn) {
   if (unreviewed.length > 0) {
     showStatus(
       'error',
-      `Review all ${BUCKET_LABEL[bucket]} lines before pushing (${lines.length - unreviewed.length}/${lines.length} checked).`,
+      `Review all ${BUCKET_LABEL[bucket]} lines before pushing (${lines.length - unreviewed.length}/${lines.length} reviewed).`,
     );
     return;
   }
