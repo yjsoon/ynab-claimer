@@ -1542,7 +1542,9 @@ function showSectionPushResult(bucket, data, warnings, payload, { persist = true
   const summary = data.allAttached === false || failedAttachments.length || warnings.length
     ? `Draft created, but ${failedAttachments.length ? `${failedAttachments.length} attachment upload${failedAttachments.length === 1 ? '' : 's'} failed` : 'some receipts need manual attachment'}.`
     : `Draft created with ${attachedCount} receipt${attachedCount === 1 ? '' : 's'} attached.`;
-  const xeroUrl = data.url || '#';
+  const xeroUrl = data.invoiceID
+    ? `https://go.xero.com/AccountsPayable/Edit.aspx?InvoiceID=${encodeURIComponent(data.invoiceID)}`
+    : data.url || '#';
   const invoiceLabel = data.invoiceNumber ? ` ${data.invoiceNumber}` : '';
   const html = `
     <div class="${resultClass}">

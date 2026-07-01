@@ -315,6 +315,10 @@ export interface XeroBillResult {
   url: string;
 }
 
+export function billEditUrl(invoiceID: string): string {
+  return `https://go.xero.com/AccountsPayable/Edit.aspx?InvoiceID=${encodeURIComponent(invoiceID)}`;
+}
+
 // Creates a DRAFT ACCPAY (bill). Line amounts are tax-inclusive so Xero
 // back-computes GST on standard-rated lines. Contact is matched/created by name.
 export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<XeroBillResult> {
@@ -354,7 +358,7 @@ export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<Xer
   return {
     invoiceID: inv.InvoiceID,
     invoiceNumber: inv.InvoiceNumber || '',
-    url: `https://go.xero.com/app/invoicing/view/${inv.InvoiceID}`,
+    url: billEditUrl(inv.InvoiceID),
   };
 }
 
