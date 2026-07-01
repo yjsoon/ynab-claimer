@@ -1929,6 +1929,7 @@ const EYE_ICON = '<svg class="inv-eye-icon" viewBox="0 0 24 24" fill="none" stro
 let invoiceLines = [];
 let invoicesActive = false;
 let invoicesLoading = false;
+let invoiceLoadingRequests = 0;
 let xeroConnected = false;
 let xeroAccounts = null;
 let activeInvoiceEditCell = null;
@@ -2034,9 +2035,13 @@ function saveSectionCollapsed(bucket, collapsed) {
 
 function setInvoicesLoading(loading) {
   invoicesLoading = loading;
-  if (invoicesLoadingEl) invoicesLoadingEl.hidden = !loading;
-  if (invoicesSectionsEl) invoicesSectionsEl.hidden = loading;
-  if (invoicesEmpty) invoicesEmpty.hidden = loading || invoiceLines.length > 0;
+  updateInvoicesVisibility();
+}
+
+function updateInvoicesVisibility() {
+  if (invoicesLoadingEl) invoicesLoadingEl.hidden = !invoicesLoading;
+  if (invoicesSectionsEl) invoicesSectionsEl.hidden = invoicesLoading;
+  if (invoicesEmpty) invoicesEmpty.hidden = invoicesLoading || invoiceLines.length > 0;
 }
 
 // Build the editable model from the currently loaded ready-to-claim data:
@@ -2142,9 +2147,9 @@ function buildInvoiceLines() {
 function renderInvoiceClaimLoadError() {
   invoiceLines = [];
   if (invoicesSectionsEl) invoicesSectionsEl.innerHTML = '';
-  invoicesEmpty.hidden = false;
-  invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
-  setInvoicesLoading(false);
+  if (invoicesEmpty) invoicesEmpty.textContent = INVOICE_CLAIMS_UNAVAILABLE_TEXT;
+  if (invoiceLoadingRequests === 0) setInvoicesLoading(false);
+  else updateInvoicesVisibility();
 }
 
 function accountLabel(code, accounts) {
@@ -2567,8 +2572,8 @@ function renderInvoiceEditor() {
 
   const accounts = invoiceAccounts();
   const generation = ++invoiceRenderGeneration;
-  invoicesEmpty.hidden = invoiceLines.length > 0;
-  invoicesEmpty.textContent = INVOICE_EMPTY_TEXT;
+  if (invoicesEmpty) invoicesEmpty.textContent = INVOICE_EMPTY_TEXT;
+  updateInvoicesVisibility();
 
   if (!invoicesSectionsEl) return;
 
@@ -2599,14 +2604,20 @@ function renderInvoiceEditorDeferred() {
 
 async function refreshInvoicesView({ showLoading = true } = {}) {
   commitActiveInvoiceEdit();
-  if (showLoading) setInvoicesLoading(true);
+  if (showLoading) {
+    invoiceLoadingRequests += 1;
+    setInvoicesLoading(true);
+  }
   try {
     await loadReceipts();
     await loadYnabTodos();
     buildInvoiceLines();
     await renderInvoiceEditorDeferred();
   } finally {
-    setInvoicesLoading(false);
+    if (showLoading) {
+      invoiceLoadingRequests = Math.max(0, invoiceLoadingRequests - 1);
+      if (invoiceLoadingRequests === 0) setInvoicesLoading(false);
+    }
   }
 }
 
