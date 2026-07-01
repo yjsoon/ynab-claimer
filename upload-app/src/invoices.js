@@ -39,6 +39,7 @@ const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
 const INVOICE_SECTIONS_KEY = 'claim_manager_invoice_sections';
 const INVOICE_SORTS_KEY = 'claim_manager_invoice_sorts';
 const INVOICE_LAST_PUSH_KEY = 'claim_manager_invoice_last_push';
+const INVOICE_PUSH_HISTORY_KEY = 'claim_manager_invoice_push_history';
 const INVOICE_SORT_OPTIONS = [
   { value: 'account-date', label: 'Account, then date' },
   { value: 'date-asc', label: 'Date oldest first' },
@@ -263,6 +264,7 @@ function saveLastPushResult(data, warnings, payload) {
       payload,
       savedAt: new Date().toISOString(),
     }));
+    rememberPushedInvoice(data, payload);
   } catch (_err) {
     /* ignore storage quota / availability errors */
   }
@@ -282,6 +284,50 @@ function clearLastPushResult() {
   } catch (_err) {
     /* ignore storage quota / availability errors */
   }
+}
+
+function loadPushHistory() {
+  try {
+    return JSON.parse(localStorage.getItem(INVOICE_PUSH_HISTORY_KEY) || '{}') || {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+function writePushHistory(history) {
+  try {
+    localStorage.setItem(INVOICE_PUSH_HISTORY_KEY, JSON.stringify(history));
+  } catch (_err) {
+    /* ignore storage quota / availability errors */
+  }
+}
+
+function rememberPushedInvoice(data, payload) {
+  if (!data?.invoiceID || !payload?.lineItems?.length) return;
+  const history = loadPushHistory();
+  const byLine = history.byLine || {};
+  const savedAt = new Date().toISOString();
+  payload.lineItems.forEach((item) => {
+    byLine[lineItemKey(item)] = {
+      invoiceID: data.invoiceID,
+      invoiceNumber: data.invoiceNumber || '',
+      bucket: payload.bucket || '',
+      reference: payload.reference || '',
+      savedAt,
+    };
+  });
+  writePushHistory({ byLine });
+}
+
+function rememberedInvoiceIDForItem(item) {
+  const entry = loadPushHistory().byLine?.[lineItemKey(item)];
+  return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
+}
+
+function parseXeroInvoiceID(value) {
+  const text = String(value || '');
+  const match = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
+  return match ? match[0] : '';
 }
 
 function lineReviewSnapshot(line) {
@@ -572,11 +618,13 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const collapsed = Boolean(loadSectionCollapsedState()[bucket]);
   const rowsHtml = lines.map((line) => renderInvoiceLineRow(line, accounts)).join('');
   const { pushable, allReviewed } = bucketReviewState(bucket);
+  const checkedCount = pushable.filter(isLineReviewed).length;
   const noteClass = pushable.length > 0 && !allReviewed ? 'invoice-doc-note invoice-doc-note-warn' : 'invoice-doc-note';
   const actionsHtml = pushable.length > 0
     ? `<div class="invoice-doc-actions">
           <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${allReviewed ? '' : 'disabled'}>Push to Xero (draft)</button>
           <button type="button" class="btn-secondary invoice-download-btn" data-bucket="${bucket}">Download receipts PDF</button>
+          <button type="button" class="btn-secondary invoice-claim-checked-btn" data-bucket="${bucket}" ${checkedCount ? '' : 'disabled'}>Mark checked as claimed</button>
           <span class="${noteClass}">${escapeHtml(invoicePushNote(bucket))}</span>
         </div>`
     : '';
@@ -958,6 +1006,8 @@ function updateSectionHeaders() {
     if (meta) meta.textContent = invoiceSectionMeta(bucket, lines, total);
     const pushBtn = section.querySelector('.invoice-push-btn');
     if (pushBtn) pushBtn.disabled = pushable.length === 0 || !allReviewed;
+    const claimBtn = section.querySelector('.invoice-claim-checked-btn');
+    if (claimBtn) claimBtn.disabled = pushable.filter(isLineReviewed).length === 0;
     const note = section.querySelector('.invoice-doc-note');
     if (note) {
       note.textContent = invoicePushNote(bucket);
@@ -982,6 +1032,10 @@ function bindInvoiceSectionEvents() {
     const downloadBtn = section.querySelector('.invoice-download-btn');
     if (downloadBtn) {
       downloadBtn.addEventListener('click', () => downloadBucketReceiptsPdf(bucket, downloadBtn));
+    }
+    const claimBtn = section.querySelector('.invoice-claim-checked-btn');
+    if (claimBtn) {
+      claimBtn.addEventListener('click', () => markCheckedSectionClaimed(bucket, claimBtn));
     }
     const sortSelect = section.querySelector('.invoice-sort-select');
     if (sortSelect) {
@@ -1551,12 +1605,68 @@ function checkedClaimLineItems(bucket, payload) {
   return (payload.lineItems || []).filter((item) => checkedKeys.has(lineItemKey(item)));
 }
 
-async function markCheckedClaimed(data, payload, bucket, btn) {
-  if (!data.invoiceID) {
-    showStatus('error', 'Missing Xero invoice ID; cannot mark claimed.');
-    return;
+async function submitClaimed(invoiceID, lineItems) {
+  const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
+    method: 'POST',
+    headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+    body: JSON.stringify({ invoiceID, lineItems }),
+  });
+  const result = await res.json().catch(() => ({}));
+  if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+  return result;
+}
+
+function checkedCurrentPayload(bucket) {
+  const lines = pushableBucketLines(bucket).filter(isLineReviewed);
+  return pushPayloadForLines(bucket, `${BUCKET_LABEL[bucket]} claims`, lines);
+}
+
+function groupedLineItemsByInvoice(lineItems) {
+  const groups = new Map();
+  const missing = [];
+  lineItems.forEach((item) => {
+    const invoiceID = rememberedInvoiceIDForItem(item);
+    if (!invoiceID) {
+      missing.push(item);
+      return;
+    }
+    if (!groups.has(invoiceID)) groups.set(invoiceID, []);
+    groups.get(invoiceID).push(item);
+  });
+  return { groups, missing };
+}
+
+function promptForXeroInvoiceID(bucket, count) {
+  const value = window.prompt(
+    `Paste the Xero bill link or InvoiceID for the ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'}:`,
+    '',
+  );
+  if (value === null) return '';
+  return parseXeroInvoiceID(value);
+}
+
+async function markLineItemGroupsClaimed(groups, bucket) {
+  let claimedDate = '';
+  let failedYnab = 0;
+  let skippedYnab = 0;
+  let failedReceipts = 0;
+  let count = 0;
+  for (const [invoiceID, lineItems] of groups.entries()) {
+    const result = await submitClaimed(invoiceID, lineItems);
+    claimedDate = result.claimedDate || claimedDate;
+    failedYnab += (result.claimedYnab || []).filter((r) => r.status === 'failed').length;
+    skippedYnab += (result.claimedYnab || []).filter((r) => r.status === 'skipped').length;
+    failedReceipts += (result.taggedReceipts || []).filter((r) => r.status === 'failed').length;
+    count += lineItems.length;
   }
-  const lineItems = checkedClaimLineItems(bucket, payload);
+  if (failedYnab || failedReceipts) {
+    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} YNAB failure(s), ${skippedYnab} skipped.`);
+  } else {
+    showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} YNAB subtransaction(s) skipped)` : ''}.`);
+  }
+}
+
+async function markCheckedLineItemsClaimed(bucket, lineItems, btn, { payload = null, invoiceID = '' } = {}) {
   if (lineItems.length === 0) {
     showStatus('error', `No checked ${BUCKET_LABEL[bucket]} lines to mark claimed.`);
     return;
@@ -1567,22 +1677,16 @@ async function markCheckedClaimed(data, payload, bucket, btn) {
     btn.textContent = 'Marking...';
   }
   try {
-    const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
-      method: 'POST',
-      headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ invoiceID: data.invoiceID, lineItems }),
-    });
-    const result = await res.json().catch(() => ({}));
-    if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
-    const failedYnab = (result.claimedYnab || []).filter((r) => r.status === 'failed');
-    const skippedYnab = (result.claimedYnab || []).filter((r) => r.status === 'skipped');
-    const failedReceipts = (result.taggedReceipts || []).filter((r) => r.status === 'failed');
-    if (failedYnab.length || failedReceipts.length) {
-      showStatus('error', `Marked with issues: ${failedReceipts.length} receipt tag failure(s), ${failedYnab.length} YNAB failure(s), ${skippedYnab.length} skipped.`);
-    } else {
-      showStatus('success', `Marked ${lineItems.length} checked ${BUCKET_LABEL[bucket]} item${lineItems.length === 1 ? '' : 's'} claimed for ${result.claimedDate}${skippedYnab.length ? ` (${skippedYnab.length} YNAB subtransaction(s) skipped)` : ''}.`);
+    const { groups, missing } = invoiceID
+      ? { groups: new Map([[invoiceID, lineItems]]), missing: [] }
+      : groupedLineItemsByInvoice(lineItems);
+    if (missing.length > 0) {
+      const promptedID = promptForXeroInvoiceID(bucket, missing.length);
+      if (!promptedID) throw new Error('No valid Xero InvoiceID supplied.');
+      groups.set(promptedID, [...(groups.get(promptedID) || []), ...missing]);
     }
-    if (lineItems.length >= (payload.lineItems || []).length) clearLastPushResult();
+    await markLineItemGroupsClaimed(groups, bucket);
+    if (payload && lineItems.length >= (payload.lineItems || []).length) clearLastPushResult();
     await refreshInvoicesView({ showLoading: false });
     if (btn) btn.textContent = 'Marked checked';
   } catch (err) {
@@ -1592,6 +1696,19 @@ async function markCheckedClaimed(data, payload, bucket, btn) {
       btn.textContent = originalText || 'Mark checked as claimed';
     }
   }
+}
+
+async function markCheckedClaimed(data, payload, bucket, btn) {
+  const lineItems = checkedClaimLineItems(bucket, payload);
+  await markCheckedLineItemsClaimed(bucket, lineItems, btn, {
+    payload,
+    invoiceID: data.invoiceID || '',
+  });
+}
+
+async function markCheckedSectionClaimed(bucket, btn) {
+  const payload = checkedCurrentPayload(bucket);
+  await markCheckedLineItemsClaimed(bucket, payload.lineItems, btn, { payload });
 }
 
 function bindPushResultActions(bucket, data, payload) {
