@@ -319,17 +319,26 @@ export function billEditUrl(invoiceID: string): string {
   return `https://go.xero.com/AccountsPayable/Edit.aspx?InvoiceID=${encodeURIComponent(invoiceID)}`;
 }
 
+function xeroBillInvoiceNumber(reference?: string): string {
+  return (reference || '')
+    .replace(/[^\x20-\x7E]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 255);
+}
+
 // Creates a DRAFT ACCPAY (bill). Line amounts are tax-inclusive so Xero
 // back-computes GST on standard-rated lines. Contact is matched/created by name.
 export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<XeroBillResult> {
   const inputTaxType = env.XERO_INPUT_TAXTYPE || 'INPUTY24';
+  const invoiceNumber = xeroBillInvoiceNumber(bill.reference);
   const body = {
     Type: 'ACCPAY',
     Contact: { Name: bill.contactName },
     Date: bill.date,
     DueDate: bill.dueDate || bill.date,
     Status: 'DRAFT',
-    Reference: bill.reference || '',
+    InvoiceNumber: invoiceNumber,
     LineAmountTypes: 'Inclusive',
     LineItems: bill.lineItems.map((l) => ({
       Description: l.description,
