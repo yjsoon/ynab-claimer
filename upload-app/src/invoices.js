@@ -1110,6 +1110,51 @@ function downloadBlob(blob, filename) {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+function receiptFilenameFromKey(key, index) {
+  const fallback = `receipt-${String(index + 1).padStart(2, '0')}`;
+  const raw = decodeURIComponent(String(key || '')).split('/').pop() || fallback;
+  return raw.replace(/[^a-z0-9 _.,@()\\-]/gi, '_') || fallback;
+}
+
+function uniquePayloadReceiptKeys(payload) {
+  const seen = new Set();
+  const keys = [];
+  (payload.lineItems || []).forEach((line) => {
+    if (!line.receiptKey || seen.has(line.receiptKey)) return;
+    seen.add(line.receiptKey);
+    keys.push(line.receiptKey);
+  });
+  return keys;
+}
+
+async function downloadOriginalReceipts(payload) {
+  const keys = uniquePayloadReceiptKeys(payload);
+  let downloaded = 0;
+  const failures = [];
+  for (let i = 0; i < keys.length; i++) {
+    const key = keys[i];
+    try {
+      const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(key)}`, {
+        headers: authHeaders(),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      downloadBlob(blob, receiptFilenameFromKey(key, i));
+      downloaded += 1;
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    } catch (err) {
+      failures.push(`${receiptFilenameFromKey(key, i)}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  if (downloaded > 0 && failures.length === 0) {
+    showStatus('success', `Downloaded ${downloaded} original receipt file(s).`);
+  } else if (downloaded > 0) {
+    showStatus('error', `Downloaded ${downloaded}; ${failures.length} failed: ${failures.slice(0, 2).join(', ')}`);
+  } else {
+    throw new Error(failures.slice(0, 2).join(', ') || 'No receipts downloaded');
+  }
+}
+
 async function downloadReceiptsPdf(payload, btn) {
   const originalText = btn?.textContent;
   if (btn) {
@@ -1133,7 +1178,8 @@ async function downloadReceiptsPdf(payload, btn) {
     const warnings = res.headers.get('X-Receipt-Warnings');
     showStatus(warnings ? 'error' : 'success', warnings ? `PDF downloaded with warnings: ${warnings}` : 'Receipts PDF downloaded');
   } catch (err) {
-    showStatus('error', `Could not download receipts PDF: ${err instanceof Error ? err.message : String(err)}`);
+    showStatus('uploading', `Could not compile one PDF (${err instanceof Error ? err.message : String(err)}). Downloading original receipts instead...`);
+    await downloadOriginalReceipts(payload);
   } finally {
     if (btn) {
       btn.disabled = false;
