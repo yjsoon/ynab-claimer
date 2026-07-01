@@ -5,10 +5,12 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "pages:dev": "wrangler pages dev src --compatibility-date=2024-01-01"
+    "pages:dev": "wrangler pages dev src --compatibility-date=2024-01-01",
+    "smoke:frontend": "node test/frontend-smoke.cjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241205.0",
+    "playwright": "^1.61.1",
     "typescript": "^5.3.3",
     "wrangler": "^4.54.0"
   },

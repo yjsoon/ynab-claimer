@@ -13,6 +13,17 @@ export const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 export const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
+export const ALLOWED_MIME_TYPES = [
+  'image/jpeg',
+  'image/jpg',
+  'image/png',
+  'image/gif',
+  'image/webp',
+  'image/heic',
+  'image/heif',
+  'application/pdf',
+  'application/x-pdf',
+];
 export const AMOUNT_TAG_COOLDOWN_MS = 20000;
 export const AMOUNT_MATCH_TOLERANCE = 0.01;
 export const DATE_NEAR_THRESHOLD_DAYS = 2;

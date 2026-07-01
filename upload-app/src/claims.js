@@ -2,6 +2,7 @@ import {
   API_BASE,
   MAX_FILE_SIZE,
   ALLOWED_EXTENSIONS,
+  ALLOWED_MIME_TYPES,
   AMOUNT_TAG_COOLDOWN_MS,
   RECEIPT_DATE_RE,
   CLAIM_FILTER_KEY,
@@ -15,7 +16,6 @@ import {
   escapeHtml,
   formatDateForLocale,
   formatCurrencyAmount,
-  setOnAuthSuccess,
 } from './lib/core.js';
 import {
   receiptsData,
@@ -92,8 +92,13 @@ function validateFile(file) {
   }
 
   const ext = file.name.toLowerCase().match(/\.[a-z0-9]+$/)?.[0] || '';
-  if (!ALLOWED_EXTENSIONS.includes(ext)) {
-    return `${file.name}: invalid type (${ext || 'no extension'})`;
+  const mimeType = (file.type || '').toLowerCase().split(';')[0].trim();
+  if (ext && !ALLOWED_EXTENSIONS.includes(ext)) {
+    return `${file.name}: invalid type (${ext})`;
+  }
+
+  if (!ext && !ALLOWED_MIME_TYPES.includes(mimeType)) {
+    return `${file.name}: invalid type (${ext || mimeType || 'unknown type'})`;
   }
 
   return null; // Valid
@@ -163,22 +168,44 @@ async function uploadFiles(files) {
   loadReceipts();
 }
 
-// Load receipt list
-export async function loadReceipts() {
-  try {
-    const response = await fetch(`${API_BASE}/list`, {
+async function fetchAllReceipts() {
+  const receipts = [];
+  let cursor = null;
+
+  do {
+    const params = new URLSearchParams({ limit: '1000' });
+    if (cursor) params.set('cursor', cursor);
+
+    const response = await fetch(`${API_BASE}/list?${params.toString()}`, {
       headers: authHeaders(),
     });
 
     if (response.status === 401) {
       showPasswordPrompt();
-      return;
+      return null;
+    }
+
+    if (!response.ok) {
+      throw new Error(`Failed to load receipts (${response.status})`);
     }
 
     const data = await response.json();
+    receipts.push(...(Array.isArray(data.receipts) ? data.receipts : []));
+    cursor = data.hasMore ? data.cursor : null;
+  } while (cursor);
+
+  return receipts;
+}
+
+// Load receipt list
+export async function loadReceipts() {
+  try {
+    const receipts = await fetchAllReceipts();
+    if (!receipts) return;
+
     // Sort: unlinked first, then linked.
     // Unlinked receipts use effective receipt date (manual/AI/upload fallback) descending.
-    setReceiptsData(data.receipts.sort((a, b) => {
+    setReceiptsData(receipts.sort((a, b) => {
       const aLinked = getLinkedClaimIds(a).length > 0;
       const bLinked = getLinkedClaimIds(b).length > 0;
       if (aLinked !== bLinked) return aLinked ? 1 : -1;
@@ -1178,6 +1205,7 @@ function startReceiptLinkFlow(key) {
 
   if (window.innerWidth <= 700) {
     switchTab('claims');
+    scrollTabToggleIntoView();
   }
 }
 
@@ -1193,6 +1221,7 @@ function startClaimLinkFlow(claimId) {
 
   if (window.innerWidth <= 700) {
     switchTab('receipts');
+    scrollTabToggleIntoView();
   }
 }
 
@@ -1470,13 +1499,16 @@ function switchTab(tab) {
   claimsColumn.classList.toggle('active', tab === 'claims');
 }
 
+function scrollTabToggleIntoView() {
+  requestAnimationFrame(() => {
+    document.querySelector('.tab-toggle')?.scrollIntoView({ block: 'start' });
+  });
+}
+
 tabBtns.forEach(btn => {
   btn.addEventListener('click', () => {
     switchTab(btn.dataset.tab);
   });
 });
 export function initClaims() {
-  setOnAuthSuccess(() => {
-    loadReceipts().then(() => loadYnabTodos());
-  });
 }

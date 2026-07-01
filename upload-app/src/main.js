@@ -1,4 +1,4 @@
-import { initTheme, initAuthUi, checkAuth, hidePasswordPrompt } from './lib/core.js';
+import { initTheme, initAuthUi, checkAuth, hidePasswordPrompt, setOnAuthSuccess } from './lib/core.js';
 import { initPreview } from './lib/preview.js';
 import {
   initClaims,
@@ -20,6 +20,13 @@ initAuthUi();
 initClaims();
 initInvoices();
 setOnClaimsLoadError(renderInvoiceClaimLoadError);
+setOnAuthSuccess(async () => {
+  await loadReceipts();
+  await loadYnabTodos();
+  if (isInvoicesPath()) {
+    showInvoicesView(true);
+  }
+});
 
 showInvoicesView(isInvoicesPath(), { refresh: false });
 
