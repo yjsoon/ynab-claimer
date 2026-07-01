@@ -58,7 +58,6 @@ let xeroAccounts = null;
 let xeroTaxTypes = null;
 let activeInvoiceEditCell = null;
 let invoiceRenderGeneration = 0;
-let invoicePushResultsEl = null;
 let pdfLibModule = null;
 let activeReceiptPdfUrl = null;
 const RECEIPT_PDF_PAGE_WIDTH = 800;
@@ -552,7 +551,12 @@ function renderInvoiceLineRow(line, accounts) {
       <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(taxTypeLabel(deriveTaxType(line)))}</span></td>
       <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
-      <td class="col-preview" data-label="Receipt"><button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button></td>
+      <td class="col-actions" data-label="Actions">
+        <div class="inv-row-actions">
+          <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
+          <button type="button" class="inv-unlink-btn" title="Unlink from invoice list">Unlink</button>
+        </div>
+      </td>
     </tr>`;
 }
 
@@ -604,7 +608,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
                 <th>Remark</th>
                 <th>Tax</th>
                 <th class="num">Amount</th>
-                <th class="col-preview"></th>
+                <th class="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>${rowsHtml || `<tr><td colspan="9" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
@@ -909,6 +913,37 @@ function attachInvoiceRowEditors(tr, line, accounts) {
     e.stopPropagation();
     openPreview(line.receiptKey, line.receiptName);
   });
+  const unlinkBtn = tr.querySelector('.inv-unlink-btn');
+  if (unlinkBtn) {
+    unlinkBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      unlinkInvoiceLine(line, unlinkBtn);
+    });
+  }
+}
+
+async function unlinkInvoiceLine(line, btn) {
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Unlinking...';
+  }
+  try {
+    const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(line.receiptKey)}/link`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    showStatus('success', `Unlinked ${line.receiptName || line.description || 'receipt'} from the invoice list.`);
+    await refreshInvoicesView({ showLoading: false });
+  } catch (err) {
+    showStatus('error', `Could not unlink receipt: ${err instanceof Error ? err.message : String(err)}`);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Unlink';
+    }
+  }
 }
 
 function updateSectionHeaders() {
@@ -1088,14 +1123,8 @@ function lineToDescriptionWithPageRef(line, pageRefs) {
   return suffixes.length ? `${base} — ${suffixes.join(' — ')}` : base;
 }
 
-function ensureInvoicePushResultsEl() {
-  if (!invoicePushResultsEl && invoicesSectionsEl) {
-    invoicePushResultsEl = document.createElement('div');
-    invoicePushResultsEl.id = 'invoicePushResults';
-    invoicePushResultsEl.className = 'invoice-push-results';
-    invoicesSectionsEl.insertAdjacentElement('beforebegin', invoicePushResultsEl);
-  }
-  return invoicePushResultsEl;
+function sectionStatusEl(bucket) {
+  return invoicesSectionsEl?.querySelector(`.invoice-section[data-bucket="${bucket}"] .invoice-section-status`) || null;
 }
 
 function lineTaxTypeForPush(line, bucket) {
@@ -1509,9 +1538,27 @@ async function downloadReceiptsPdf(payload, btn) {
   }
 }
 
-async function markEverythingClaimed(data, payload, btn) {
+function lineItemKey(item) {
+  return `${item.receiptKey || ''}::${item.ynabClaimId || ''}`;
+}
+
+function checkedClaimLineItems(bucket, payload) {
+  const checkedKeys = new Set(
+    pushableBucketLines(bucket)
+      .filter(isLineReviewed)
+      .map((line) => lineItemKey(line)),
+  );
+  return (payload.lineItems || []).filter((item) => checkedKeys.has(lineItemKey(item)));
+}
+
+async function markCheckedClaimed(data, payload, bucket, btn) {
   if (!data.invoiceID) {
     showStatus('error', 'Missing Xero invoice ID; cannot mark claimed.');
+    return;
+  }
+  const lineItems = checkedClaimLineItems(bucket, payload);
+  if (lineItems.length === 0) {
+    showStatus('error', `No checked ${BUCKET_LABEL[bucket]} lines to mark claimed.`);
     return;
   }
   const originalText = btn?.textContent;
@@ -1523,7 +1570,7 @@ async function markEverythingClaimed(data, payload, btn) {
     const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
       method: 'POST',
       headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-      body: JSON.stringify({ invoiceID: data.invoiceID, lineItems: payload.lineItems }),
+      body: JSON.stringify({ invoiceID: data.invoiceID, lineItems }),
     });
     const result = await res.json().catch(() => ({}));
     if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
@@ -1533,30 +1580,30 @@ async function markEverythingClaimed(data, payload, btn) {
     if (failedYnab.length || failedReceipts.length) {
       showStatus('error', `Marked with issues: ${failedReceipts.length} receipt tag failure(s), ${failedYnab.length} YNAB failure(s), ${skippedYnab.length} skipped.`);
     } else {
-      showStatus('success', `Marked everything claimed for ${result.claimedDate}${skippedYnab.length ? ` (${skippedYnab.length} YNAB subtransaction(s) skipped)` : ''}.`);
+      showStatus('success', `Marked ${lineItems.length} checked ${BUCKET_LABEL[bucket]} item${lineItems.length === 1 ? '' : 's'} claimed for ${result.claimedDate}${skippedYnab.length ? ` (${skippedYnab.length} YNAB subtransaction(s) skipped)` : ''}.`);
     }
-    clearLastPushResult();
+    if (lineItems.length >= (payload.lineItems || []).length) clearLastPushResult();
     await refreshInvoicesView({ showLoading: false });
-    if (btn) btn.textContent = 'Marked claimed';
+    if (btn) btn.textContent = 'Marked checked';
   } catch (err) {
     showStatus('error', `Could not mark claimed: ${err instanceof Error ? err.message : String(err)}`);
     if (btn) {
       btn.disabled = false;
-      btn.textContent = originalText || 'Mark everything as claimed';
+      btn.textContent = originalText || 'Mark checked as claimed';
     }
   }
 }
 
-function bindPushResultActions(data, payload) {
-  const container = ensureInvoicePushResultsEl();
+function bindPushResultActions(bucket, data, payload) {
+  const container = sectionStatusEl(bucket);
   if (!container) return;
   const downloadBtn = container.querySelector('[data-action="download-receipts-pdf"]');
   if (downloadBtn) {
     downloadBtn.addEventListener('click', () => downloadReceiptsPdf(payload, downloadBtn));
   }
-  const markBtn = container.querySelector('[data-action="mark-everything-claimed"]');
+  const markBtn = container.querySelector('[data-action="mark-checked-claimed"]');
   if (markBtn) {
-    markBtn.addEventListener('click', () => markEverythingClaimed(data, payload, markBtn));
+    markBtn.addEventListener('click', () => markCheckedClaimed(data, payload, bucket, markBtn));
   }
 }
 
@@ -1574,6 +1621,7 @@ function showSectionPushResult(bucket, data, warnings, payload, { persist = true
     ? `https://go.xero.com/AccountsPayable/Edit.aspx?InvoiceID=${encodeURIComponent(data.invoiceID)}`
     : data.url || '#';
   const invoiceLabel = data.invoiceNumber ? ` ${data.invoiceNumber}` : '';
+  const checkedCount = checkedClaimLineItems(bucket, payload).length;
   const html = `
     <div class="${resultClass}">
       <h3 class="invoice-result-title">Draft bill${escapeHtml(invoiceLabel)} created in Xero</h3>
@@ -1581,17 +1629,16 @@ function showSectionPushResult(bucket, data, warnings, payload, { persist = true
       <div class="invoice-result-actions">
         <a class="btn-primary invoice-result-link" href="${escapeHtml(xeroUrl)}" target="_blank" rel="noopener">Open draft in Xero</a>
         <button type="button" class="btn-secondary" data-action="download-receipts-pdf">Download receipts PDF</button>
-        <button type="button" class="btn-primary" data-action="mark-everything-claimed">Mark everything as claimed</button>
+        <button type="button" class="btn-primary" data-action="mark-checked-claimed">Mark ${checkedCount || 'checked'} as claimed</button>
       </div>
-      <p class="invoice-result-url">${escapeHtml(xeroUrl)}</p>
       ${attachments.length ? `<ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} - ${escapeHtml(a.status)}</li>`).join('')}</ul>` : '<p class="attach-list">No attachments were uploaded.</p>'}
       ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>Warning: ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
-  const container = ensureInvoicePushResultsEl();
+  const container = sectionStatusEl(bucket);
   if (!container) return;
-  container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
+  container.innerHTML = html;
   if (persist) saveLastPushResult(data, warnings, payload);
-  bindPushResultActions(data, payload);
+  bindPushResultActions(bucket, data, payload);
   if (scroll) container.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 

@@ -1770,12 +1770,12 @@ body.selecting .claims-view {
     flex: 1;
   }
 
-  .invoice-doc-table tbody td.col-preview {
+  .invoice-doc-table tbody td.col-actions {
     justify-content: flex-end;
     padding-top: 4px;
   }
 
-  .invoice-doc-table tbody td.col-preview::before {
+  .invoice-doc-table tbody td.col-actions::before {
     display: none;
   }
 
@@ -2453,21 +2453,17 @@ body.selecting .claims-view {
   margin-top: 12px;
 }
 
-.invoice-push-results .invoice-section-status {
-  margin: 0 0 16px;
-}
-
 .invoice-push-result {
-  padding: 12px 14px;
+  padding: 10px 12px;
   background: #f0fdf4;
   border: 1px solid #bbf7d0;
   border-radius: 8px;
-  font-size: 0.88rem;
+  font-size: 0.84rem;
 }
 
 .invoice-result-title {
-  margin: 0 0 6px;
-  font-size: 1rem;
+  margin: 0 0 4px;
+  font-size: 0.92rem;
 }
 
 .invoice-push-result-warn {
@@ -2476,10 +2472,20 @@ body.selecting .claims-view {
 }
 
 .invoice-result-actions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
-  margin-top: 10px;
+  margin-top: 8px;
+}
+
+.invoice-result-actions .btn-primary,
+.invoice-result-actions .btn-secondary {
+  width: 100%;
+  min-width: 0;
+  min-height: 38px;
+  padding: 8px 10px;
+  text-align: center;
+  justify-content: center;
 }
 
 .invoice-result-link {
@@ -2613,8 +2619,8 @@ body.selecting .claims-view {
   height: 18px;
 }
 
-.invoice-doc-table .col-preview {
-  width: 36px;
+.invoice-doc-table .col-actions {
+  width: 118px;
   text-align: center;
 }
 
@@ -2671,6 +2677,33 @@ body.selecting .claims-view {
   line-height: 1.35;
   text-align: left;
   flex: 1 1 100%;
+}
+
+.inv-row-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.inv-unlink-btn {
+  border: 1px solid #fecaca;
+  background: #fff1f2;
+  color: #be123c;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+.inv-unlink-btn:hover {
+  background: #ffe4e6;
+}
+
+.inv-unlink-btn:disabled {
+  opacity: 0.65;
+  cursor: wait;
 }
 
 .inv-edit-confirm {
