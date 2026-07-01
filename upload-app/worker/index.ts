@@ -1230,9 +1230,9 @@ function parseCookie(header: string | null, name: string): string | null {
 
 // --- Xero claim-bill push: attachment building + YNAB cleanup --------------
 
-const XERO_ATTACH_MAX_BYTES = 3 * 1024 * 1024;
+const XERO_ATTACH_MAX_BYTES = 25 * 1024 * 1024;
 const XERO_ATTACH_MAX_COUNT = 10;
-const COMBINED_PDF_CHUNK_BYTES = Math.floor(2.6 * 1024 * 1024);
+const COMBINED_PDF_CHUNK_BYTES = Math.floor(22 * 1024 * 1024);
 const EMBEDDABLE_MIME = new Set(['application/pdf', 'image/jpeg', 'image/jpg', 'image/png']);
 
 const EXT_MIME: Record<string, string> = {
@@ -1298,7 +1298,7 @@ interface AttachmentUpload {
   mime: string;
 }
 
-// Prepares receipt attachments within Xero's caps (3 MB each, 10 per bill).
+// Prepares receipt attachments within Xero's caps (25 MB each, 10 per bill).
 // Within caps -> individual named files; otherwise merge embeddable receipts
 // into chunked combined PDFs and warn about anything that can't be attached.
 async function buildClaimAttachments(
@@ -1323,19 +1323,19 @@ async function buildClaimAttachments(
 
   // Only PDF/JPG/PNG can be attached — uploaded raw when within caps, or merged
   // into a combined PDF otherwise. Anything else (HEIC/HEIF/WEBP/GIF/TIFF), or any
-  // file over the 3 MB per-attachment cap, is flagged up front for manual upload.
+  // file over the 25 MB per-attachment cap, is flagged up front for manual upload.
   const supported: ReceiptFile[] = [];
   for (const f of files) {
     if (!EMBEDDABLE_MIME.has(f.mime)) {
       warnings.push(`Not attachable (${f.mime}); re-upload as PDF/JPG/PNG: ${f.name}`);
     } else if (f.bytes.byteLength > XERO_ATTACH_MAX_BYTES) {
-      warnings.push(`Too large to attach (${(f.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB > 3 MB); attach manually: ${f.name}`);
+      warnings.push(`Too large to attach (${(f.bytes.byteLength / (1024 * 1024)).toFixed(1)} MB > 25 MB); attach manually: ${f.name}`);
     } else {
       supported.push(f);
     }
   }
 
-  // Within the count cap: attach individually with logical names (all are <=3 MB).
+  // Within the count cap: attach individually with logical names (all are <=25 MB).
   if (supported.length <= XERO_ATTACH_MAX_COUNT) {
     return { uploads: supported.map((f) => ({ name: f.name, bytes: f.bytes, mime: f.mime })), warnings };
   }
@@ -1360,7 +1360,7 @@ async function buildClaimAttachments(
     const { bytes: pdf, skipped } = await buildCombinedPdf(groups[i]);
     for (const s of skipped) warnings.push(`Could not embed ${s} into the combined PDF; attach it manually.`);
     if (pdf.byteLength > XERO_ATTACH_MAX_BYTES) {
-      warnings.push(`Combined receipts PDF ${i + 1} exceeds 3 MB; attach those receipts manually.`);
+      warnings.push(`Combined receipts PDF ${i + 1} exceeds 25 MB; attach those receipts manually.`);
       continue;
     }
     const name = groups.length === 1

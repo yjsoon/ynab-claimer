@@ -831,22 +831,24 @@ function ensureInvoicePushResultsEl() {
 
 function showSectionPushResult(bucket, data, warnings) {
   const attachments = Array.isArray(data.attachments) ? data.attachments : [];
+  const failedAttachments = attachments.filter((a) => a.status !== 'attached');
+  const attachedCount = attachments.length - failedAttachments.length;
+  const resultClass = data.allAttached === false || failedAttachments.length || warnings.length
+    ? 'invoice-push-result invoice-push-result-warn'
+    : 'invoice-push-result';
+  const summary = data.allAttached === false || failedAttachments.length || warnings.length
+    ? `Draft created, but ${failedAttachments.length ? `${failedAttachments.length} attachment upload${failedAttachments.length === 1 ? '' : 's'} failed` : 'some receipts need manual attachment'}.`
+    : `Draft created with ${attachedCount} receipt${attachedCount === 1 ? '' : 's'} attached.`;
   const html = `
-    <div class="invoice-push-result">
-      <p>Draft created: <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">open in Xero ↗</a></p>
-      <ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} — ${escapeHtml(a.status)}</li>`).join('')}</ul>
-      ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>⚠️ ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
+    <div class="${resultClass}">
+      <p><strong>${escapeHtml(summary)}</strong> <a href="${escapeHtml(data.url || '#')}" target="_blank" rel="noopener">Open in Xero</a></p>
+      ${attachments.length ? `<ul class="attach-list">${attachments.map((a) => `<li>${escapeHtml(a.name)} - ${escapeHtml(a.status)}</li>`).join('')}</ul>` : '<p class="attach-list">No attachments were uploaded.</p>'}
+      ${warnings.length ? `<ul class="attach-list">${warnings.map((w) => `<li>Warning: ${escapeHtml(w)}</li>`).join('')}</ul>` : ''}
     </div>`;
-  const section = invoicesSectionsEl?.querySelector(`.invoice-section[data-bucket="${bucket}"]`);
-  const statusEl = section?.querySelector('.invoice-section-status');
-  if (statusEl) {
-    if (invoicePushResultsEl) invoicePushResultsEl.innerHTML = '';
-    statusEl.innerHTML = html;
-    return;
-  }
   const container = ensureInvoicePushResultsEl();
   if (!container) return;
   container.innerHTML = `<div class="invoice-section-status" role="status" aria-live="polite">${html}</div>`;
+  container.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 }
 
 function invoicePushSummary(bucket, lines) {
@@ -894,6 +896,7 @@ async function pushInvoice(bucket, btn) {
 
   btn.disabled = true;
   btn.textContent = 'Pushing…';
+  showStatus('uploading', `Creating ${BUCKET_LABEL[bucket]} draft and attaching ${lines.length} receipt(s)...`);
   try {
     const payload = {
       bucket,

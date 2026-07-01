@@ -357,7 +357,7 @@ export async function createBill(env: XeroEnv, bill: XeroBillInput): Promise<Xer
   };
 }
 
-// Uploads a single attachment (raw bytes) to an invoice. Xero limits: 3 MB per
+// Uploads a single attachment (raw bytes) to an invoice. Xero limits: 25 MB per
 // attachment, 10 per document — the caller is responsible for staying within.
 export async function attachToInvoice(
   env: XeroEnv,
