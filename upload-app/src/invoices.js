@@ -85,7 +85,8 @@ function guessAccountCode(text) {
 // SGD with no GST -> non-GST-registered supplier.
 function deriveTaxType(line) {
   if (line.gstShown) return 'INPUTY24';
-  return line.currency && line.currency !== 'SGD' ? 'OPINPUT' : 'NRINPUT';
+  const currency = (line.currency || 'SGD').toUpperCase();
+  return currency !== 'SGD' && currency !== 'UNKNOWN' ? 'OPINPUT' : 'NRINPUT';
 }
 
 function lineBucket(line) {
