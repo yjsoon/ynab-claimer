@@ -67,8 +67,11 @@
     <div id="claimsView" class="claims-view">
     <div id="dropzone" class="dropzone">
       <input type="file" id="fileInput" accept="image/*,.pdf" multiple>
-      <p>Tap to upload or drag files here</p>
-      <p class="hint">Images and PDFs accepted</p>
+      <div class="dropzone-expanded">
+        <p>Tap to upload or drag files here</p>
+        <p class="hint">Images and PDFs accepted</p>
+      </div>
+      <p class="dropzone-compact-label" hidden>+ Upload receipt</p>
     </div>
 
     <div id="status" class="status"></div>
@@ -116,6 +119,24 @@
       <h2>Ready to Claim <span id="linkedCount">(0)</span></h2>
       <ul id="linkedList" class="linked-pair-list"></ul>
     </div>
+
+    <div id="linkingDock" class="linking-dock" hidden>
+      <div id="linkingContext" class="linking-context">
+        <p id="linkingContextText" class="linking-context-text"></p>
+        <div class="linking-context-actions">
+          <button id="linkingContextPreview" class="btn-secondary btn-compact" type="button" hidden>Preview</button>
+          <button id="linkingContextChange" class="btn-secondary btn-compact" type="button">Change</button>
+        </div>
+      </div>
+      <div id="actionBar" class="action-bar">
+        <span id="actionText">Select a claim to link</span>
+        <div class="action-buttons">
+          <button id="confirmSelection" class="btn-primary" hidden>Link selected</button>
+          <button id="markReadySelection" class="btn-primary" hidden>Mark ready</button>
+          <button id="cancelSelection" class="btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
     </div><!-- /claimsView -->
 
     <!-- Invoices view: assemble ready-to-claim items into Xero draft bills -->
@@ -142,16 +163,6 @@
       <p id="invoicesEmpty" class="empty-state" hidden>
         No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.
       </p>
-    </div>
-  </div>
-
-  <!-- Linking action bar -->
-  <div id="actionBar" class="action-bar">
-    <span id="actionText">Select a claim to link</span>
-    <div class="action-buttons">
-      <button id="confirmSelection" class="btn-primary" hidden>Link selected</button>
-      <button id="markReadySelection" class="btn-primary" hidden>Mark ready</button>
-      <button id="cancelSelection" class="btn-secondary">Cancel</button>
     </div>
   </div>
 

@@ -37,6 +37,10 @@ const authSubmit = document.getElementById('authSubmit');
 const rememberMe = document.getElementById('rememberMe');
 
 // Linking elements
+const linkingDock = document.getElementById('linkingDock');
+const linkingContextText = document.getElementById('linkingContextText');
+const linkingContextPreview = document.getElementById('linkingContextPreview');
+const linkingContextChange = document.getElementById('linkingContextChange');
 const actionBar = document.getElementById('actionBar');
 const actionText = document.getElementById('actionText');
 const confirmSelection = document.getElementById('confirmSelection');
@@ -411,6 +415,7 @@ async function loadReceipts() {
 
     applyLinkingHighlights();
     renderLinkedPairs();
+    updateUploadZoneCompact();
     triggerPendingAmountTagging();
   } catch (err) {
     console.error('Failed to load receipts:', err);
@@ -957,9 +962,74 @@ function appendMatchBadge(li, label, listType) {
   }
 }
 
+function getReceiptAmountLabel(receipt) {
+  const parsed = Number(receipt.taggedAmount);
+  const currency = (receipt.taggedCurrency || 'SGD').toUpperCase();
+  if (receipt.taggedCurrency === 'USD' && Number.isFinite(Number(receipt.taggedAmountSgdApprox))) {
+    return `S$${Number(receipt.taggedAmountSgdApprox).toFixed(2)}`;
+  }
+  if (Number.isFinite(parsed)) {
+    return formatCurrencyAmount(currency, parsed);
+  }
+  return '';
+}
+
+function updateUploadZoneCompact() {
+  if (!dropzone) return;
+  const outstandingClaims = claimsLoadErrorMessage ? 0 : getOutstandingClaims().length;
+  const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0).length;
+  const compact = outstandingClaims > 0 || outstandingReceipts > 0;
+  dropzone.classList.toggle('is-compact', compact);
+  const compactLabel = dropzone.querySelector('.dropzone-compact-label');
+  if (compactLabel) compactLabel.hidden = !compact;
+}
+
+function updateLinkingContext() {
+  if (!linkingDock || !linkingContextText) return;
+
+  if (!linkingSource) {
+    linkingDock.hidden = true;
+    return;
+  }
+
+  if (linkingSource === 'receipt' && sourceReceiptKey) {
+    const receipt = receiptsData.find((r) => r.key === sourceReceiptKey);
+    if (!receipt) {
+      linkingDock.hidden = true;
+      return;
+    }
+    const name = getReceiptDisplayName(receipt);
+    const amount = getReceiptAmountLabel(receipt);
+    const dateInfo = getReceiptMatchDate(receipt);
+    const dateStr = dateInfo.date ? formatDateForLocale(dateInfo.date) : '';
+    linkingContextText.textContent = ['Linking receipt:', name, amount, dateStr].filter(Boolean).join(' · ');
+    if (linkingContextPreview) {
+      linkingContextPreview.hidden = false;
+      linkingContextPreview.onclick = () => openPreview(receipt.key, name);
+    }
+    linkingDock.hidden = false;
+    return;
+  }
+
+  if (linkingSource === 'claim' && sourceClaimId) {
+    const claim = claimsData.find((c) => c.id === sourceClaimId);
+    if (!claim) {
+      linkingDock.hidden = true;
+      return;
+    }
+    const dateStr = formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date));
+    linkingContextText.textContent = `Linking claim: ${claim.description} · $${claim.amount.toFixed(2)} · ${dateStr}`;
+    if (linkingContextPreview) linkingContextPreview.hidden = true;
+    linkingDock.hidden = false;
+    return;
+  }
+
+  linkingDock.hidden = true;
+}
+
 function updateActionBar() {
   if (!linkingSource) {
-    actionBar.classList.remove('visible');
+    if (linkingDock) linkingDock.hidden = true;
     confirmSelection.hidden = true;
     confirmSelection.disabled = true;
     markReadySelection.hidden = true;
@@ -967,7 +1037,7 @@ function updateActionBar() {
     return;
   }
 
-  actionBar.classList.add('visible');
+  updateLinkingContext();
 
   if (linkingSource === 'receipt') {
     const selectionCount = selectedClaimIds.size;
@@ -1318,6 +1388,7 @@ function renderOutstandingClaims() {
     li.querySelector('.claim-link-btn').addEventListener('click', (e) => handleClaimLinkBtnClick(e, li));
   });
   applyLinkingHighlights();
+  updateUploadZoneCompact();
 }
 
 refreshBtn.addEventListener('click', async () => {
@@ -1523,9 +1594,11 @@ function startReceiptLinkFlow(key) {
 
   if (window.innerWidth <= 700) {
     switchTab('claims');
+    window.requestAnimationFrame(() => {
+      document.querySelector('.tab-toggle')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
   }
 }
-
 // Step 1 from claim side: pick source claim, then choose receipt target(s)
 function startClaimLinkFlow(claimId) {
   linkingSource = 'claim';
@@ -1538,6 +1611,9 @@ function startClaimLinkFlow(claimId) {
 
   if (window.innerWidth <= 700) {
     switchTab('receipts');
+    window.requestAnimationFrame(() => {
+      document.querySelector('.tab-toggle')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    });
   }
 }
 
@@ -1795,6 +1871,14 @@ async function unlinkReceipt(receiptKey) {
 
 // Cancel selection button
 cancelSelection.addEventListener('click', clearSelection);
+
+if (linkingContextChange) {
+  linkingContextChange.addEventListener('click', () => {
+    const returnTab = linkingSource === 'receipt' ? 'receipts' : 'claims';
+    clearSelection();
+    switchTab(returnTab);
+  });
+}
 confirmSelection.addEventListener('click', handleConfirmSelection);
 markReadySelection.addEventListener('click', markSourceReceiptReady);
 
@@ -2639,6 +2723,9 @@ function navigateToMode(invoices, { replace = false } = {}) {
 }
 
 function showInvoicesView(show, { refresh = true } = {}) {
+  if (show) {
+    clearSelection();
+  }
   invoicesActive = show;
   if (claimsView) claimsView.hidden = show;
   invoicesView.hidden = !show;
