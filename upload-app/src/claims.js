@@ -482,7 +482,7 @@ function countReadyToClaimPairs() {
   if (claimsLoadErrorMessage) return 0;
   let count = 0;
   receiptsData.forEach((receipt) => {
-    count += getLinkedClaimIds(receipt).length;
+    count += getActiveReadyClaimIds(receipt).length;
   });
   return count;
 }
@@ -510,7 +510,7 @@ function renderLinkedPairs() {
   const linkedPairs = [];
 
   receiptsData.forEach((receipt) => {
-    getLinkedClaimIds(receipt).forEach((claimId, index) => {
+    getActiveReadyClaimIds(receipt).forEach((claimId, index) => {
       linkedPairs.push({
         receipt,
         claimId,
@@ -620,6 +620,10 @@ function renderLinkedPairs() {
       await unlinkClaimFromReceipt(receiptKey, claimId);
     });
   });
+}
+
+function getActiveReadyClaimIds(receipt) {
+  return receipt.xeroInvoiceId ? [] : getLinkedClaimIds(receipt);
 }
 
 

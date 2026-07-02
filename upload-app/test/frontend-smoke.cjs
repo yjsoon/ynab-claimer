@@ -50,6 +50,18 @@ const receiptsPageTwo = [
     taggedPurpose: 'Tooling',
     taggedGstShown: false,
   },
+  {
+    key: 'receipt-4.pdf',
+    originalName: 'Already Claimed.pdf',
+    uploaded: '2026-06-27T00:00:00Z',
+    linkedClaimIds: ['claim-archived'],
+    taggedAmount: 20,
+    taggedCurrency: 'SGD',
+    taggedVendor: 'Vendor D',
+    taggedPurpose: 'Archived claim',
+    taggedGstShown: false,
+    xeroInvoiceId: 'xero-invoice-1',
+  },
 ];
 
 const todos = [
@@ -153,6 +165,12 @@ async function main() {
 
   const countText = await page.locator('#count').textContent();
   if (countText !== '(2)') throw new Error(`expected paginated receipts to load, got count ${countText}`);
+  const readyCountText = await page.locator('#linkedCount').textContent();
+  if (readyCountText !== '(1)') throw new Error(`invoiced receipts should not count as ready, got ${readyCountText}`);
+  const invoiceBadgeText = await page.locator('#invoicesNavBadge').textContent();
+  if (invoiceBadgeText !== '1') throw new Error(`invoice badge should ignore invoiced receipts, got ${invoiceBadgeText}`);
+  const invoicedReadyVisible = await page.locator('#linkedList li[data-receipt-key="receipt-4.pdf"]').count();
+  if (invoicedReadyVisible !== 0) throw new Error('invoiced receipt should not appear in Ready to Claim');
 
   const compact = await page.locator('#dropzone').evaluate((el) => el.classList.contains('is-compact'));
   if (!compact) throw new Error('dropzone did not compact with outstanding work');
