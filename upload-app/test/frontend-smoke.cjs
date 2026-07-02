@@ -35,6 +35,8 @@ const receiptsPageOne = [
     taggedVendor: 'Vendor B',
     taggedPurpose: 'Subscription',
     taggedGstShown: false,
+    xeroPendingInvoiceId: 'pending-bill-1',
+    xeroPendingInvoiceNumber: 'DRAFT-1',
   },
 ];
 
@@ -104,6 +106,7 @@ async function main() {
   await new Promise((resolve) => server.listen(port, resolve));
   const browser = await chromium.launch({ headless: true });
   let uploadCount = 0;
+  const markClaimRequests = [];
 
   async function setupMockApi(page) {
     await page.route('**/*', async (route) => {
@@ -136,6 +139,18 @@ async function main() {
               { taxType: 'NRINPUT', name: 'Purchases from Non-GST Registered Suppliers' },
               { taxType: 'OPINPUT', name: 'Out Of Scope Purchases' },
             ],
+          },
+        });
+      }
+      if (url.pathname === '/xero/invoices/mark-claimed') {
+        const body = JSON.parse(route.request().postData() || '{}');
+        markClaimRequests.push(body);
+        return route.fulfill({
+          json: {
+            success: true,
+            claimedDate: '2026-07-02',
+            taggedReceipts: [{ key: 'receipt-2.pdf', status: 'tagged' }],
+            claimedYnab: [{ id: 'claim-1', status: 'claimed' }],
           },
         });
       }
@@ -211,6 +226,13 @@ async function main() {
 
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
+
+  await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
+  if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
+  if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
+    throw new Error(`mark claimed should use pending receipt invoice id, got ${markClaimRequests[0].invoiceID}`);
+  }
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
   const taxText = await taxCell.locator('.inv-cell-text').textContent();

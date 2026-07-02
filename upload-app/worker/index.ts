@@ -229,9 +229,13 @@ interface ReceiptSummary {
   taggedGstAmount?: number;
   taggedGstConfidence?: number;
   taggedGstSource?: string;
-  // Set once a Xero draft bill has been created for this receipt.
+  // Set once the linked YNAB claim has been marked claimed for this bill.
   xeroInvoiceId?: string;
   invoicedAt?: string;
+  // Set after a draft exists, before the user marks the linked YNAB claims.
+  xeroPendingInvoiceId?: string;
+  xeroPendingInvoiceNumber?: string;
+  xeroPendingAt?: string;
 }
 
 interface ReceiptListResult {
@@ -421,7 +425,7 @@ async function mapWithConcurrency<T, R>(
 
 async function fetchYnabTodos(env: Env, sinceDate = getDefaultYnabSinceDate()): Promise<YnabTodo[]> {
   const ynabResponse = await fetch(
-    `https://api.ynab.com/v1/budgets/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions?since_date=${encodeURIComponent(sinceDate)}`,
+    `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions?since_date=${encodeURIComponent(sinceDate)}`,
     {
       headers: {
         Authorization: `Bearer ${env.YNAB_API_KEY}`,
@@ -507,6 +511,9 @@ async function listReceiptSummaries(
         taggedGstSource: metadata.taggedGstSource,
         xeroInvoiceId: metadata.xeroInvoiceId,
         invoicedAt: metadata.invoicedAt,
+        xeroPendingInvoiceId: metadata.xeroPendingInvoiceId,
+        xeroPendingInvoiceNumber: metadata.xeroPendingInvoiceNumber,
+        xeroPendingAt: metadata.xeroPendingAt,
       };
     }
   );
@@ -1518,16 +1525,31 @@ async function buildClaimReceiptPdf(
   };
 }
 
-// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
-async function markYnabClaimed(env: Env, transactionId: string, claimedDate = singaporeToday()): Promise<'claimed' | 'skipped' | 'failed'> {
-  if (transactionId.includes('_st_')) return 'skipped'; // subtransaction: update manually
+type YnabClaimResult = { status: 'claimed' | 'skipped' | 'failed'; detail?: string };
+
+async function readYnabError(response: Response): Promise<string> {
+  const text = await response.text();
+  if (!text) return `HTTP ${response.status}`;
   try {
-    const base = `https://api.ynab.com/v1/budgets/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
+    const parsed = JSON.parse(text) as { error?: { detail?: string; name?: string; id?: string } };
+    const detail = parsed.error?.detail || parsed.error?.name || parsed.error?.id;
+    if (detail) return detail;
+  } catch (_err) {
+    /* fall back to raw text */
+  }
+  return text.replace(/\s+/g, ' ').slice(0, 180);
+}
+
+// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
+async function markYnabClaimed(env: Env, transactionId: string, claimedDate = singaporeToday()): Promise<YnabClaimResult> {
+  if (transactionId.includes('_st_')) return { status: 'skipped', detail: 'Subtransactions must be updated manually in YNAB.' };
+  try {
+    const base = `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
     const getRes = await fetch(base, { headers: { Authorization: `Bearer ${env.YNAB_API_KEY}` } });
-    if (!getRes.ok) return 'failed';
+    if (!getRes.ok) return { status: 'failed', detail: await readYnabError(getRes) };
     const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
     const memo = getData.data?.transaction?.memo || '';
-    if (/^\s*CLAIMED\b/i.test(memo)) return 'claimed'; // already done
+    if (/^\s*CLAIMED\b/i.test(memo)) return { status: 'claimed' }; // already done
     const newMemo = /^\s*TODO:?/i.test(memo)
       ? memo.replace(/^\s*TODO:?\s*/i, `CLAIMED - ${claimedDate}: `)
       : `CLAIMED - ${claimedDate}: ${memo}`.trim();
@@ -1536,9 +1558,9 @@ async function markYnabClaimed(env: Env, transactionId: string, claimedDate = si
       headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ transaction: { memo: newMemo } }),
     });
-    return putRes.ok ? 'claimed' : 'failed';
-  } catch (_err) {
-    return 'failed';
+    return putRes.ok ? { status: 'claimed' } : { status: 'failed', detail: await readYnabError(putRes) };
+  } catch (err) {
+    return { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
   }
 }
 
@@ -2138,18 +2160,6 @@ export default {
           }
 
           const claimedDate = singaporeToday();
-          const invoicedAt = new Date().toISOString();
-          const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
-          const taggedReceipts: Array<{ key: string; status: string }> = [];
-          for (const key of uniqueKeys) {
-            try {
-              await patchReceiptMetadata(env, key, { xeroInvoiceId: invoiceID, invoicedAt });
-              taggedReceipts.push({ key, status: 'tagged' });
-            } catch (_err) {
-              taggedReceipts.push({ key, status: 'failed' });
-            }
-          }
-
           const claimIds = Array.from(
             new Set(
               lineItems
@@ -2157,9 +2167,41 @@ export default {
                 .filter((id): id is string => typeof id === 'string' && id.length > 0)
             )
           );
-          const claimedYnab: Array<{ id: string; status: string }> = [];
+          const claimedYnab: Array<{ id: string; status: string; detail?: string }> = [];
           for (const id of claimIds) {
-            claimedYnab.push({ id, status: await markYnabClaimed(env, id, claimedDate) });
+            const result = await markYnabClaimed(env, id, claimedDate);
+            claimedYnab.push({ id, ...result });
+          }
+
+          const ynabIssues = claimedYnab.filter((item) => item.status !== 'claimed');
+          if (ynabIssues.length > 0) {
+            return new Response(
+              JSON.stringify({
+                error: 'YNAB update failed; receipts were not marked invoiced.',
+                claimedDate,
+                taggedReceipts: [],
+                claimedYnab,
+              }),
+              { status: 502, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+            );
+          }
+
+          const invoicedAt = new Date().toISOString();
+          const uniqueKeys = Array.from(new Set(lineItems.map((l) => l.receiptKey)));
+          const taggedReceipts: Array<{ key: string; status: string }> = [];
+          for (const key of uniqueKeys) {
+            try {
+              await patchReceiptMetadata(env, key, {
+                xeroInvoiceId: invoiceID,
+                invoicedAt,
+                xeroPendingInvoiceId: undefined,
+                xeroPendingInvoiceNumber: undefined,
+                xeroPendingAt: undefined,
+              });
+              taggedReceipts.push({ key, status: 'tagged' });
+            } catch (err) {
+              taggedReceipts.push({ key, status: `failed: ${cleanError(err)}` });
+            }
           }
 
           return new Response(
@@ -2254,6 +2296,26 @@ export default {
           if (!allAttached) {
             warnings.push(
               'Not every receipt was attached through the Xero API. Download the compiled receipts PDF and upload it manually in Xero before marking everything claimed.'
+            );
+          }
+
+          const pendingAt = new Date().toISOString();
+          const pendingReceiptFailures: string[] = [];
+          const uniqueReceiptKeys = Array.from(new Set(lineItems.map((line) => line.receiptKey)));
+          for (const key of uniqueReceiptKeys) {
+            try {
+              await patchReceiptMetadata(env, key, {
+                xeroPendingInvoiceId: bill.invoiceID,
+                xeroPendingInvoiceNumber: bill.invoiceNumber,
+                xeroPendingAt: pendingAt,
+              });
+            } catch (err) {
+              pendingReceiptFailures.push(`${key}: ${cleanError(err)}`);
+            }
+          }
+          if (pendingReceiptFailures.length > 0) {
+            warnings.push(
+              `Draft bill was created, but ${pendingReceiptFailures.length} receipt(s) could not remember the Xero bill id. Keep this result box open before marking claimed.`
             );
           }
 

@@ -320,14 +320,11 @@ function rememberPushedInvoice(data, payload) {
 }
 
 function rememberedInvoiceIDForItem(item) {
+  if (typeof item?.xeroPendingInvoiceId === 'string' && item.xeroPendingInvoiceId) {
+    return item.xeroPendingInvoiceId;
+  }
   const entry = loadPushHistory().byLine?.[lineItemKey(item)];
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
-}
-
-function parseXeroInvoiceID(value) {
-  const text = String(value || '');
-  const match = text.match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i);
-  return match ? match[0] : '';
 }
 
 function lineReviewSnapshot(line) {
@@ -456,6 +453,8 @@ function buildInvoiceLines() {
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
+        xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
+        xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
         include: Number.isFinite(amount) && amount > 0,
         date,
@@ -1194,6 +1193,7 @@ function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
     lineItems: lines.map((l) => ({
       receiptKey: l.receiptKey,
       ynabClaimId: l.ynabClaimId,
+      xeroPendingInvoiceId: l.xeroPendingInvoiceId || '',
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
       accountCode: l.accountCode,
@@ -1612,7 +1612,14 @@ async function submitClaimed(invoiceID, lineItems) {
     body: JSON.stringify({ invoiceID, lineItems }),
   });
   const result = await res.json().catch(() => ({}));
-  if (!res.ok || result.error) throw new Error(result.error || `HTTP ${res.status}`);
+  if (!res.ok || result.error) {
+    const details = (result.claimedYnab || [])
+      .filter((r) => r.status !== 'claimed' && r.detail)
+      .map((r) => r.detail)
+      .slice(0, 2)
+      .join(' ');
+    throw new Error([result.error || `HTTP ${res.status}`, details].filter(Boolean).join(' '));
+  }
   return result;
 }
 
@@ -1636,31 +1643,29 @@ function groupedLineItemsByInvoice(lineItems) {
   return { groups, missing };
 }
 
-function promptForXeroInvoiceID(bucket, count) {
-  const value = window.prompt(
-    `Paste the Xero bill link or InvoiceID for the ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'}:`,
-    '',
-  );
-  if (value === null) return '';
-  return parseXeroInvoiceID(value);
-}
-
 async function markLineItemGroupsClaimed(groups, bucket) {
   let claimedDate = '';
   let failedYnab = 0;
   let skippedYnab = 0;
   let failedReceipts = 0;
+  const failureDetails = [];
   let count = 0;
   for (const [invoiceID, lineItems] of groups.entries()) {
     const result = await submitClaimed(invoiceID, lineItems);
     claimedDate = result.claimedDate || claimedDate;
     failedYnab += (result.claimedYnab || []).filter((r) => r.status === 'failed').length;
     skippedYnab += (result.claimedYnab || []).filter((r) => r.status === 'skipped').length;
-    failedReceipts += (result.taggedReceipts || []).filter((r) => r.status === 'failed').length;
+    failedReceipts += (result.taggedReceipts || []).filter((r) => String(r.status || '').startsWith('failed')).length;
+    failureDetails.push(
+      ...(result.claimedYnab || [])
+        .filter((r) => r.status !== 'claimed' && r.detail)
+        .map((r) => r.detail),
+    );
     count += lineItems.length;
   }
   if (failedYnab || failedReceipts) {
-    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} YNAB failure(s), ${skippedYnab} skipped.`);
+    const detail = failureDetails.length ? ` ${failureDetails.slice(0, 2).join(' ')}` : '';
+    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} YNAB failure(s), ${skippedYnab} skipped.${detail}`);
   } else {
     showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} YNAB subtransaction(s) skipped)` : ''}.`);
   }
@@ -1681,9 +1686,9 @@ async function markCheckedLineItemsClaimed(bucket, lineItems, btn, { payload = n
       ? { groups: new Map([[invoiceID, lineItems]]), missing: [] }
       : groupedLineItemsByInvoice(lineItems);
     if (missing.length > 0) {
-      const promptedID = promptForXeroInvoiceID(bucket, missing.length);
-      if (!promptedID) throw new Error('No valid Xero InvoiceID supplied.');
-      groups.set(promptedID, [...(groups.get(promptedID) || []), ...missing]);
+      throw new Error(
+        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered Xero draft bill. Re-push or use the draft-created action before marking claimed.`,
+      );
     }
     await markLineItemGroupsClaimed(groups, bucket);
     if (payload && lineItems.length >= (payload.lineItems || []).length) clearLastPushResult();
