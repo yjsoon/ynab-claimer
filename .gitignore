@@ -15,6 +15,10 @@ dist/
 # OS
 .DS_Store
 
+# Local agent/editor state
+.codex/
+.cursor/
+
 # Playwright
 .volopay-auth.json
 error-screenshot.png
