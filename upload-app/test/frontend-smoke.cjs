@@ -118,14 +118,14 @@ async function main() {
   const markClaimRequests = [];
   const linkRequests = [];
 
-  async function setupMockApi(page, { failReceiptList = false } = {}) {
+  async function setupMockApi(page, mockState = {}) {
     await page.route('**/*', async (route) => {
       const url = new URL(route.request().url());
       const isAuthed = route.request().headers()['x-auth-token'] === 'test';
 
       if (url.pathname === '/list') {
         if (!isAuthed) return route.fulfill({ status: 401, json: { error: 'unauthorised' } });
-        if (failReceiptList) return route.fulfill({ status: 500, json: { error: 'list unavailable' } });
+        if (mockState.failReceiptList) return route.fulfill({ status: 500, json: { error: 'list unavailable' } });
         const cursor = url.searchParams.get('cursor');
         const body = cursor === 'page-2'
           ? { receipts: receiptsPageTwo, hasMore: false }
@@ -367,9 +367,16 @@ async function main() {
     localStorage.setItem('claim_manager_remember', 'true');
     localStorage.setItem('claim_manager_rejected_matches', JSON.stringify(['claim-2::receipt-1.pdf']));
   });
-  await setupMockApi(receiptFailurePage, { failReceiptList: true });
+  const receiptFailureState = { failReceiptList: false };
+  await setupMockApi(receiptFailurePage, receiptFailureState);
   await receiptFailurePage.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
+  await receiptFailurePage.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
+  receiptFailureState.failReceiptList = true;
+  await receiptFailurePage.locator('#refreshBtn').click();
   await receiptFailurePage.waitForSelector('#receiptList .empty-state', { state: 'attached' });
+  await receiptFailurePage.waitForFunction(() => (
+    document.querySelectorAll('#matchReviewList .match-review-item').length === 0
+  ));
   await receiptFailurePage.waitForTimeout(250);
   const rejectedAfterListFailure = await receiptFailurePage.evaluate(() => (
     JSON.parse(localStorage.getItem('claim_manager_rejected_matches') || '[]')

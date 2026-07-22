@@ -234,7 +234,10 @@ export async function loadReceipts() {
   receiptsLoadSucceeded = false;
   try {
     const receipts = await fetchAllReceipts();
-    if (!receipts) return;
+    if (!receipts) {
+      scheduleMatchSuggestionRefresh();
+      return;
+    }
 
     // Sort: unlinked first, then linked.
     // Unlinked receipts use effective receipt date (manual/AI/upload fallback) descending.
@@ -360,6 +363,7 @@ export async function loadReceipts() {
   } catch (err) {
     console.error('Failed to load receipts:', err);
     receiptList.innerHTML = '<li class="empty-state">Failed to load receipts</li>';
+    scheduleMatchSuggestionRefresh();
   }
 }
 
