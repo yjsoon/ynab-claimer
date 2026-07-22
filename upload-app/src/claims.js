@@ -92,6 +92,7 @@ let matchSuggestions = [];
 let matchSuggestionRefreshTimer = null;
 let matchAcceptInFlight = false;
 let rejectedMatchPairs = loadRejectedMatchPairs();
+let receiptsLoadSucceeded = false;
 
 let claimFilterState = {
   text: '',
@@ -230,6 +231,7 @@ async function fetchAllReceipts() {
 
 // Load receipt list
 export async function loadReceipts() {
+  receiptsLoadSucceeded = false;
   try {
     const receipts = await fetchAllReceipts();
     if (!receipts) return;
@@ -251,6 +253,7 @@ export async function loadReceipts() {
 
       return new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime();
     }));
+    receiptsLoadSucceeded = true;
 
     const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0);
     countSpan.textContent = `(${outstandingReceipts.length})`;
@@ -754,6 +757,12 @@ function dropSuggestionsCollidingWith(claimId, receiptKey) {
 function refreshMatchSuggestions({ announce = false } = {}) {
   if (!matchReviewSection || !matchReviewList) return;
 
+  if (!receiptsLoadSucceeded) {
+    matchSuggestions = [];
+    renderMatchReview();
+    return;
+  }
+
   if (claimsLoadErrorMessage || claimsData.length === 0) {
     matchSuggestions = [];
     renderMatchReview();
@@ -766,13 +775,12 @@ function refreshMatchSuggestions({ announce = false } = {}) {
   pruneRejectedMatchPairs();
 
   const filterTerms = getClaimFilterTerms();
-  const visibleClaims = claimsData.filter((claim) => !claimMatchesHideFilter(claim, filterTerms));
-
-  matchSuggestions = buildMatchSuggestions(visibleClaims, receiptsData, {
+  matchSuggestions = buildMatchSuggestions(claimsData, receiptsData, {
     nearDays: 0,
     allowUploadDate: false,
     rejectedPairs: rejectedMatchPairs,
-  });
+  })
+    .filter((suggestion) => !claimMatchesHideFilter(suggestion.claim, filterTerms));
   renderMatchReview();
 
   if (!announce) return;
