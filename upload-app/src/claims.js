@@ -7,6 +7,7 @@ import {
   RECEIPT_DATE_RE,
   CLAIM_FILTER_KEY,
   DEFAULT_CLAIM_FILTERS,
+  REJECTED_MATCHES_KEY,
 } from './lib/constants.js';
 import {
   authHeaders,
@@ -37,6 +38,9 @@ import {
   formatReceiptDateLabel,
   getComparableReceiptAmounts,
   scoreReceiptClaimMatch,
+  buildMatchSuggestions,
+  describeMatchReason,
+  makeSuggestionPairId,
 } from './lib/match.js';
 import { openPreview } from './lib/preview.js';
 
@@ -45,6 +49,12 @@ const fileInput = document.getElementById('fileInput');
 const receiptList = document.getElementById('receiptList');
 const countSpan = document.getElementById('count');
 const refreshBtn = document.getElementById('refreshBtn');
+const findMatchesBtn = document.getElementById('findMatchesBtn');
+const matchReviewSection = document.getElementById('matchReviewSection');
+const matchReviewList = document.getElementById('matchReviewList');
+const matchReviewCount = document.getElementById('matchReviewCount');
+const acceptAllClearBtn = document.getElementById('acceptAllClearBtn');
+const clearDismissedMatchesBtn = document.getElementById('clearDismissedMatchesBtn');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
 const claimFilterInput = document.getElementById('claimFilterInput');
@@ -78,11 +88,33 @@ let selectedClaimIds = new Set();
 let linkingSource = null; // 'receipt' | 'claim'
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let matchSuggestions = [];
+let matchSuggestionRefreshTimer = null;
+let matchAcceptInFlight = false;
+let rejectedMatchPairs = loadRejectedMatchPairs();
+let receiptsLoadSucceeded = false;
 
 let claimFilterState = {
   text: '',
   quickFilters: [],
 };
+
+function loadRejectedMatchPairs() {
+  try {
+    const stored = JSON.parse(localStorage.getItem(REJECTED_MATCHES_KEY) || '[]');
+    return new Set(Array.isArray(stored) ? stored.filter((id) => typeof id === 'string' && id.includes('::')) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function saveRejectedMatchPairs() {
+  try {
+    localStorage.setItem(REJECTED_MATCHES_KEY, JSON.stringify(Array.from(rejectedMatchPairs)));
+  } catch (error) {
+    console.warn('Rejected match preferences could not be saved:', error);
+  }
+}
 
 
 // Validate file before upload
@@ -199,9 +231,13 @@ async function fetchAllReceipts() {
 
 // Load receipt list
 export async function loadReceipts() {
+  receiptsLoadSucceeded = false;
   try {
     const receipts = await fetchAllReceipts();
-    if (!receipts) return;
+    if (!receipts) {
+      scheduleMatchSuggestionRefresh();
+      return;
+    }
 
     // Sort: unlinked first, then linked.
     // Unlinked receipts use effective receipt date (manual/AI/upload fallback) descending.
@@ -220,6 +256,7 @@ export async function loadReceipts() {
 
       return new Date(b.uploaded).getTime() - new Date(a.uploaded).getTime();
     }));
+    receiptsLoadSucceeded = true;
 
     const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0);
     countSpan.textContent = `(${outstandingReceipts.length})`;
@@ -231,6 +268,7 @@ export async function loadReceipts() {
       renderLinkedPairs();
       updateUploadZoneCompact();
       triggerPendingAmountTagging();
+      scheduleMatchSuggestionRefresh();
       return;
     }
 
@@ -321,9 +359,11 @@ export async function loadReceipts() {
     renderLinkedPairs();
     updateUploadZoneCompact();
     triggerPendingAmountTagging();
+    scheduleMatchSuggestionRefresh();
   } catch (err) {
     console.error('Failed to load receipts:', err);
     receiptList.innerHTML = '<li class="empty-state">Failed to load receipts</li>';
+    scheduleMatchSuggestionRefresh();
   }
 }
 
@@ -472,6 +512,8 @@ function resetClaimsAfterLoadFailure(message) {
   setClaimsLoadErrorMessage(message || 'Failed to load claims');
   setClaimsData([]);
   clearSelection();
+  matchSuggestions = [];
+  renderMatchReview();
   renderClaimLoadError(claimsLoadErrorMessage);
   linkedCount.textContent = '(error)';
   linkedList.innerHTML = '<li class="empty-state">Claims unavailable</li>';
@@ -671,6 +713,282 @@ function updateUploadZoneCompact() {
   dropzone.classList.toggle('is-compact', compact);
   const compactLabel = dropzone.querySelector('.dropzone-compact-label');
   if (compactLabel) compactLabel.hidden = !compact;
+}
+
+function scheduleMatchSuggestionRefresh() {
+  if (matchSuggestionRefreshTimer) {
+    clearTimeout(matchSuggestionRefreshTimer);
+  }
+  matchSuggestionRefreshTimer = setTimeout(() => {
+    matchSuggestionRefreshTimer = null;
+    refreshMatchSuggestions({ announce: false });
+  }, 150);
+}
+
+function pruneRejectedMatchPairs() {
+  const validClaimIds = new Set(claimsData.map((claim) => claim.id));
+  const unlinkedReceiptKeys = new Set(
+    receiptsData
+      .filter((receipt) => getLinkedClaimIds(receipt).length === 0)
+      .map((receipt) => receipt.key)
+  );
+  let changed = false;
+  for (const pairId of Array.from(rejectedMatchPairs)) {
+    const separator = pairId.indexOf('::');
+    if (separator <= 0) {
+      rejectedMatchPairs.delete(pairId);
+      changed = true;
+      continue;
+    }
+    const claimId = pairId.slice(0, separator);
+    const receiptKey = pairId.slice(separator + 2);
+    if (!validClaimIds.has(claimId) || !unlinkedReceiptKeys.has(receiptKey)) {
+      rejectedMatchPairs.delete(pairId);
+      changed = true;
+    }
+  }
+  if (changed) saveRejectedMatchPairs();
+}
+
+function dropSuggestionsCollidingWith(claimId, receiptKey) {
+  matchSuggestions = matchSuggestions.filter((item) => {
+    if (item.claim.id === claimId) return false;
+    if (item.receipt.key === receiptKey) return false;
+    return !item.alternatives.some((alt) => alt.receipt.key === receiptKey);
+  });
+}
+
+function refreshMatchSuggestions({ announce = false } = {}) {
+  if (!matchReviewSection || !matchReviewList) return;
+
+  if (!receiptsLoadSucceeded) {
+    matchSuggestions = [];
+    renderMatchReview();
+    return;
+  }
+
+  if (claimsLoadErrorMessage || claimsData.length === 0) {
+    matchSuggestions = [];
+    renderMatchReview();
+    if (announce) {
+      showStatus('error', claimsLoadErrorMessage || 'No claims loaded yet');
+    }
+    return;
+  }
+
+  pruneRejectedMatchPairs();
+
+  const filterTerms = getClaimFilterTerms();
+  matchSuggestions = buildMatchSuggestions(claimsData, receiptsData, {
+    nearDays: 0,
+    allowUploadDate: false,
+    rejectedPairs: rejectedMatchPairs,
+  })
+    .filter((suggestion) => !claimMatchesHideFilter(suggestion.claim, filterTerms));
+  renderMatchReview();
+
+  if (!announce) return;
+
+  const clearCount = matchSuggestions.filter((item) => item.kind === 'clear').length;
+  const ambiguousCount = matchSuggestions.length - clearCount;
+  if (matchSuggestions.length === 0) {
+    showStatus('success', rejectedMatchPairs.size > 0
+      ? 'No matches to review (some were dismissed)'
+      : 'No matches found');
+    return;
+  }
+  showStatus(
+    'success',
+    `Found ${matchSuggestions.length} suggestion${matchSuggestions.length === 1 ? '' : 's'}` +
+      ` (${clearCount} clear, ${ambiguousCount} ambiguous)`
+  );
+}
+
+function renderMatchReview() {
+  if (!matchReviewSection || !matchReviewList || !matchReviewCount) return;
+
+  const clearCount = matchSuggestions.filter((item) => item.kind === 'clear').length;
+  matchReviewCount.textContent = `(${matchSuggestions.length})`;
+  if (acceptAllClearBtn) {
+    acceptAllClearBtn.hidden = clearCount === 0;
+    acceptAllClearBtn.textContent = clearCount > 0 ? `Accept all clear (${clearCount})` : 'Accept all clear';
+    acceptAllClearBtn.disabled = matchAcceptInFlight || clearCount === 0;
+  }
+  if (clearDismissedMatchesBtn) {
+    clearDismissedMatchesBtn.hidden = rejectedMatchPairs.size === 0;
+  }
+
+  const showSection = matchSuggestions.length > 0 || rejectedMatchPairs.size > 0;
+  matchReviewSection.hidden = !showSection;
+
+  if (matchSuggestions.length === 0) {
+    matchReviewList.innerHTML = rejectedMatchPairs.size > 0
+      ? '<li class="empty-state">No suggestions right now. Clear dismissed to restore skipped matches.</li>'
+      : '';
+    return;
+  }
+  matchReviewList.innerHTML = matchSuggestions.map((suggestion) => {
+    const claimDate = formatDateForLocale(parseDateOnly(suggestion.claim.date) || new Date(suggestion.claim.date));
+    const claimLabel = (suggestion.claim.description || suggestion.claim.payee || 'Claim').trim();
+    const receiptName = getReceiptDisplayName(suggestion.receipt);
+    const reason = describeMatchReason(suggestion);
+    const altCount = suggestion.alternatives.length;
+    const chipClass = suggestion.kind === 'clear' ? 'clear' : 'ambiguous';
+    const chipLabel = suggestion.kind === 'clear'
+      ? 'Clear'
+      : (altCount > 0 ? `Best of ${altCount + 1}` : 'Ambiguous');
+    const altNote = altCount > 0
+      ? `<p class="match-review-alt">${altCount} other receipt${altCount === 1 ? '' : 's'} also match — use Change to pick</p>`
+      : (suggestion.kind === 'ambiguous'
+        ? '<p class="match-review-alt">Also matches other claims — confirm carefully</p>'
+        : '');
+
+    return `
+      <li class="match-review-item is-${escapeHtml(suggestion.kind)}" data-suggestion-id="${escapeHtml(suggestion.id)}">
+        <div class="match-review-claim">
+          <span>${escapeHtml(claimLabel)}</span>
+          <span>${escapeHtml(claimDate)}</span>
+          <span>${escapeHtml(formatClaimAmount(suggestion.claim.amount))}</span>
+        </div>
+        <span class="match-review-arrow" aria-hidden="true">suggested receipt</span>
+        <div class="match-review-receipt">
+          <span>${escapeHtml(receiptName)}</span>
+        </div>
+        <div class="match-review-meta">
+          <span class="match-review-chip ${chipClass}">${chipLabel}</span>
+          <span class="match-review-reason">${escapeHtml(reason)}</span>
+        </div>
+        ${altNote}
+        <div class="match-review-row-actions">
+          <button type="button" class="btn-secondary btn-compact match-preview-btn" aria-label="Preview receipt for ${escapeHtml(claimLabel)}">Preview</button>
+          <button type="button" class="btn-primary btn-compact match-accept-btn" aria-label="Accept match for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Accept</button>
+          <button type="button" class="btn-danger-quiet btn-compact match-reject-btn" aria-label="Reject match for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Reject</button>
+          <button type="button" class="btn-secondary btn-compact match-change-btn" aria-label="Change receipt for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Change…</button>
+        </div>
+      </li>
+    `;
+  }).join('');
+
+  matchReviewList.querySelectorAll('.match-review-item').forEach((li) => {
+    const suggestionId = li.dataset.suggestionId;
+    const suggestion = matchSuggestions.find((item) => item.id === suggestionId);
+    if (!suggestion) return;
+
+    li.querySelector('.match-preview-btn')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      openPreview(suggestion.receipt.key, getReceiptDisplayName(suggestion.receipt));
+    });
+    li.querySelector('.match-accept-btn')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      acceptMatchSuggestion(suggestion);
+    });
+    li.querySelector('.match-reject-btn')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      rejectMatchSuggestion(suggestion);
+    });
+    li.querySelector('.match-change-btn')?.addEventListener('click', (event) => {
+      event.stopPropagation();
+      changeMatchSuggestion(suggestion);
+    });
+  });
+}
+
+async function acceptMatchSuggestion(suggestion) {
+  if (!suggestion || matchAcceptInFlight) return;
+  matchAcceptInFlight = true;
+  renderMatchReview();
+  showStatus('uploading', 'Linking match...');
+
+  try {
+    const result = await patchReceiptLink(suggestion.receipt.key, suggestion.claim);
+    if (!result.ok) {
+      showStatus('error', result.error || 'Failed to link match');
+      return;
+    }
+
+    clearSelection();
+    dropSuggestionsCollidingWith(suggestion.claim.id, suggestion.receipt.key);
+    renderMatchReview();
+    showStatus('success', 'Match linked');
+    await loadReceipts();
+    await loadYnabTodos();
+    refreshMatchSuggestions({ announce: false });
+  } finally {
+    matchAcceptInFlight = false;
+    renderMatchReview();
+  }
+}
+
+function rejectMatchSuggestion(suggestion) {
+  if (!suggestion || matchAcceptInFlight) return;
+  // Dismiss only this pair so the next-ranked receipt can surface on rebuild.
+  rejectedMatchPairs.add(suggestion.id);
+  saveRejectedMatchPairs();
+  refreshMatchSuggestions({ announce: false });
+  showStatus('success', 'Suggestion dismissed');
+}
+
+function changeMatchSuggestion(suggestion) {
+  if (!suggestion || matchAcceptInFlight) return;
+  const candidateKeys = [
+    suggestion.receipt.key,
+    ...suggestion.alternatives.map((alt) => alt.receipt.key),
+  ];
+  startClaimLinkFlow(suggestion.claim.id);
+  selectedReceiptKeys = new Set([suggestion.receipt.key]);
+  applyLinkingHighlights();
+
+  // Rank shortlisted receipts to the top of the outstanding list when possible.
+  if (receiptList && candidateKeys.length > 0) {
+    const preferred = new Set(candidateKeys);
+    const items = Array.from(receiptList.querySelectorAll('li[data-key]'));
+    items
+      .sort((a, b) => Number(preferred.has(b.dataset.key)) - Number(preferred.has(a.dataset.key)))
+      .forEach((item) => receiptList.appendChild(item));
+    receiptList.querySelector(`li[data-key="${CSS.escape(suggestion.receipt.key)}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
+  }
+
+  if (window.innerWidth <= 700) {
+    switchTab('receipts');
+    scrollTabToggleIntoView();
+  }
+}
+
+async function acceptAllClearSuggestions() {
+  const clearSuggestions = matchSuggestions.filter((item) => item.kind === 'clear');
+  if (clearSuggestions.length === 0 || matchAcceptInFlight) return;
+
+  const confirmed = window.confirm(
+    `Link ${clearSuggestions.length} clear match${clearSuggestions.length === 1 ? '' : 'es'} now?`
+  );
+  if (!confirmed) return;
+
+  matchAcceptInFlight = true;
+  renderMatchReview();
+  showStatus('uploading', `Linking ${clearSuggestions.length} clear match${clearSuggestions.length === 1 ? '' : 'es'}...`);
+
+  try {
+    const results = await Promise.all(
+      clearSuggestions.map((suggestion) => patchReceiptLink(suggestion.receipt.key, suggestion.claim))
+    );
+    const successCount = results.filter((result) => result.ok).length;
+    const failCount = results.length - successCount;
+
+    clearSelection();
+    if (failCount === 0) {
+      showStatus('success', `Linked ${successCount} clear match${successCount === 1 ? '' : 'es'}`);
+    } else {
+      showStatus('error', `Linked ${successCount}, failed ${failCount}`);
+    }
+
+    await loadReceipts();
+    await loadYnabTodos();
+    refreshMatchSuggestions({ announce: false });
+  } finally {
+    matchAcceptInFlight = false;
+    renderMatchReview();
+  }
 }
 
 function updateLinkingContext() {
@@ -915,6 +1233,7 @@ export async function loadYnabTodos() {
     renderOutstandingClaims();
     renderLinkedPairs();
     updateUploadZoneCompact();
+    scheduleMatchSuggestionRefresh();
   } catch (err) {
     console.error('Failed to load YNAB todos:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
@@ -1015,6 +1334,26 @@ refreshBtn.addEventListener('click', async () => {
   await loadYnabTodos();
 });
 
+if (findMatchesBtn) {
+  findMatchesBtn.addEventListener('click', () => {
+    refreshMatchSuggestions({ announce: true });
+  });
+}
+
+if (acceptAllClearBtn) {
+  acceptAllClearBtn.addEventListener('click', () => {
+    acceptAllClearSuggestions();
+  });
+}
+
+if (clearDismissedMatchesBtn) {
+  clearDismissedMatchesBtn.addEventListener('click', () => {
+    rejectedMatchPairs = new Set();
+    saveRejectedMatchPairs();
+    refreshMatchSuggestions({ announce: true });
+  });
+}
+
 if (claimFilterInput) {
   claimFilterState = loadClaimFilterState();
   renderClaimFilterControls();
@@ -1023,6 +1362,7 @@ if (claimFilterInput) {
     claimFilterState.text = claimFilterInput.value;
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
   });
 }
 
@@ -1041,6 +1381,7 @@ if (claimFilterPills) {
     }
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
     Array.from(claimFilterPills.querySelectorAll('.claim-filter-pill'))
       .find((pill) => pill.dataset.filter === filter)
       ?.focus();
@@ -1052,6 +1393,7 @@ if (claimFilterClear) {
     claimFilterState = { text: '', quickFilters: [] };
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
     claimFilterInput?.focus();
   });
 }
@@ -1515,4 +1857,5 @@ tabBtns.forEach(btn => {
   });
 });
 export function initClaims() {
+  renderMatchReview();
 }
