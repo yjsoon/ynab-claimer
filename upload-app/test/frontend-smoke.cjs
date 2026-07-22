@@ -23,6 +23,7 @@ const receiptsPageOne = [
     taggedVendor: 'Vendor A',
     taggedPurpose: 'Software',
     taggedGstShown: false,
+    detectedReceiptDate: '2026-06-24',
   },
   {
     key: 'receipt-2.pdf',
@@ -107,6 +108,7 @@ async function main() {
   const browser = await chromium.launch({ headless: true });
   let uploadCount = 0;
   const markClaimRequests = [];
+  const linkRequests = [];
 
   async function setupMockApi(page) {
     await page.route('**/*', async (route) => {
@@ -128,6 +130,20 @@ async function main() {
       }
 
       if (url.pathname === '/ynab/todos') return route.fulfill({ json: { todos } });
+      if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'PATCH') {
+        const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/link'.length));
+        const body = JSON.parse(route.request().postData() || '{}');
+        const linkedIds = Array.isArray(body.linkedClaims)
+          ? body.linkedClaims.map((claim) => claim.id).filter(Boolean)
+          : [];
+        const receipt = [...receiptsPageOne, ...receiptsPageTwo].find((item) => item.key === key);
+        if (receipt) {
+          receipt.linkedClaimIds = linkedIds;
+          receipt.linkedClaimId = linkedIds[0] || undefined;
+        }
+        linkRequests.push({ key, linkedIds });
+        return route.fulfill({ json: { success: true } });
+      }
       if (url.pathname === '/xero/status') return route.fulfill({ json: { connected: true, tenantName: 'Test Xero' } });
       if (url.pathname === '/xero/meta') {
         return route.fulfill({
@@ -154,7 +170,7 @@ async function main() {
           },
         });
       }
-      if (url.pathname === '/amount-tags/pending') return route.fulfill({ json: { processed: 0, remaining: 0 } });
+      if (url.pathname === '/amount-tags/pending') return route.fulfill({ json: { processed: 0, remaining: 0, tagged: 0 } });
       return route.continue();
     });
   }
@@ -175,6 +191,22 @@ async function main() {
   await setupMockApi(page);
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
+  const matchCountText = await page.locator('#matchReviewCount').textContent();
+  if (matchCountText !== '(1)') throw new Error(`expected one match suggestion, got ${matchCountText}`);
+  await page.locator('.match-review-item .match-reject-btn').click();
+  await page.waitForFunction(() => document.querySelectorAll('#matchReviewList .match-review-item').length === 0);
+  await page.locator('#findMatchesBtn').click();
+  await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('No matches'));
+  await page.locator('#clearDismissedMatchesBtn').click();
+  await page.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
+  // Leave the suggestion in place for now so invoice counts stay stable; Change opens claim-link flow.
+  await page.locator('.match-review-item .match-change-btn').click();
+  await page.waitForSelector('#linkingDock:not([hidden])');
+  const receiptChecked = await page.locator('#receiptList li[data-key="receipt-1.pdf"]').evaluate((el) => el.classList.contains('checked'));
+  if (!receiptChecked) throw new Error('Change should pre-select the suggested receipt');
+  await page.locator('#cancelSelection').click();
+
   await page.locator('.tab-btn[data-tab="receipts"]').click();
   await page.waitForSelector('#receiptList li[data-key="receipt-3.pdf"]', { state: 'attached' });
 
@@ -211,6 +243,22 @@ async function main() {
   await page.locator('#todoList .todo-item[data-claim-id="claim-2"]').click();
   const confirmVisible = await page.locator('#confirmSelection:not([hidden])').isVisible();
   if (!confirmVisible) throw new Error('link confirm button did not become visible');
+  await page.locator('#cancelSelection').click();
+
+  await page.locator('#findMatchesBtn').click();
+  await page.waitForSelector('#matchReviewSection:not([hidden]) .match-accept-btn');
+  await page.locator('.match-review-item .match-accept-btn').click();
+  await page.waitForFunction(() => document.querySelector('#matchReviewSection')?.hidden);
+  if (linkRequests.length !== 1 || linkRequests[0].key !== 'receipt-1.pdf' || linkRequests[0].linkedIds[0] !== 'claim-2') {
+    throw new Error(`expected accept to link receipt-1 to claim-2, got ${JSON.stringify(linkRequests)}`);
+  }
+
+  // Restore unlinked state for invoice tests that expect the original ready set.
+  const receiptOne = receiptsPageOne.find((item) => item.key === 'receipt-1.pdf');
+  if (receiptOne) {
+    receiptOne.linkedClaimIds = [];
+    delete receiptOne.linkedClaimId;
+  }
 
   await page.goto(`http://127.0.0.1:${port}/invoices/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
