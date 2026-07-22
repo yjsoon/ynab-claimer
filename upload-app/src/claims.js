@@ -718,6 +718,39 @@ function scheduleMatchSuggestionRefresh() {
   }, 150);
 }
 
+function pruneRejectedMatchPairs() {
+  const validClaimIds = new Set(claimsData.map((claim) => claim.id));
+  const unlinkedReceiptKeys = new Set(
+    receiptsData
+      .filter((receipt) => getLinkedClaimIds(receipt).length === 0)
+      .map((receipt) => receipt.key)
+  );
+  let changed = false;
+  for (const pairId of Array.from(rejectedMatchPairs)) {
+    const separator = pairId.indexOf('::');
+    if (separator <= 0) {
+      rejectedMatchPairs.delete(pairId);
+      changed = true;
+      continue;
+    }
+    const claimId = pairId.slice(0, separator);
+    const receiptKey = pairId.slice(separator + 2);
+    if (!validClaimIds.has(claimId) || !unlinkedReceiptKeys.has(receiptKey)) {
+      rejectedMatchPairs.delete(pairId);
+      changed = true;
+    }
+  }
+  if (changed) saveRejectedMatchPairs();
+}
+
+function dropSuggestionsCollidingWith(claimId, receiptKey) {
+  matchSuggestions = matchSuggestions.filter((item) => {
+    if (item.claim.id === claimId) return false;
+    if (item.receipt.key === receiptKey) return false;
+    return !item.alternatives.some((alt) => alt.receipt.key === receiptKey);
+  });
+}
+
 function refreshMatchSuggestions({ announce = false } = {}) {
   if (!matchReviewSection || !matchReviewList) return;
 
@@ -730,7 +763,12 @@ function refreshMatchSuggestions({ announce = false } = {}) {
     return;
   }
 
-  matchSuggestions = buildMatchSuggestions(claimsData, receiptsData, {
+  pruneRejectedMatchPairs();
+
+  const filterTerms = getClaimFilterTerms();
+  const visibleClaims = claimsData.filter((claim) => !claimMatchesHideFilter(claim, filterTerms));
+
+  matchSuggestions = buildMatchSuggestions(visibleClaims, receiptsData, {
     nearDays: 0,
     allowUploadDate: false,
     rejectedPairs: rejectedMatchPairs,
@@ -762,6 +800,7 @@ function renderMatchReview() {
   if (acceptAllClearBtn) {
     acceptAllClearBtn.hidden = clearCount === 0;
     acceptAllClearBtn.textContent = clearCount > 0 ? `Accept all clear (${clearCount})` : 'Accept all clear';
+    acceptAllClearBtn.disabled = matchAcceptInFlight || clearCount === 0;
   }
   if (clearDismissedMatchesBtn) {
     clearDismissedMatchesBtn.hidden = rejectedMatchPairs.size === 0;
@@ -809,10 +848,10 @@ function renderMatchReview() {
         </div>
         ${altNote}
         <div class="match-review-row-actions">
-          <button type="button" class="btn-secondary btn-compact match-preview-btn">Preview</button>
-          <button type="button" class="btn-primary btn-compact match-accept-btn">Accept</button>
-          <button type="button" class="btn-danger-quiet btn-compact match-reject-btn">Reject</button>
-          <button type="button" class="btn-secondary btn-compact match-change-btn">Change…</button>
+          <button type="button" class="btn-secondary btn-compact match-preview-btn" aria-label="Preview receipt for ${escapeHtml(claimLabel)}">Preview</button>
+          <button type="button" class="btn-primary btn-compact match-accept-btn" aria-label="Accept match for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Accept</button>
+          <button type="button" class="btn-danger-quiet btn-compact match-reject-btn" aria-label="Reject match for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Reject</button>
+          <button type="button" class="btn-secondary btn-compact match-change-btn" aria-label="Change receipt for ${escapeHtml(claimLabel)}" ${matchAcceptInFlight ? 'disabled' : ''}>Change…</button>
         </div>
       </li>
     `;
@@ -845,6 +884,7 @@ function renderMatchReview() {
 async function acceptMatchSuggestion(suggestion) {
   if (!suggestion || matchAcceptInFlight) return;
   matchAcceptInFlight = true;
+  renderMatchReview();
   showStatus('uploading', 'Linking match...');
 
   try {
@@ -854,30 +894,30 @@ async function acceptMatchSuggestion(suggestion) {
       return;
     }
 
-    matchSuggestions = matchSuggestions.filter((item) => item.id !== suggestion.id);
+    clearSelection();
+    dropSuggestionsCollidingWith(suggestion.claim.id, suggestion.receipt.key);
     renderMatchReview();
     showStatus('success', 'Match linked');
     await loadReceipts();
     await loadYnabTodos();
+    refreshMatchSuggestions({ announce: false });
   } finally {
     matchAcceptInFlight = false;
+    renderMatchReview();
   }
 }
 
 function rejectMatchSuggestion(suggestion) {
-  if (!suggestion) return;
+  if (!suggestion || matchAcceptInFlight) return;
+  // Dismiss only this pair so the next-ranked receipt can surface on rebuild.
   rejectedMatchPairs.add(suggestion.id);
-  suggestion.alternatives.forEach((alt) => {
-    rejectedMatchPairs.add(makeSuggestionPairId(suggestion.claim.id, alt.receipt.key));
-  });
   saveRejectedMatchPairs();
-  matchSuggestions = matchSuggestions.filter((item) => item.id !== suggestion.id);
-  renderMatchReview();
+  refreshMatchSuggestions({ announce: false });
   showStatus('success', 'Suggestion dismissed');
 }
 
 function changeMatchSuggestion(suggestion) {
-  if (!suggestion) return;
+  if (!suggestion || matchAcceptInFlight) return;
   const candidateKeys = [
     suggestion.receipt.key,
     ...suggestion.alternatives.map((alt) => alt.receipt.key),
@@ -893,6 +933,8 @@ function changeMatchSuggestion(suggestion) {
     items
       .sort((a, b) => Number(preferred.has(b.dataset.key)) - Number(preferred.has(a.dataset.key)))
       .forEach((item) => receiptList.appendChild(item));
+    receiptList.querySelector(`li[data-key="${CSS.escape(suggestion.receipt.key)}"]`)
+      ?.scrollIntoView({ block: 'nearest' });
   }
 
   if (window.innerWidth <= 700) {
@@ -905,7 +947,13 @@ async function acceptAllClearSuggestions() {
   const clearSuggestions = matchSuggestions.filter((item) => item.kind === 'clear');
   if (clearSuggestions.length === 0 || matchAcceptInFlight) return;
 
+  const confirmed = window.confirm(
+    `Link ${clearSuggestions.length} clear match${clearSuggestions.length === 1 ? '' : 'es'} now?`
+  );
+  if (!confirmed) return;
+
   matchAcceptInFlight = true;
+  renderMatchReview();
   showStatus('uploading', `Linking ${clearSuggestions.length} clear match${clearSuggestions.length === 1 ? '' : 'es'}...`);
 
   try {
@@ -915,6 +963,7 @@ async function acceptAllClearSuggestions() {
     const successCount = results.filter((result) => result.ok).length;
     const failCount = results.length - successCount;
 
+    clearSelection();
     if (failCount === 0) {
       showStatus('success', `Linked ${successCount} clear match${successCount === 1 ? '' : 'es'}`);
     } else {
@@ -923,8 +972,10 @@ async function acceptAllClearSuggestions() {
 
     await loadReceipts();
     await loadYnabTodos();
+    refreshMatchSuggestions({ announce: false });
   } finally {
     matchAcceptInFlight = false;
+    renderMatchReview();
   }
 }
 
@@ -1299,6 +1350,7 @@ if (claimFilterInput) {
     claimFilterState.text = claimFilterInput.value;
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
   });
 }
 
@@ -1317,6 +1369,7 @@ if (claimFilterPills) {
     }
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
     Array.from(claimFilterPills.querySelectorAll('.claim-filter-pill'))
       .find((pill) => pill.dataset.filter === filter)
       ?.focus();
@@ -1328,6 +1381,7 @@ if (claimFilterClear) {
     claimFilterState = { text: '', quickFilters: [] };
     saveClaimFilterState();
     renderOutstandingClaims();
+    scheduleMatchSuggestionRefresh();
     claimFilterInput?.focus();
   });
 }

@@ -385,9 +385,15 @@ export function buildMatchSuggestions(claims, receipts, options = {}) {
 }
 
 export function describeMatchReason(suggestion) {
-  const amountLabel = suggestion.amountKind === 'fx' || suggestion.amountKind === 'fx-plus'
-    ? `FX ≈ S$${Number(suggestion.amount).toFixed(2)}`
-    : `S$${Number(suggestion.amount).toFixed(2)}`;
+  const currency = (suggestion.receipt?.taggedCurrency || '').toUpperCase();
+  let amountLabel;
+  if (suggestion.amountKind === 'fx' || suggestion.amountKind === 'fx-plus') {
+    amountLabel = `FX ≈ S$${Number(suggestion.amount).toFixed(2)}`;
+  } else if (currency && currency !== 'SGD') {
+    amountLabel = `${currency} ${Number(suggestion.amount).toFixed(2)}`;
+  } else {
+    amountLabel = `S$${Number(suggestion.amount).toFixed(2)}`;
+  }
 
   if (suggestion.dayDiff === 0) {
     return `${amountLabel} · same day`;
