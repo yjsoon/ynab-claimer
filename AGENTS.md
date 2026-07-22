@@ -184,3 +184,27 @@ Receipt amount tagging uses MiniMax coding-plan VLM for image receipts when
 3. **YNAB amounts**: In milliunits - divide by 1000 for actual dollars
 4. **Transfer duplicates**: Filter for `amount < 0` to avoid counting transfers twice
 5. **Gemini model name**: Use `gemini-3-flash-preview` (hyphenated), not dotted/underscored variants
+
+## Cursor Cloud specific instructions
+
+Two independent npm packages, installed separately (no root `package.json`): `upload-app/`
+(the Cloudflare Worker + static UI) and `scripts/` (local `tsx` CLIs). The startup update
+script already runs `npm install` in both and `npx playwright install chromium`.
+
+- **Run the worker locally:** `cd upload-app && npm run dev` (`wrangler dev`) serves the UI +
+  API on `http://localhost:8787` with Miniflare-simulated R2/KV (`local` mode) — no Cloudflare
+  account or `wrangler login` needed. It's a long-running process; run it in tmux.
+- **Local auth:** `wrangler dev` reads `upload-app/.dev.vars` (gitignored). It must contain at
+  least `AUTH_PASSWORD`; all API/UI requests need that value in the `X-Auth-Token` header. There
+  is no committed `.dev.vars`, so create one before running (the setup used
+  `AUTH_PASSWORD = "devpassword"`). Template: `upload-app/.dev.vars.example`.
+- **Expected local errors:** With only `AUTH_PASSWORD` set, upload/list/link and the UI work
+  (receipts persist in local R2), but YNAB (`Outstanding Claims`/`Ready to Claim`), Xero
+  (Invoices tab) and AI tagging show errors — they need real external secrets and cannot be
+  stood up locally. That's normal, not a broken environment.
+- **Tests:** The only automated check is `cd upload-app && npm run smoke:frontend` (a headless
+  Playwright frontend smoke test that mocks the API; needs the chromium browser). There is **no
+  linter and no unit-test framework** configured, and no separate build step (Wrangler bundles).
+- **scripts/ CLIs** (`npm run link:matches` / `submit` / `export:*`) read the gitignored repo-root
+  `.env` and hit external services (deployed worker, Volopay, Gmail via `gog`), so they can't run
+  end-to-end here without those credentials/tools.
