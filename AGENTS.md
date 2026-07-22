@@ -184,3 +184,34 @@ Receipt amount tagging uses MiniMax coding-plan VLM for image receipts when
 3. **YNAB amounts**: In milliunits - divide by 1000 for actual dollars
 4. **Transfer duplicates**: Filter for `amount < 0` to avoid counting transfers twice
 5. **Gemini model name**: Use `gemini-3-flash-preview` (hyphenated), not dotted/underscored variants
+
+## Cursor Cloud specific instructions
+
+Dependencies (both npm packages plus the Playwright Chromium browser) are refreshed
+by the startup update script, so you normally don't need to reinstall. Commands below
+are for running/testing, not first-time setup.
+
+- **Two independent npm packages, no root package.json**: `upload-app/` (Cloudflare
+  Worker + static web UI) and `scripts/` (tsx/Playwright CLIs). Run npm commands
+  inside each package.
+- **Run the app (main service)**: `cd upload-app && npm run dev` starts `wrangler dev`
+  on http://localhost:8787. It runs fully locally via Miniflare — R2 (`RECEIPTS`)
+  and KV (`XERO_TOKENS`) are emulated, so **no Cloudflare account or login is needed**
+  to develop. Start long-running dev servers in tmux.
+- **Local auth**: `wrangler dev` reads `upload-app/.dev.vars` (gitignored). It must
+  define `AUTH_PASSWORD` or the UI/API auth gate rejects everything. For local dev a
+  throwaway value (e.g. `localdev`) is fine; send it as the `X-Auth-Token` header or
+  in the web password gate. Copy from `upload-app/.dev.vars.example`.
+- **Optional integrations degrade gracefully**: without `YNAB_API_KEY`/`YNAB_BUDGET_ID`
+  the "Outstanding Claims" / "Ready to Claim" panels show `YNAB API error` — this is
+  expected. Receipt upload/list/delete and AI-free flows work without any of
+  YNAB/Gemini/MiniMax/Xero secrets. Add them to `.dev.vars` only to exercise those paths.
+- **wrangler.toml `routes` / custom domain are ignored** by local `wrangler dev`; the
+  server always binds to localhost. No need to change them for local work.
+- **Typecheck**: `cd upload-app && npx tsc --noEmit` (no dedicated lint or unit-test
+  setup exists in the repo).
+- **Only automated test**: `cd upload-app && npm run smoke:frontend` — a Playwright UI
+  smoke test with a mocked API (needs the Chromium browser the update script installs).
+- **`scripts/` CLIs need a reachable worker + real credentials** (`../.env` values like
+  `R2_WORKER_URL`, `R2_PASSWORD`, `YNAB_*`, `VOLOPAY_URL`); they are not exercised by
+  local worker dev alone.
