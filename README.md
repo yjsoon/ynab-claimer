@@ -91,29 +91,17 @@ cp .env.example .env
 ```
 
 Required values:
-- `HOWMUCH_PAT` - Personal access token created in HowMuch
+- `HOWMUCH_PAT` - Personal access token created by a HowMuch owner/editor (viewer tokens cannot mark claims)
 - `HOWMUCH_PLAN_ID` - HowMuch plan ID (may be omitted when it is the same as `YNAB_BUDGET_ID`)
 - `YNAB_API_KEY` / `YNAB_BUDGET_ID` - Optional fallback backend credentials
 - `GEMINI_API_KEY` - Gemini API key for AI amount tagging
 - `R2_WORKER_URL` - Your deployed worker URL (e.g. `https://receipts.yourdomain.com`)
 - `R2_PASSWORD` - Same as AUTH_PASSWORD you set in worker secrets
 
-### 2. Deploy Upload App
+### 2. Configure Worker Secrets
 
-```bash
-cd upload-app
-npm install
-
-# Create R2 bucket (one-time)
-npx wrangler r2 bucket create receipts
-
-# Deploy
-npm run deploy
-```
-
-### 3. Configure Secrets
-
-Set the required Cloudflare Worker secrets:
+Set the Worker secrets before deploying so the default HowMuch backend is ready
+when the new version becomes active:
 
 ```bash
 cd upload-app
@@ -133,6 +121,19 @@ wrangler secret put YNAB_BUDGET_ID
 wrangler secret put GEMINI_API_KEY
 # Optional model override (defaults to gemini-3-flash-preview)
 wrangler secret put GEMINI_MODEL
+```
+
+### 3. Deploy Upload App
+
+```bash
+cd upload-app
+npm install
+
+# Create R2 bucket (one-time)
+npx wrangler r2 bucket create receipts
+
+# Deploy
+npm run deploy
 ```
 
 ### 4. Custom Domain (Optional)

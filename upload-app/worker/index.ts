@@ -199,6 +199,8 @@ interface LinkedClaimPayload {
 interface PushLineItem {
   receiptKey: string;
   ynabClaimId?: string | null;
+  claimSource?: 'transaction' | 'subtransaction' | null;
+  claimsBackend?: ClaimsBackend;
   date: string;
   description: string;
   accountCode: string;
@@ -247,6 +249,7 @@ interface ReceiptSummary {
   xeroPendingInvoiceId?: string;
   xeroPendingInvoiceNumber?: string;
   xeroPendingAt?: string;
+  xeroPendingClaimsBackend?: ClaimsBackend;
 }
 
 interface ReceiptListResult {
@@ -413,7 +416,15 @@ function sortYnabTodos(todos: YnabTodo[]): YnabTodo[] {
 }
 
 function parseClaimsBackend(value: string | null | undefined): ClaimsBackend {
-  return value?.toLowerCase() === 'ynab' ? 'ynab' : 'howmuch';
+  if (!value || value.toLowerCase() === 'howmuch') return 'howmuch';
+  if (value.toLowerCase() === 'ynab') return 'ynab';
+  throw new Error(`Unsupported claims backend: ${value}`);
+}
+
+// Requests from tabs opened before the backend selector shipped did not send
+// provenance and necessarily originated from the former YNAB-only UI.
+function parseMutationBackend(value: string | null | undefined): ClaimsBackend {
+  return value ? parseClaimsBackend(value) : 'ynab';
 }
 
 function claimsBackendConfig(env: Env, backend: ClaimsBackend): ClaimsBackendConfig {
@@ -465,31 +476,52 @@ async function fetchYnabTodos(
   backend: ClaimsBackend = 'howmuch'
 ): Promise<YnabTodo[]> {
   const config = claimsBackendConfig(env, backend);
-  const transactions: YnabTransaction[] = [];
-  let offset = 0;
+  let transactions: YnabTransaction[] = [];
+  let settled = false;
 
-  do {
-    const query = new URLSearchParams({ since_date: sinceDate });
-    if (backend === 'howmuch') {
-      query.set('limit', '250');
-      query.set('offset', String(offset));
-    }
-    const response = await fetch(
-      `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions?${query}`,
-      { headers: { Authorization: `Bearer ${config.token}` } }
-    );
-    if (!response.ok) {
-      throw new ClaimsBackendApiError(backend, response.status, await response.text());
-    }
+  for (let attempt = 0; attempt < 2 && !settled; attempt += 1) {
+    transactions = [];
+    let offset = 0;
+    let serverKnowledge: number | undefined;
+    let knowledgeChanged = false;
 
-    const body = (await response.json()) as {
-      data: { transactions: YnabTransaction[]; has_more?: boolean; next_offset?: number | null };
-    };
-    transactions.push(...body.data.transactions);
-    if (backend !== 'howmuch' || !body.data.has_more || body.data.next_offset == null) break;
-    if (body.data.next_offset <= offset) throw new Error('HowMuch returned an invalid transaction page cursor.');
-    offset = body.data.next_offset;
-  } while (true);
+    do {
+      const query = new URLSearchParams({ since_date: sinceDate });
+      if (backend === 'howmuch') {
+        query.set('limit', '250');
+        query.set('offset', String(offset));
+      }
+      const response = await fetch(
+        `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions?${query}`,
+        { headers: { Authorization: `Bearer ${config.token}` } }
+      );
+      if (!response.ok) {
+        throw new ClaimsBackendApiError(backend, response.status, await response.text());
+      }
+
+      const body = (await response.json()) as {
+        data: {
+          transactions: YnabTransaction[];
+          has_more?: boolean;
+          next_offset?: number | null;
+          server_knowledge?: number;
+        };
+      };
+      if (backend === 'howmuch' && serverKnowledge !== undefined && body.data.server_knowledge !== serverKnowledge) {
+        knowledgeChanged = true;
+        break;
+      }
+      serverKnowledge = body.data.server_knowledge;
+      transactions.push(...body.data.transactions);
+      if (backend !== 'howmuch' || !body.data.has_more || body.data.next_offset == null) break;
+      if (body.data.next_offset <= offset) throw new Error('HowMuch returned an invalid transaction page cursor.');
+      offset = body.data.next_offset;
+    } while (true);
+
+    settled = !knowledgeChanged;
+  }
+
+  if (!settled) throw new Error('HowMuch transactions changed repeatedly while loading; please retry.');
 
   const todos: YnabTodo[] = [];
 
@@ -566,6 +598,10 @@ async function listReceiptSummaries(
         xeroPendingInvoiceId: metadata.xeroPendingInvoiceId,
         xeroPendingInvoiceNumber: metadata.xeroPendingInvoiceNumber,
         xeroPendingAt: metadata.xeroPendingAt,
+        xeroPendingClaimsBackend:
+          metadata.xeroPendingClaimsBackend === 'ynab' ? 'ynab'
+            : metadata.xeroPendingClaimsBackend === 'howmuch' ? 'howmuch'
+              : undefined,
       };
     }
   );
@@ -1335,6 +1371,9 @@ function parsePushLineItems(raw: unknown): PushLineItem[] {
     .map((l) => ({
       receiptKey: l.receiptKey,
       ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
+      claimSource:
+        l.claimSource === 'transaction' || l.claimSource === 'subtransaction' ? l.claimSource : null,
+      claimsBackend: typeof l.claimsBackend === 'string' ? parseClaimsBackend(l.claimsBackend) : undefined,
       date: typeof l.date === 'string' ? l.date : '',
       description: l.description.trim(),
       accountCode: l.accountCode,
@@ -1597,9 +1636,12 @@ async function markYnabClaimed(
   env: Env,
   transactionId: string,
   claimedDate = singaporeToday(),
-  backend: ClaimsBackend = 'howmuch'
+  backend: ClaimsBackend = 'howmuch',
+  source: 'transaction' | 'subtransaction' | null = null
 ): Promise<YnabClaimResult> {
-  if (transactionId.includes('_st_')) return { status: 'skipped', detail: 'Subtransactions must be updated manually.' };
+  if (source === 'subtransaction' || transactionId.includes('_st_')) {
+    return { status: 'skipped', detail: 'Subtransactions must be updated manually.' };
+  }
   try {
     const config = claimsBackendConfig(env, backend);
     const base = `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions/${encodeURIComponent(transactionId)}`;
@@ -2213,7 +2255,6 @@ export default {
             lineItems?: PushLineItem[];
             backend?: string;
           };
-          const backend = parseClaimsBackend(body.backend);
           const invoiceID = typeof body.invoiceID === 'string' ? body.invoiceID : '';
           const lineItems = parsePushLineItems(body.lineItems);
           if (!invoiceID || lineItems.length === 0) {
@@ -2223,21 +2264,36 @@ export default {
             });
           }
 
-          const claimedDate = singaporeToday();
-          const claimIds = Array.from(
+          const claimBackends = Array.from(
             new Set(
               lineItems
-                .map((l) => l.ynabClaimId)
-                .filter((id): id is string => typeof id === 'string' && id.length > 0)
+                .filter((line) => line.ynabClaimId)
+                .map((line) => line.claimsBackend || parseMutationBackend(body.backend))
             )
           );
+          if (claimBackends.length > 1) {
+            return new Response(JSON.stringify({ error: 'Line items from different claims backends cannot be marked together.' }), {
+              status: 400,
+              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            });
+          }
+          const backend = claimBackends[0] || parseMutationBackend(body.backend);
+
+          const claimedDate = singaporeToday();
+          const claims = Array.from(
+            new Map(
+              lineItems
+                .filter((line): line is PushLineItem & { ynabClaimId: string } => Boolean(line.ynabClaimId))
+                .map((line) => [line.ynabClaimId, line])
+            ).values()
+          );
           const claimedYnab: Array<{ id: string; status: string; detail?: string }> = [];
-          for (const id of claimIds) {
-            const result = await markYnabClaimed(env, id, claimedDate, backend);
-            claimedYnab.push({ id, ...result });
+          for (const claim of claims) {
+            const result = await markYnabClaimed(env, claim.ynabClaimId, claimedDate, backend, claim.claimSource || null);
+            claimedYnab.push({ id: claim.ynabClaimId, ...result });
           }
 
-          const ynabIssues = claimedYnab.filter((item) => item.status !== 'claimed');
+          const ynabIssues = claimedYnab.filter((item) => item.status === 'failed');
           if (ynabIssues.length > 0) {
             return new Response(
               JSON.stringify({
@@ -2261,6 +2317,7 @@ export default {
                 xeroPendingInvoiceId: undefined,
                 xeroPendingInvoiceNumber: undefined,
                 xeroPendingAt: undefined,
+                xeroPendingClaimsBackend: undefined,
               });
               taggedReceipts.push({ key, status: 'tagged' });
             } catch (err) {
@@ -2290,7 +2347,9 @@ export default {
             reference?: string;
             lineItems?: PushLineItem[];
             receiptPdf?: unknown;
+            backend?: string;
           };
+          const backend = parseMutationBackend(body.backend);
           const lineItems = parsePushLineItems(body.lineItems).map((l) => ({
             ...l,
             taxType: taxTypeForBucket(body.bucket, l),
@@ -2372,6 +2431,7 @@ export default {
                 xeroPendingInvoiceId: bill.invoiceID,
                 xeroPendingInvoiceNumber: bill.invoiceNumber,
                 xeroPendingAt: pendingAt,
+                xeroPendingClaimsBackend: backend,
               });
             } catch (err) {
               pendingReceiptFailures.push(`${key}: ${cleanError(err)}`);

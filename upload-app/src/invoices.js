@@ -311,6 +311,7 @@ function rememberPushedInvoice(data, payload) {
     byLine[lineItemKey(item)] = {
       invoiceID: data.invoiceID,
       invoiceNumber: data.invoiceNumber || '',
+      claimsBackend: item.claimsBackend || payload.backend || '',
       bucket: payload.bucket || '',
       reference: payload.reference || '',
       savedAt,
@@ -325,6 +326,12 @@ function rememberedInvoiceIDForItem(item) {
   }
   const entry = loadPushHistory().byLine?.[lineItemKey(item)];
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
+}
+
+function rememberedClaimsBackendForItem(item) {
+  if (item?.claimsBackend === 'howmuch' || item?.claimsBackend === 'ynab') return item.claimsBackend;
+  const backend = loadPushHistory().byLine?.[lineItemKey(item)]?.claimsBackend;
+  return backend === 'ynab' ? 'ynab' : backend === 'howmuch' ? 'howmuch' : getClaimsBackend();
 }
 
 function lineReviewSnapshot(line) {
@@ -453,6 +460,9 @@ function buildInvoiceLines() {
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
+        claimSource: claim?.source || null,
+        claimsBackend: receipt.xeroPendingClaimsBackend
+          || (receipt.xeroPendingInvoiceId ? 'ynab' : getClaimsBackend()),
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
         xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
@@ -1187,12 +1197,16 @@ function lineTaxTypeForPush(line, bucket) {
 }
 
 function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
+  const backend = getClaimsBackend();
   return {
     bucket,
     reference,
+    backend,
     lineItems: lines.map((l) => ({
       receiptKey: l.receiptKey,
       ynabClaimId: l.ynabClaimId,
+      claimSource: l.claimSource || null,
+      claimsBackend: l.claimsBackend || backend,
       xeroPendingInvoiceId: l.xeroPendingInvoiceId || '',
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
@@ -1606,10 +1620,17 @@ function checkedClaimLineItems(bucket, payload) {
 }
 
 async function submitClaimed(invoiceID, lineItems) {
+  const backends = [...new Set(lineItems.filter((item) => item.ynabClaimId).map(rememberedClaimsBackendForItem))];
+  if (backends.length > 1) throw new Error('Cannot mark claims from different backends together.');
+  const backend = backends[0] || getClaimsBackend();
+  const attributedLineItems = lineItems.map((item) => ({
+    ...item,
+    claimsBackend: item.ynabClaimId ? rememberedClaimsBackendForItem(item) : undefined,
+  }));
   const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ invoiceID, lineItems, backend: getClaimsBackend() }),
+    body: JSON.stringify({ invoiceID, lineItems: attributedLineItems, backend }),
   });
   const result = await res.json().catch(() => ({}));
   if (!res.ok || result.error) {

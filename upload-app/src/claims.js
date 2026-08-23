@@ -89,6 +89,7 @@ let selectedClaimIds = new Set();
 let linkingSource = null; // 'receipt' | 'claim'
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let claimsRequestId = 0;
 const CLAIMS_BACKEND_KEY = 'claim_manager_backend';
 
 export function getClaimsBackend() {
@@ -1218,14 +1219,17 @@ dropzone.addEventListener('drop', (e) => {
 
 // Load TODO claims from the selected financial backend.
 export async function loadYnabTodos() {
+  const requestId = ++claimsRequestId;
+  const backend = getClaimsBackend();
   todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
 
   try {
-    const response = await fetch(`${API_BASE}/ynab/todos?backend=${encodeURIComponent(getClaimsBackend())}`, {
+    const response = await fetch(`${API_BASE}/ynab/todos?backend=${encodeURIComponent(backend)}`, {
       headers: authHeaders(),
     });
 
     const data = await response.json().catch(() => null);
+    if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
 
     if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
       clearAuthToken();
@@ -1243,6 +1247,10 @@ export async function loadYnabTodos() {
       return;
     }
 
+    if (data.backend !== backend) {
+      throw new Error(`Claims backend mismatch: requested ${backend}, received ${data.backend || 'unknown'}`);
+    }
+
     setClaimsLoadErrorMessage('');
     setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)));
     renderOutstandingClaims();
@@ -1250,6 +1258,7 @@ export async function loadYnabTodos() {
     updateUploadZoneCompact();
     scheduleMatchSuggestionRefresh();
   } catch (err) {
+    if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
     console.error('Failed to load claims:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
   }

@@ -176,6 +176,12 @@ h2 {
   margin-bottom: 14px;
 }
 
+.app-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .btn-theme-toggle {
   flex-shrink: 0;
   background: transparent;
@@ -691,13 +697,6 @@ h2 {
 /* YNAB TODO list */
 .todo-list {
   list-style: none;
-}
-
-.claims-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
 }
 
 .backend-picker {
@@ -2303,6 +2302,10 @@ body.selecting .claims-view {
   background: #0f172a;
   color: #e2e8f0;
   border-color: #334155;
+}
+
+:root[data-theme="dark"] .backend-picker {
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] .claim-filter-input:focus {

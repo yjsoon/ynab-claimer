@@ -48,13 +48,22 @@
     <header class="app-header">
       <div class="app-header-row">
         <h1>Receipt Upload</h1>
-        <button
-          id="themeToggle"
-          class="btn-theme-toggle"
-          type="button"
-          aria-label="Colour theme: system. Click to change."
-          title="System theme"
-        ></button>
+        <div class="app-header-controls">
+          <label class="backend-picker">
+            Backend
+            <select id="claimsBackend" aria-label="Claims backend">
+              <option value="howmuch">HowMuch</option>
+              <option value="ynab">YNAB</option>
+            </select>
+          </label>
+          <button
+            id="themeToggle"
+            class="btn-theme-toggle"
+            type="button"
+            aria-label="Colour theme: system. Click to change."
+            title="System theme"
+          ></button>
+        </div>
       </div>
       <nav class="app-nav" aria-label="App mode">
         <a href="/" class="app-nav-link" id="navClaims" data-mode="claims">Claims</a>
@@ -108,16 +117,7 @@
     <!-- Two-column layout for linking -->
     <div class="linking-container">
       <div class="list-column active" id="claimsColumn">
-        <div class="claims-heading">
-          <h2>Outstanding Claims <span id="todoCount">(0)</span></h2>
-          <label class="backend-picker">
-            Backend
-            <select id="claimsBackend" aria-label="Claims backend">
-              <option value="howmuch">HowMuch</option>
-              <option value="ynab">YNAB</option>
-            </select>
-          </label>
-        </div>
+        <h2>Outstanding Claims <span id="todoCount">(0)</span></h2>
         <div class="claim-filter">
           <input
             type="search"

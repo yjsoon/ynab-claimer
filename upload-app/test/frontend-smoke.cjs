@@ -38,6 +38,7 @@ const receiptsPageOne = [
     taggedGstShown: false,
     xeroPendingInvoiceId: 'pending-bill-1',
     xeroPendingInvoiceNumber: 'DRAFT-1',
+    xeroPendingClaimsBackend: 'howmuch',
   },
 ];
 
@@ -140,8 +141,15 @@ async function main() {
       }
 
       if (url.pathname === '/ynab/todos') {
-        todoBackends.push(url.searchParams.get('backend'));
-        return route.fulfill({ json: { todos, backend: url.searchParams.get('backend') } });
+        const backend = url.searchParams.get('backend');
+        todoBackends.push(backend);
+        if (mockState.delayedBackend === backend) {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        const responseTodos = mockState.labelByBackend
+          ? todos.map((todo) => ({ ...todo, description: `${backend}: ${todo.description}` }))
+          : todos;
+        return route.fulfill({ json: { todos: responseTodos, backend } });
       }
       if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'PATCH') {
         const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/link'.length));
@@ -205,17 +213,27 @@ async function main() {
       quickFilters: ['Transfer'],
     }));
   });
-  await setupMockApi(page);
+  const primaryMockState = {};
+  await setupMockApi(page, primaryMockState);
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
   if (await page.locator('#claimsBackend').inputValue() !== 'howmuch') {
     throw new Error('HowMuch should be the default claims backend');
   }
   if (todoBackends[0] !== 'howmuch') throw new Error(`expected HowMuch request, got ${todoBackends[0]}`);
+  primaryMockState.delayedBackend = 'ynab';
+  primaryMockState.labelByBackend = true;
   await page.locator('#claimsBackend').selectOption('ynab');
-  await page.waitForFunction(() => document.querySelector('#claimsBackend')?.value === 'ynab');
   await page.locator('#claimsBackend').selectOption('howmuch');
-  await page.waitForFunction(() => document.querySelector('#claimsBackend')?.value === 'howmuch');
+  await page.waitForTimeout(250);
+  const visibleBackendClaim = await page.locator('#todoList .todo-item[data-claim-id="claim-2"] .todo-payee').textContent();
+  if (visibleBackendClaim !== 'howmuch: Software') {
+    throw new Error(`stale backend response replaced current claims: ${visibleBackendClaim}`);
+  }
+  primaryMockState.delayedBackend = null;
+  primaryMockState.labelByBackend = false;
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.locator('#claimsBackend').selectOption('howmuch');
   if (!todoBackends.includes('ynab')) throw new Error('backend selector did not request YNAB');
   await page.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
   const matchCountText = await page.locator('#matchReviewCount').textContent();
@@ -316,6 +334,9 @@ async function main() {
   }
   if (markClaimRequests[0].backend !== 'howmuch') {
     throw new Error(`mark claimed should use HowMuch, got ${markClaimRequests[0].backend}`);
+  }
+  if (markClaimRequests[0].lineItems[0].claimsBackend !== 'howmuch') {
+    throw new Error(`mark claimed line should retain HowMuch provenance, got ${markClaimRequests[0].lineItems[0].claimsBackend}`);
   }
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');

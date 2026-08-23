@@ -6,6 +6,10 @@ on:
     paths:
       - 'upload-app/**'
       - '.github/workflows/deploy.yml'
+  pull_request:
+    paths:
+      - 'upload-app/**'
+      - '.github/workflows/deploy.yml'
 
 jobs:
   deploy:
@@ -22,7 +26,29 @@ jobs:
         working-directory: upload-app
         run: npm ci
 
+      - name: Install browser for frontend smoke test
+        working-directory: upload-app
+        run: npx playwright install --with-deps chromium
+
+      - name: Typecheck
+        working-directory: upload-app
+        run: npx tsc --noEmit
+
+      - name: Frontend smoke test
+        working-directory: upload-app
+        run: npm run smoke:frontend
+
+      - name: Verify HowMuch secret exists
+        if: github.event_name == 'push'
+        working-directory: upload-app
+        run: |
+          npx wrangler secret list --format json \
+            | jq -e '([.[].name] | index("HOWMUCH_PAT") != null) and (([.[].name] | index("HOWMUCH_PLAN_ID") != null) or ([.[].name] | index("YNAB_BUDGET_ID") != null))'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
       - name: Deploy to Cloudflare Workers
+        if: github.event_name == 'push'
         working-directory: upload-app
         run: npx wrangler deploy
         env:
