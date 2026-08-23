@@ -693,6 +693,31 @@ h2 {
   list-style: none;
 }
 
+.claims-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.backend-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #6b7280;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.backend-picker select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2937;
+  padding: 5px 8px;
+  font: inherit;
+}
+
 .claim-filter {
   display: grid;
   grid-template-columns: minmax(180px, 1fr) auto;
@@ -2273,7 +2298,8 @@ body.selecting .claims-view {
   border-color: #334155;
 }
 
-:root[data-theme="dark"] .claim-filter-input {
+:root[data-theme="dark"] .claim-filter-input,
+:root[data-theme="dark"] .backend-picker select {
   background: #0f172a;
   color: #e2e8f0;
   border-color: #334155;

@@ -57,6 +57,7 @@ const acceptAllClearBtn = document.getElementById('acceptAllClearBtn');
 const clearDismissedMatchesBtn = document.getElementById('clearDismissedMatchesBtn');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
+const claimsBackendSelect = document.getElementById('claimsBackend');
 const claimFilterInput = document.getElementById('claimFilterInput');
 const claimFilterPills = document.getElementById('claimFilterPills');
 const claimFilterClear = document.getElementById('claimFilterClear');
@@ -88,6 +89,20 @@ let selectedClaimIds = new Set();
 let linkingSource = null; // 'receipt' | 'claim'
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+const CLAIMS_BACKEND_KEY = 'claim_manager_backend';
+
+export function getClaimsBackend() {
+  return claimsBackendSelect?.value === 'ynab' ? 'ynab' : 'howmuch';
+}
+
+if (claimsBackendSelect) {
+  claimsBackendSelect.value = localStorage.getItem(CLAIMS_BACKEND_KEY) === 'ynab' ? 'ynab' : 'howmuch';
+  claimsBackendSelect.addEventListener('change', async () => {
+    localStorage.setItem(CLAIMS_BACKEND_KEY, getClaimsBackend());
+    clearSelection();
+    await loadYnabTodos();
+  });
+}
 let matchSuggestions = [];
 let matchSuggestionRefreshTimer = null;
 let matchAcceptInFlight = false;
@@ -590,7 +605,7 @@ function renderLinkedPairs() {
       const claimSub = claim
         ? (claim.payee || (claim.accountName || 'Unknown account'))
         : isReadyOnly
-          ? 'No YNAB claim linked'
+          ? 'No claim linked'
           : 'Claim details unavailable';
       const claimDate = claim
         ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
@@ -1201,12 +1216,12 @@ dropzone.addEventListener('drop', (e) => {
   uploadFiles(e.dataTransfer.files);
 });
 
-// Load YNAB TODOs
+// Load TODO claims from the selected financial backend.
 export async function loadYnabTodos() {
   todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
 
   try {
-    const response = await fetch(`${API_BASE}/ynab/todos`, {
+    const response = await fetch(`${API_BASE}/ynab/todos?backend=${encodeURIComponent(getClaimsBackend())}`, {
       headers: authHeaders(),
     });
 
@@ -1235,7 +1250,7 @@ export async function loadYnabTodos() {
     updateUploadZoneCompact();
     scheduleMatchSuggestionRefresh();
   } catch (err) {
-    console.error('Failed to load YNAB todos:', err);
+    console.error('Failed to load claims:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
   }
 }

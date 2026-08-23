@@ -108,7 +108,16 @@
     <!-- Two-column layout for linking -->
     <div class="linking-container">
       <div class="list-column active" id="claimsColumn">
-        <h2>Outstanding Claims <span id="todoCount">(0)</span></h2>
+        <div class="claims-heading">
+          <h2>Outstanding Claims <span id="todoCount">(0)</span></h2>
+          <label class="backend-picker">
+            Backend
+            <select id="claimsBackend" aria-label="Claims backend">
+              <option value="howmuch">HowMuch</option>
+              <option value="ynab">YNAB</option>
+            </select>
+          </label>
+        </div>
         <div class="claim-filter">
           <input
             type="search"
@@ -176,7 +185,7 @@
 
       <div id="invoicesSections" class="invoices-sections"></div>
       <p id="invoicesEmpty" class="empty-state" hidden>
-        No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.
+        No ready-to-claim items. Mark receipts ready or link them to claims first.
       </p>
     </div>
   </div>

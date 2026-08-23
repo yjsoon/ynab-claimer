@@ -1,18 +1,18 @@
 # Claim Manager
 
-Expense claim management system with YNAB integration and Cloudflare R2 storage.
+Expense claim management system with HowMuch/YNAB integration and Cloudflare R2 storage.
 
 ## Features
 
 - **Receipt Upload**: Drag-and-drop web interface for uploading receipts
-- **Receipt-Claim Linking**: Pre-link receipts to YNAB transactions in the web UI for faster processing, including claim-first multi-select linking
+- **Receipt-Claim Linking**: Pre-link receipts to financial transactions in the web UI for faster processing, including claim-first multi-select linking
 - **AI Amount + Date Tagging**: Gemini auto-tags receipt totals and receipt dates for pending receipts
 - **AI Vendor + Purpose Label**: Gemini adds best-effort vendor and short purpose labels for faster scanning
 - **USD Matching Assist**: For USD receipts, the app shows approximate SGD values at day rate and day rate + 3.25%
 - **Smart Match Highlighting**: During linking, the UI highlights exact and near matches by amount and date
-- **YNAB Integration**: View pending claims (transactions marked with `TODO:`) directly in the web app
+- **Switchable Financial Backend**: View pending claims from HowMuch by default, with YNAB available from the Backend selector
 - **Volopay Automation**: Playwright script auto-fills Volopay claim forms
-- **Xero Claim Bills**: The Invoices tab generates monthly DRAFT bills (GST / non-GST / transport) from ready-to-claim items, attaches the receipts, and marks the linked YNAB claims CLAIMED
+- **Xero Claim Bills**: The Invoices tab generates monthly DRAFT bills (GST / non-GST / transport) from ready-to-claim items, attaches the receipts, and marks linked claims CLAIMED in the selected backend
 - **Password Protection**: Simple auth gate for the web app and API
 - **iOS Shortcut**: Upload receipts directly from the Share Sheet
 - **Claude Code Skill**: Interactive claim processing via `/claims` command
@@ -21,26 +21,26 @@ Expense claim management system with YNAB integration and Cloudflare R2 storage.
 
 ### 1. Receipt Upload App (`upload-app/`)
 
-Web app for uploading receipts and viewing pending YNAB claims.
+Web app for uploading receipts and viewing pending HowMuch or YNAB claims.
 
 **Stack**: Cloudflare Workers + R2
 
 **Endpoints**:
 - `POST /upload` - Upload receipt file
 - `GET /list` - List pending receipts (includes link metadata)
-- `GET /ynab/todos` - Fetch pending claims from YNAB
+- `GET /ynab/todos?backend=howmuch|ynab` - Fetch pending claims (HowMuch is the default)
 - `GET /receipt/:key` - Download receipt
 - `DELETE /receipt/:key` - Delete receipt
-- `PATCH /receipt/:key/link` - Link receipt to a YNAB transaction
+- `PATCH /receipt/:key/link` - Link receipt to a transaction
 - `PATCH /receipt/:key/receipt-date` - Set/clear manual receipt date override (`YYYY-MM-DD`)
 - `POST /receipt/:key/tag-amount` - Run Gemini amount tagging for one receipt
 - `POST /amount-tags/pending?limit=3` - Tag a batch of pending receipts
-- `GET /agent/unclaimed-expenditures` - Agent report of YNAB TODO claims that do not have linked receipts yet
+- `GET /agent/unclaimed-expenditures?backend=howmuch|ynab` - Agent report of TODO claims without linked receipts (HowMuch is the default)
 - `POST /xero/connect` · `GET /xero/callback` · `GET /xero/status` · `POST /xero/disconnect` · `GET /xero/meta` · `POST /xero/invoices/push` - Xero integration for the Invoices tab (see below)
 
 `GET /agent/unclaimed-expenditures` accepts an optional `since_date=YYYY-MM-DD` query param and returns:
 - `summary` - counts for TODO claims, missing receipt claims, linked claims, and unlinked receipts
-- `missingReceiptClaims` - YNAB TODO expenditures with no linked uploaded receipt, including Gmail search hints
+- `missingReceiptClaims` - TODO expenditures with no linked uploaded receipt, including Gmail search hints
 - `linkedClaims` - TODO claims that already have linked receipt metadata
 - `unlinkedReceipts` - uploaded receipts that are not linked to any claim
 
@@ -91,8 +91,9 @@ cp .env.example .env
 ```
 
 Required values:
-- `YNAB_API_KEY` - Get from https://app.ynab.com/settings/developer
-- `YNAB_BUDGET_ID` - From URL when viewing budget: `app.ynab.com/{budget_id}/...`
+- `HOWMUCH_PAT` - Personal access token created in HowMuch
+- `HOWMUCH_PLAN_ID` - HowMuch plan ID (may be omitted when it is the same as `YNAB_BUDGET_ID`)
+- `YNAB_API_KEY` / `YNAB_BUDGET_ID` - Optional fallback backend credentials
 - `GEMINI_API_KEY` - Gemini API key for AI amount tagging
 - `R2_WORKER_URL` - Your deployed worker URL (e.g. `https://receipts.yourdomain.com`)
 - `R2_PASSWORD` - Same as AUTH_PASSWORD you set in worker secrets
@@ -120,7 +121,11 @@ cd upload-app
 # Set your chosen password for the web app
 wrangler secret put AUTH_PASSWORD
 
-# Set YNAB credentials (copy from .env)
+# Set HowMuch credentials (the default claims backend)
+wrangler secret put HOWMUCH_PAT
+wrangler secret put HOWMUCH_PLAN_ID
+
+# Optional YNAB fallback credentials
 wrangler secret put YNAB_API_KEY
 wrangler secret put YNAB_BUDGET_ID
 
@@ -146,10 +151,10 @@ Then add a DNS record in Cloudflare: `AAAA` record, name: `receipts`, content: `
 
 1. **Visit the web app**: Enter your password to authenticate
 2. **Upload receipts**: Drag and drop or tap to upload
-3. **View pending claims**: YNAB transactions with `TODO:` memos appear automatically
+3. **View pending claims**: HowMuch transactions with `TODO:` memos appear automatically; use the Backend selector to switch to YNAB
 4. **Process claims**: Run `/claims` in Claude Code to match receipts to transactions
 
-Receipts can also be marked ready without a visible YNAB TODO claim. Click the receipt link button, then choose **Mark ready** without selecting a claim. These receipts move under **Ready to Claim** alongside ordinary linked claim-receipt pairs.
+Receipts can also be marked ready without a visible TODO claim. Click the receipt link button, then choose **Mark ready** without selecting a claim. These receipts move under **Ready to Claim** alongside ordinary linked claim-receipt pairs.
 
 ### 6. Xero Invoices (Optional)
 

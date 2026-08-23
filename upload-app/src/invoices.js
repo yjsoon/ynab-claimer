@@ -16,7 +16,7 @@ import {
   getComparableReceiptAmounts,
 } from './lib/match.js';
 import { openPreview } from './lib/preview.js';
-import { clearSelection, loadReceipts, loadYnabTodos } from './claims.js';
+import { clearSelection, getClaimsBackend, loadReceipts, loadYnabTodos } from './claims.js';
 
 const claimsView = document.getElementById('claimsView');
 const navClaims = document.getElementById('navClaims');
@@ -88,7 +88,7 @@ const ACCOUNT_HINTS = [
   { code: '467', re: /\b(phone|mobile|telco|singtel|starhub|\bm1\b|internet|broadband|data plan|\bsim\b)\b/i },
   { code: '463', re: /\b(subscription|software|saas|\bapp\b|\bai\b|\bapi\b|github|openai|chatgpt|claude|anthropic|lovable|figma|notion|adobe|cloud|domain|hosting)\b/i },
 ];
-const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.';
+const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to claims first.';
 const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
 function invoiceAccounts() {
@@ -1609,7 +1609,7 @@ async function submitClaimed(invoiceID, lineItems) {
   const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ invoiceID, lineItems }),
+    body: JSON.stringify({ invoiceID, lineItems, backend: getClaimsBackend() }),
   });
   const result = await res.json().catch(() => ({}));
   if (!res.ok || result.error) {
@@ -1665,9 +1665,9 @@ async function markLineItemGroupsClaimed(groups, bucket) {
   }
   if (failedYnab || failedReceipts) {
     const detail = failureDetails.length ? ` ${failureDetails.slice(0, 2).join(' ')}` : '';
-    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} YNAB failure(s), ${skippedYnab} skipped.${detail}`);
+    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} backend failure(s), ${skippedYnab} skipped.${detail}`);
   } else {
-    showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} YNAB subtransaction(s) skipped)` : ''}.`);
+    showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} subtransaction(s) skipped)` : ''}.`);
   }
 }
 
@@ -1793,7 +1793,7 @@ function invoicePushSummary(bucket, lines) {
   return [
     `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
     `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
-    'YNAB TODO memos change only when you click Mark checked as claimed.',
+    'TODO memos change in the selected backend only when you click Mark checked as claimed.',
   ].join('\n');
 }
 

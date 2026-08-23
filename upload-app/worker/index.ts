@@ -88,6 +88,9 @@ interface Env {
   AUTH_PASSWORD: string;
   YNAB_API_KEY: string;
   YNAB_BUDGET_ID: string;
+  HOWMUCH_PAT?: string;
+  HOWMUCH_PLAN_ID?: string;
+  HOWMUCH_API_URL?: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   // Receipt vision tagging (amount extraction + GST detection): MiniMax
@@ -137,6 +140,14 @@ interface YnabTodo {
   categoryName?: string;
   source: 'transaction' | 'subtransaction';
   parentTransactionId?: string;
+}
+
+type ClaimsBackend = 'howmuch' | 'ynab';
+
+interface ClaimsBackendConfig {
+  apiUrl: string;
+  token: string;
+  planId: string;
 }
 
 interface GeminiAmountResult {
@@ -244,12 +255,12 @@ interface ReceiptListResult {
   hasMore: boolean;
 }
 
-class YnabApiError extends Error {
+class ClaimsBackendApiError extends Error {
   status: number;
   details: string;
 
-  constructor(status: number, details: string) {
-    super('YNAB API error');
+  constructor(backend: ClaimsBackend, status: number, details: string) {
+    super(`${backend === 'howmuch' ? 'HowMuch' : 'YNAB'} API error`);
     this.status = status;
     this.details = details;
   }
@@ -401,6 +412,31 @@ function sortYnabTodos(todos: YnabTodo[]): YnabTodo[] {
   return todos.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
+function parseClaimsBackend(value: string | null | undefined): ClaimsBackend {
+  return value?.toLowerCase() === 'ynab' ? 'ynab' : 'howmuch';
+}
+
+function claimsBackendConfig(env: Env, backend: ClaimsBackend): ClaimsBackendConfig {
+  if (backend === 'ynab') {
+    if (!env.YNAB_API_KEY || !env.YNAB_BUDGET_ID) throw new Error('YNAB backend is not configured.');
+    return {
+      apiUrl: 'https://api.ynab.com/v1',
+      token: env.YNAB_API_KEY,
+      planId: env.YNAB_BUDGET_ID,
+    };
+  }
+
+  const planId = env.HOWMUCH_PLAN_ID || env.YNAB_BUDGET_ID;
+  if (!env.HOWMUCH_PAT || !planId) {
+    throw new Error('HowMuch backend is not configured (HOWMUCH_PAT and a plan ID are required).');
+  }
+  return {
+    apiUrl: (env.HOWMUCH_API_URL || 'https://howmuch.soon.sg/v1').replace(/\/+$/, ''),
+    token: env.HOWMUCH_PAT,
+    planId,
+  };
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -423,25 +459,41 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchYnabTodos(env: Env, sinceDate = getDefaultYnabSinceDate()): Promise<YnabTodo[]> {
-  const ynabResponse = await fetch(
-    `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions?since_date=${encodeURIComponent(sinceDate)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${env.YNAB_API_KEY}`,
-      },
+async function fetchYnabTodos(
+  env: Env,
+  sinceDate = getDefaultYnabSinceDate(),
+  backend: ClaimsBackend = 'howmuch'
+): Promise<YnabTodo[]> {
+  const config = claimsBackendConfig(env, backend);
+  const transactions: YnabTransaction[] = [];
+  let offset = 0;
+
+  do {
+    const query = new URLSearchParams({ since_date: sinceDate });
+    if (backend === 'howmuch') {
+      query.set('limit', '250');
+      query.set('offset', String(offset));
     }
-  );
+    const response = await fetch(
+      `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions?${query}`,
+      { headers: { Authorization: `Bearer ${config.token}` } }
+    );
+    if (!response.ok) {
+      throw new ClaimsBackendApiError(backend, response.status, await response.text());
+    }
 
-  if (!ynabResponse.ok) {
-    const errorText = await ynabResponse.text();
-    throw new YnabApiError(ynabResponse.status, errorText);
-  }
+    const body = (await response.json()) as {
+      data: { transactions: YnabTransaction[]; has_more?: boolean; next_offset?: number | null };
+    };
+    transactions.push(...body.data.transactions);
+    if (backend !== 'howmuch' || !body.data.has_more || body.data.next_offset == null) break;
+    if (body.data.next_offset <= offset) throw new Error('HowMuch returned an invalid transaction page cursor.');
+    offset = body.data.next_offset;
+  } while (true);
 
-  const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
   const todos: YnabTodo[] = [];
 
-  data.data.transactions.forEach((transaction) => {
+  transactions.forEach((transaction) => {
     const subtransactionTodos: YnabTodo[] = [];
     (transaction.subtransactions || []).forEach((subtransaction) => {
       const subtransactionTodo = toYnabTodoFromSubtransaction(transaction, subtransaction);
@@ -1540,12 +1592,19 @@ async function readYnabError(response: Response): Promise<string> {
   return text.replace(/\s+/g, ' ').slice(0, 180);
 }
 
-// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
-async function markYnabClaimed(env: Env, transactionId: string, claimedDate = singaporeToday()): Promise<YnabClaimResult> {
-  if (transactionId.includes('_st_')) return { status: 'skipped', detail: 'Subtransactions must be updated manually in YNAB.' };
+// Flip a transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
+async function markYnabClaimed(
+  env: Env,
+  transactionId: string,
+  claimedDate = singaporeToday(),
+  backend: ClaimsBackend = 'howmuch'
+): Promise<YnabClaimResult> {
+  if (transactionId.includes('_st_')) return { status: 'skipped', detail: 'Subtransactions must be updated manually.' };
   try {
-    const base = `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
-    const getRes = await fetch(base, { headers: { Authorization: `Bearer ${env.YNAB_API_KEY}` } });
+    const config = claimsBackendConfig(env, backend);
+    const base = `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions/${encodeURIComponent(transactionId)}`;
+    const authHeaders = { Authorization: `Bearer ${config.token}` };
+    const getRes = await fetch(base, { headers: authHeaders });
     if (!getRes.ok) return { status: 'failed', detail: await readYnabError(getRes) };
     const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
     const memo = getData.data?.transaction?.memo || '';
@@ -1555,7 +1614,7 @@ async function markYnabClaimed(env: Env, transactionId: string, claimedDate = si
       : `CLAIMED - ${claimedDate}: ${memo}`.trim();
     const putRes = await fetch(base, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ transaction: { memo: newMemo } }),
     });
     return putRes.ok ? { status: 'claimed' } : { status: 'failed', detail: await readYnabError(putRes) };
@@ -1920,24 +1979,25 @@ export default {
         });
       }
 
-      // GET /ynab/todos - Fetch pending claims from YNAB
+      // GET /ynab/todos - Fetch pending claims from HowMuch (default) or YNAB.
       if (path === '/ynab/todos' && request.method === 'GET') {
         try {
           const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
-          const todos = await fetchYnabTodos(env, sinceDate);
+          const backend = parseClaimsBackend(url.searchParams.get('backend'));
+          const todos = await fetchYnabTodos(env, sinceDate, backend);
 
-          return new Response(JSON.stringify({ todos }), {
+          return new Response(JSON.stringify({ todos, backend }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } catch (error) {
-          if (error instanceof YnabApiError) {
-            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+          if (error instanceof ClaimsBackendApiError) {
+            return new Response(JSON.stringify({ error: error.message, details: error.details }), {
               status: error.status,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
 
-          const message = error instanceof Error ? error.message : 'Failed to fetch YNAB data';
+          const message = error instanceof Error ? error.message : 'Failed to fetch claims data';
           return new Response(JSON.stringify({ error: message }), {
             status: 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
@@ -1949,8 +2009,9 @@ export default {
       if (path === '/agent/unclaimed-expenditures' && request.method === 'GET') {
         try {
           const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
+          const backend = parseClaimsBackend(url.searchParams.get('backend'));
           const [todos, receiptResult] = await Promise.all([
-            fetchYnabTodos(env, sinceDate),
+            fetchYnabTodos(env, sinceDate, backend),
             listAllReceiptSummaries(env),
           ]);
 
@@ -1981,6 +2042,7 @@ export default {
             JSON.stringify({
               generatedAt: new Date().toISOString(),
               sinceDate,
+              backend,
               summary: {
                 todoClaimCount: todos.length,
                 missingReceiptClaimCount: missingReceiptClaims.length,
@@ -1997,8 +2059,8 @@ export default {
             }
           );
         } catch (error) {
-          if (error instanceof YnabApiError) {
-            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+          if (error instanceof ClaimsBackendApiError) {
+            return new Response(JSON.stringify({ error: error.message, details: error.details }), {
               status: error.status,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
@@ -2143,13 +2205,15 @@ export default {
       }
 
       // POST /xero/invoices/mark-claimed - after the draft bill and receipts
-      // have been reviewed, tag receipts as invoiced and flip linked YNAB TODOs.
+      // have been reviewed, tag receipts as invoiced and flip linked claim TODOs.
       if (path === '/xero/invoices/mark-claimed' && request.method === 'POST') {
         try {
           const body = (await request.json()) as {
             invoiceID?: string;
             lineItems?: PushLineItem[];
+            backend?: string;
           };
+          const backend = parseClaimsBackend(body.backend);
           const invoiceID = typeof body.invoiceID === 'string' ? body.invoiceID : '';
           const lineItems = parsePushLineItems(body.lineItems);
           if (!invoiceID || lineItems.length === 0) {
@@ -2169,7 +2233,7 @@ export default {
           );
           const claimedYnab: Array<{ id: string; status: string; detail?: string }> = [];
           for (const id of claimIds) {
-            const result = await markYnabClaimed(env, id, claimedDate);
+            const result = await markYnabClaimed(env, id, claimedDate, backend);
             claimedYnab.push({ id, ...result });
           }
 
@@ -2177,7 +2241,7 @@ export default {
           if (ynabIssues.length > 0) {
             return new Response(
               JSON.stringify({
-                error: 'YNAB update failed; receipts were not marked invoiced.',
+                error: `${backend === 'howmuch' ? 'HowMuch' : 'YNAB'} update failed; receipts were not marked invoiced.`,
                 claimedDate,
                 taggedReceipts: [],
                 claimedYnab,
@@ -2205,7 +2269,7 @@ export default {
           }
 
           return new Response(
-            JSON.stringify({ success: true, claimedDate, taggedReceipts, claimedYnab }),
+            JSON.stringify({ success: true, backend, claimedDate, taggedReceipts, claimedYnab }),
             { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         } catch (err) {

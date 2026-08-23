@@ -117,6 +117,7 @@ async function main() {
   let uploadCount = 0;
   const markClaimRequests = [];
   const linkRequests = [];
+  const todoBackends = [];
 
   async function setupMockApi(page, mockState = {}) {
     await page.route('**/*', async (route) => {
@@ -138,7 +139,10 @@ async function main() {
         return route.fulfill({ json: { success: true, key: 'blob.png' } });
       }
 
-      if (url.pathname === '/ynab/todos') return route.fulfill({ json: { todos } });
+      if (url.pathname === '/ynab/todos') {
+        todoBackends.push(url.searchParams.get('backend'));
+        return route.fulfill({ json: { todos, backend: url.searchParams.get('backend') } });
+      }
       if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'PATCH') {
         const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/link'.length));
         const body = JSON.parse(route.request().postData() || '{}');
@@ -204,6 +208,15 @@ async function main() {
   await setupMockApi(page);
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
+  if (await page.locator('#claimsBackend').inputValue() !== 'howmuch') {
+    throw new Error('HowMuch should be the default claims backend');
+  }
+  if (todoBackends[0] !== 'howmuch') throw new Error(`expected HowMuch request, got ${todoBackends[0]}`);
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.waitForFunction(() => document.querySelector('#claimsBackend')?.value === 'ynab');
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.waitForFunction(() => document.querySelector('#claimsBackend')?.value === 'howmuch');
+  if (!todoBackends.includes('ynab')) throw new Error('backend selector did not request YNAB');
   await page.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
   const matchCountText = await page.locator('#matchReviewCount').textContent();
   if (matchCountText !== '(1)') throw new Error(`expected one match suggestion, got ${matchCountText}`);
@@ -300,6 +313,9 @@ async function main() {
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
   if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
     throw new Error(`mark claimed should use pending receipt invoice id, got ${markClaimRequests[0].invoiceID}`);
+  }
+  if (markClaimRequests[0].backend !== 'howmuch') {
+    throw new Error(`mark claimed should use HowMuch, got ${markClaimRequests[0].backend}`);
   }
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
