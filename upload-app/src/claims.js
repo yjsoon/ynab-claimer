@@ -21,6 +21,7 @@ import {
 import {
   receiptsData,
   claimsData,
+  claimsDataBackend,
   claimsLoadErrorMessage,
   setReceiptsData,
   setClaimsData,
@@ -569,6 +570,7 @@ function renderLinkedPairs() {
 
   receiptsData.forEach((receipt) => {
     getActiveReadyClaimIds(receipt).forEach((claimId, index) => {
+      if (!isReadyOnlyClaimId(claimId) && receiptClaimsBackend(receipt) !== claimsDataBackend) return;
       linkedPairs.push({
         receipt,
         claimId,
@@ -1252,7 +1254,7 @@ export async function loadYnabTodos() {
     }
 
     setClaimsLoadErrorMessage('');
-    setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)), backend);
     renderOutstandingClaims();
     renderLinkedPairs();
     updateUploadZoneCompact();
@@ -1267,6 +1269,7 @@ export async function loadYnabTodos() {
 function getOutstandingClaims() {
   const linkedReceiptsByClaimId = new Map();
   receiptsData.forEach((receipt) => {
+    if (receiptClaimsBackend(receipt) !== claimsDataBackend) return;
     const linkedClaimIds = getLinkedClaimIds(receipt);
     linkedClaimIds.forEach((linkedClaimId) => {
       const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
@@ -1276,6 +1279,13 @@ function getOutstandingClaims() {
   });
 
   return claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
+}
+
+function receiptClaimsBackend(receipt) {
+  if (receipt?.linkedClaimsBackend === 'howmuch' || receipt?.linkedClaimsBackend === 'ynab') {
+    return receipt.linkedClaimsBackend;
+  }
+  return getLinkedClaimIds(receipt).some((id) => !isReadyOnlyClaimId(id)) ? 'ynab' : null;
 }
 
 function renderOutstandingClaims() {
@@ -1619,6 +1629,7 @@ async function patchReceiptLinks(receiptKey, claims) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        backend: getClaimsBackend(),
         linkedClaims: claims.map((claim) => ({
           id: claim.id,
           description: claim.description,

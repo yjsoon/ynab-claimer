@@ -269,7 +269,12 @@ async function fetchJson<T>(url: string, password: string, init?: RequestInit): 
   return await response.json() as T;
 }
 
-async function linkCandidate(baseUrl: string, password: string, candidate: Candidate): Promise<void> {
+async function linkCandidate(
+  baseUrl: string,
+  password: string,
+  backend: 'howmuch' | 'ynab',
+  candidate: Candidate
+): Promise<void> {
   await fetchJson<{ success: boolean }>(
     `${baseUrl}/receipt/${encodeURIComponent(candidate.receipt.key)}/link`,
     password,
@@ -277,6 +282,7 @@ async function linkCandidate(baseUrl: string, password: string, candidate: Candi
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        backend,
         linkedClaims: [{
           id: candidate.claim.id,
           description: candidate.claim.description,
@@ -334,7 +340,7 @@ async function main() {
   }
 
   for (const candidate of clear) {
-    await linkCandidate(baseUrl, password, candidate);
+    await linkCandidate(baseUrl, password, args.backend, candidate);
     console.log(`Linked: ${describe(candidate)}`);
   }
 }

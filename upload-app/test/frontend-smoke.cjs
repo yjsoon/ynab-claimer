@@ -30,6 +30,7 @@ const receiptsPageOne = [
     originalName: 'Invoice Line.pdf',
     uploaded: '2026-06-25T00:00:00Z',
     linkedClaimIds: ['claim-1'],
+    linkedClaimsBackend: 'howmuch',
     taggedAmount: 50,
     taggedCurrency: 'MYR',
     taggedAmountSgdApprox: 15,
@@ -161,8 +162,9 @@ async function main() {
         if (receipt) {
           receipt.linkedClaimIds = linkedIds;
           receipt.linkedClaimId = linkedIds[0] || undefined;
+          receipt.linkedClaimsBackend = body.backend;
         }
-        linkRequests.push({ key, linkedIds });
+        linkRequests.push({ key, linkedIds, backend: body.backend });
         return route.fulfill({ json: { success: true } });
       }
       if (url.pathname === '/xero/status') return route.fulfill({ json: { connected: true, tenantName: 'Test Xero' } });
@@ -182,6 +184,7 @@ async function main() {
       if (url.pathname === '/xero/invoices/mark-claimed') {
         const body = JSON.parse(route.request().postData() || '{}');
         markClaimRequests.push(body);
+        if (mockState.delayMarkClaimed) await new Promise((resolve) => setTimeout(resolve, 100));
         return route.fulfill({
           json: {
             success: true,
@@ -303,6 +306,7 @@ async function main() {
   if (linkRequests.length !== 1 || linkRequests[0].key !== 'receipt-1.pdf' || linkRequests[0].linkedIds[0] !== 'claim-2') {
     throw new Error(`expected accept to link receipt-1 to claim-2, got ${JSON.stringify(linkRequests)}`);
   }
+  if (linkRequests[0].backend !== 'howmuch') throw new Error('linked receipt should retain HowMuch provenance');
 
   // Restore unlinked state for invoice tests that expect the original ready set.
   const receiptOne = receiptsPageOne.find((item) => item.key === 'receipt-1.pdf');
@@ -326,7 +330,10 @@ async function main() {
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
+  primaryMockState.delayMarkClaimed = true;
+  await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
   if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
@@ -338,6 +345,7 @@ async function main() {
   if (markClaimRequests[0].lineItems[0].claimsBackend !== 'howmuch') {
     throw new Error(`mark claimed line should retain HowMuch provenance, got ${markClaimRequests[0].lineItems[0].claimsBackend}`);
   }
+  primaryMockState.delayMarkClaimed = false;
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
   const taxText = await taxCell.locator('.inv-cell-text').textContent();
@@ -421,6 +429,24 @@ async function main() {
   if (rejectedAfterListFailure.join(',') !== 'claim-2::receipt-1.pdf') {
     throw new Error('failed receipt loads must not erase dismissed matches');
   }
+
+  const compactPage = await browser.newPage({ viewport: { width: 320, height: 700 } });
+  await compactPage.addInitScript(() => {
+    localStorage.setItem('claim_manager_auth', 'test');
+    localStorage.setItem('claim_manager_remember', 'true');
+  });
+  await setupMockApi(compactPage);
+  await compactPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
+  const compactLayout = await compactPage.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: innerWidth,
+    themeRight: document.querySelector('#themeToggle')?.getBoundingClientRect().right || Infinity,
+    backendVisible: Boolean(document.querySelector('#claimsBackend')?.getBoundingClientRect().width),
+  }));
+  if (compactLayout.bodyWidth > compactLayout.viewportWidth || compactLayout.themeRight > compactLayout.viewportWidth) {
+    throw new Error(`320px header overflowed: ${JSON.stringify(compactLayout)}`);
+  }
+  if (!compactLayout.backendVisible) throw new Error('backend selector should be visible on compact Invoices view');
 
   await browser.close();
   server.close();

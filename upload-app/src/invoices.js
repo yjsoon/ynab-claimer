@@ -7,7 +7,7 @@ import {
   escapeHtml,
   formatCurrencyAmount,
 } from './lib/core.js';
-import { receiptsData, claimsData, claimsLoadErrorMessage } from './lib/state.js';
+import { receiptsData, claimsData, claimsDataBackend, claimsLoadErrorMessage } from './lib/state.js';
 import {
   getLinkedClaimIds,
   getReceiptMatchDate,
@@ -422,7 +422,7 @@ function applySavedInvoiceEdits(lines) {
 }
 
 function buildInvoiceLines() {
-  if (claimsLoadErrorMessage) {
+  if (claimsLoadErrorMessage || claimsDataBackend !== getClaimsBackend()) {
     invoiceLines = [];
     return;
   }
@@ -435,6 +435,8 @@ function buildInvoiceLines() {
     getLinkedClaimIds(receipt).forEach((claimId) => {
       const claim = claimsById.get(claimId) || null;
       const isReadyOnly = isReadyOnlyClaimId(claimId);
+      const linkedBackend = receipt.linkedClaimsBackend || 'ynab';
+      if (!isReadyOnly && linkedBackend !== claimsDataBackend) return;
       if (!claim && !isReadyOnly) return;
       const matchDate = getReceiptMatchDate(receipt).date;
       const date = (claim && claim.date) || (matchDate ? matchDate.toISOString().slice(0, 10) : '');
@@ -462,7 +464,7 @@ function buildInvoiceLines() {
         ynabClaimId: isReadyOnly ? null : claimId,
         claimSource: claim?.source || null,
         claimsBackend: receipt.xeroPendingClaimsBackend
-          || (receipt.xeroPendingInvoiceId ? 'ynab' : getClaimsBackend()),
+          || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend),
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
         xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
@@ -1197,7 +1199,11 @@ function lineTaxTypeForPush(line, bucket) {
 }
 
 function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
-  const backend = getClaimsBackend();
+  const claimBackends = [...new Set(lines.filter((line) => line.ynabClaimId).map((line) => line.claimsBackend))];
+  if (claimBackends.length > 1 || claimBackends.some((backend) => backend !== 'howmuch' && backend !== 'ynab')) {
+    throw new Error('Invoice lines must come from one known claims backend.');
+  }
+  const backend = claimBackends[0] || getClaimsBackend();
   return {
     bucket,
     reference,
