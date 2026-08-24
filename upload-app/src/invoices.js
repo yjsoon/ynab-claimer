@@ -299,6 +299,18 @@ function loadPushHistory() {
   }
 }
 
+function legacyLineItemKey(item) {
+  return `${item.receiptKey || ''}::${item.ynabClaimId || ''}`;
+}
+
+function pushHistoryEntryForItem(item) {
+  const byLine = loadPushHistory().byLine || {};
+  const current = byLine[lineItemKey(item)];
+  if (current) return current;
+  const backend = item?.claimsBackend === 'howmuch' ? 'howmuch' : 'ynab';
+  return backend === 'ynab' ? byLine[legacyLineItemKey(item)] : undefined;
+}
+
 function writePushHistory(history) {
   try {
     localStorage.setItem(INVOICE_PUSH_HISTORY_KEY, JSON.stringify(history));
@@ -329,13 +341,13 @@ function rememberedInvoiceIDForItem(item) {
   if (typeof item?.xeroPendingInvoiceId === 'string' && item.xeroPendingInvoiceId) {
     return item.xeroPendingInvoiceId;
   }
-  const entry = loadPushHistory().byLine?.[lineItemKey(item)];
+  const entry = pushHistoryEntryForItem(item);
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
 }
 
 function rememberedClaimsBackendForItem(item) {
   if (item?.claimsBackend === 'howmuch' || item?.claimsBackend === 'ynab') return item.claimsBackend;
-  const backend = loadPushHistory().byLine?.[lineItemKey(item)]?.claimsBackend;
+  const backend = pushHistoryEntryForItem(item)?.claimsBackend;
   return backend === 'ynab' ? 'ynab' : backend === 'howmuch' ? 'howmuch' : getClaimsBackend();
 }
 
@@ -370,12 +382,18 @@ function snapshotsMatch(a, b) {
   return JSON.stringify(a || null) === JSON.stringify(b || null);
 }
 
-// Re-apply saved manual edits onto freshly-built lines, and prune saved edits
-// for lines that no longer exist (e.g. once a receipt has been invoiced).
+// Re-apply saved manual edits onto freshly-built lines. Keep edits for lines
+// outside the current backend/load snapshot so asynchronous refreshes cannot
+// discard review state from another ledger.
 function applySavedInvoiceEdits(lines) {
   const store = loadInvoiceEdits();
-  const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
+    const legacyId = legacyLineItemKey(line);
+    const legacySaved = line.claimsBackend === 'ynab' ? store[legacyId] : undefined;
+    if (!store[line.id] && legacySaved) {
+      store[line.id] = { ...legacySaved, claimsBackend: 'ynab' };
+      delete store[legacyId];
+    }
     const saved = store[line.id];
     const sourceSnapshot = lineSourceSnapshot(line);
     line.sourceSnapshot = sourceSnapshot;
@@ -423,13 +441,7 @@ function applySavedInvoiceEdits(lines) {
       Object.assign(line, store[line.id]);
     }
   });
-  const pruned = {};
-  Object.keys(store).forEach((id) => {
-    if (liveIds.has(id) || (store[id].claimsBackend && store[id].claimsBackend !== claimsDataBackend)) {
-      pruned[id] = store[id];
-    }
-  });
-  writeInvoiceEdits(pruned);
+  writeInvoiceEdits(store);
 }
 
 function buildInvoiceLines() {
@@ -468,14 +480,15 @@ function buildInvoiceLines() {
         if (pref) amount = pref.value;
       }
 
+      const claimsBackend = receipt.xeroPendingClaimsBackend
+        || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend);
       lines.push({
-        id: `${receipt.key}::${claimId}`,
+        id: `${claimsBackend}::${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
         claimSource: claim?.source || null,
-        claimsBackend: receipt.xeroPendingClaimsBackend
-          || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend),
+        claimsBackend,
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
         xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
@@ -1624,7 +1637,8 @@ async function downloadReceiptsPdf(payload, btn) {
 }
 
 function lineItemKey(item) {
-  return `${item.receiptKey || ''}::${item.ynabClaimId || ''}`;
+  const backend = item?.claimsBackend === 'ynab' ? 'ynab' : item?.claimsBackend === 'howmuch' ? 'howmuch' : '';
+  return `${backend}::${legacyLineItemKey(item)}`;
 }
 
 function checkedClaimLineItems(bucket, payload) {

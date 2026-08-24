@@ -132,7 +132,7 @@ Collect all agent results and build the receipt manifest for matching.
 Compare TODOs against **identified** receipts and show a summary:
 
 **Matching priority:**
-1. **Pre-linked receipts** - If `linkedClaimId` matches a TODO's transaction ID, use that receipt (highest priority)
+1. **Pre-linked receipts** - If a YNAB-owned `linkedClaimId` matches a TODO's transaction ID, use that receipt (highest priority)
 2. **Date proximity** - Within 3 days
 3. **Amount match** - Exact or within 10%
 
@@ -202,7 +202,7 @@ For each TODO transaction:
    - Category: [category_name]
 
 2. **Find matching receipt(s)**:
-   - **Pre-linked**: If receipt has `linkedClaimId` matching this transaction, use it automatically (skip manual matching)
+   - **Pre-linked**: If the receipt has `linkedClaimsBackend: "ynab"` (or an absent legacy backend) and `linkedClaimId` matches this transaction, use it automatically. Never use a HowMuch-owned link.
    - Otherwise, match by: date proximity (within 3 days), amount match (exact or close)
    - Show top matches and let user confirm
 
@@ -264,9 +264,11 @@ For each TODO transaction:
    **Background cleanup agent prompt**:
    ```
    "Complete claim cleanup for transaction [TRANSACTION_ID]:
-   1. Update YNAB memo from 'TODO: X' to 'CLAIMED: X' via PUT to transactions API
-   2. Delete receipt [key] from R2 via DELETE endpoint
-   3. Delete local file /tmp/claims/[filename] using trash command
+   Verified source provenance at handoff: linkedClaimsBackend=ynab.
+   1. Before any mutation, refetch receipt [key] from the R2 list and verify linkedClaimsBackend is exactly 'ynab'. Abort without updating YNAB or deleting anything if it is HowMuch, absent, or changed.
+   2. Update YNAB memo from 'TODO: X' to 'CLAIMED: X' via PUT to transactions API
+   3. Delete receipt [key] from R2 via DELETE endpoint
+   4. Delete local file /tmp/claims/[filename] using trash command
    Credentials: YNAB_API_KEY=[key], R2_WORKER_URL=[url], R2_PASSWORD=[pwd]"
    ```
 

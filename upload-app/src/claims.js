@@ -107,6 +107,9 @@ if (claimsBackendSelect) {
     clearSelection();
     matchSuggestions = [];
     renderMatchReview();
+    renderOutstandingClaims();
+    renderLinkedPairs();
+    updateUploadZoneCompact();
     window.dispatchEvent(new CustomEvent('claims-backend-change', { detail: { backend, loaded: false } }));
     await loadYnabTodos();
     if (backend === getClaimsBackend() && claimsDataBackend === backend) {
@@ -680,13 +683,14 @@ function renderLinkedPairs() {
       if (!receiptKey || !claimId) return;
 
       const receipt = receiptsData.find((item) => item.key === receiptKey);
+      const backend = receipt ? receiptClaimsBackend(receipt) : getClaimsBackend();
       const linkedCountForReceipt = receipt ? getLinkedClaimIds(receipt).length : 1;
       const confirmation = linkedCountForReceipt > 1
         ? `This receipt is linked to ${linkedCountForReceipt} claims. Unlink only this pair?`
         : 'Unlink this claim-receipt pair?';
 
       if (!window.confirm(confirmation)) return;
-      await unlinkClaimFromReceipt(receiptKey, claimId);
+      await unlinkClaimFromReceipt(receiptKey, claimId, backend);
     });
   });
 }
@@ -1629,7 +1633,7 @@ async function patchReceiptLink(receiptKey, claim) {
   return patchReceiptLinks(receiptKey, [claim]);
 }
 
-async function patchReceiptLinks(receiptKey, claims) {
+async function patchReceiptLinks(receiptKey, claims, backend = getClaimsBackend()) {
   try {
     const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
       method: 'PATCH',
@@ -1638,7 +1642,7 @@ async function patchReceiptLinks(receiptKey, claims) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        backend: getClaimsBackend(),
+        backend,
         linkedClaims: claims.map((claim) => ({
           id: claim.id,
           description: claim.description,
@@ -1814,7 +1818,7 @@ function buildLinkedClaimPayload(receipt, claimId, index) {
   };
 }
 
-async function unlinkClaimFromReceipt(receiptKey, claimId) {
+async function unlinkClaimFromReceipt(receiptKey, claimId, backend) {
   const receipt = receiptsData.find((item) => item.key === receiptKey);
   if (!receipt) {
     showStatus('error', 'Linked receipt not found');
@@ -1829,13 +1833,13 @@ async function unlinkClaimFromReceipt(receiptKey, claimId) {
 
   const remainingClaimIds = existingClaimIds.filter((id) => id !== claimId);
   if (remainingClaimIds.length === 0) {
-    await unlinkReceipt(receiptKey);
+    await unlinkReceipt(receiptKey, backend);
     return;
   }
 
   const remainingClaims = remainingClaimIds.map((id, index) => buildLinkedClaimPayload(receipt, id, index));
   showStatus('uploading', 'Updating linked claims...');
-  const result = await patchReceiptLinks(receiptKey, remainingClaims);
+  const result = await patchReceiptLinks(receiptKey, remainingClaims, backend);
   if (!result.ok) {
     showStatus('error', result.error || 'Failed to unlink pair');
     return;
@@ -1847,12 +1851,15 @@ async function unlinkClaimFromReceipt(receiptKey, claimId) {
 }
 
 // Unlink a receipt from its claim
-async function unlinkReceipt(receiptKey) {
+async function unlinkReceipt(receiptKey, backend = getClaimsBackend()) {
   try {
-    const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    });
+    const response = await fetch(
+      `${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link?backend=${encodeURIComponent(backend)}`,
+      {
+        method: 'DELETE',
+        headers: authHeaders(),
+      },
+    );
 
     if (response.ok) {
       showStatus('success', 'Receipt unlinked');

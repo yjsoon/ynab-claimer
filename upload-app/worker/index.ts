@@ -777,7 +777,8 @@ async function getUsdSgdRate(date: string): Promise<FxRateResult> {
 async function patchReceiptMetadata(
   env: Env,
   key: string,
-  metadataPatch: Record<string, string | undefined>
+  metadataPatch: Record<string, string | undefined>,
+  expectedClaimsBackend?: ClaimsBackend
 ): Promise<boolean> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const existing = await env.RECEIPTS.get(key);
@@ -787,6 +788,10 @@ async function patchReceiptMetadata(
     const mergedMetadata: Record<string, string> = {
       ...(existing.customMetadata || {}),
     };
+    const currentClaimsBackend = mergedMetadata.linkedClaimsBackend === 'howmuch' ? 'howmuch' : 'ynab';
+    if (expectedClaimsBackend && currentClaimsBackend !== expectedClaimsBackend) {
+      throw new ClaimsBackendInputError('Receipt link belongs to a different claims backend.');
+    }
 
     Object.entries(metadataPatch).forEach(([metaKey, value]) => {
       if (value === undefined) {
@@ -1379,13 +1384,13 @@ function parsePushLineItems(raw: unknown): PushLineItem[] {
       throw new ClaimsBackendInputError(`Invalid invoice line ${index + 1}.`);
     }
     const line = value as Record<string, unknown>;
-    const amount = Number(line.amount);
+    const amount = line.amount;
     if (
-      typeof line.receiptKey !== 'string' || !line.receiptKey ||
+      typeof line.receiptKey !== 'string' || !line.receiptKey.trim() ||
       typeof line.description !== 'string' || !line.description.trim() ||
-      typeof line.accountCode !== 'string' || !line.accountCode ||
-      typeof line.taxType !== 'string' || !line.taxType ||
-      !Number.isFinite(amount) || amount <= 0
+      typeof line.accountCode !== 'string' || !line.accountCode.trim() ||
+      typeof line.taxType !== 'string' || !line.taxType.trim() ||
+      typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0
     ) {
       throw new ClaimsBackendInputError(
         `Invalid invoice line ${index + 1}: receipt, description, positive amount, account and tax code are required.`
@@ -1419,8 +1424,8 @@ function parsePushLineItems(raw: unknown): PushLineItem[] {
         line.claimsBackend === undefined ? undefined : parseExplicitClaimsBackend(line.claimsBackend),
       date: typeof line.date === 'string' ? line.date : '',
       description: line.description.trim(),
-      accountCode: line.accountCode,
-      taxType: line.taxType,
+      accountCode: line.accountCode.trim(),
+      taxType: line.taxType.trim(),
       currency: typeof line.currency === 'string' ? line.currency : undefined,
       amount,
     };
@@ -2071,6 +2076,9 @@ export default {
       // DELETE /receipt/:key/link - Unlink a receipt from a claim
       if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'DELETE') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
+        const backend = parseMutationBackend(
+          url.searchParams.has('backend') ? url.searchParams.get('backend') : undefined
+        );
 
         const updated = await patchReceiptMetadata(env, key, {
           linkedClaimId: undefined,
@@ -2079,7 +2087,7 @@ export default {
           linkedClaimAmount: undefined,
           linkedClaimDate: undefined,
           linkedClaimsBackend: undefined,
-        });
+        }, backend);
         if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
@@ -2112,7 +2120,7 @@ export default {
 
           const message = error instanceof Error ? error.message : 'Failed to fetch claims data';
           return new Response(JSON.stringify({ error: message }), {
-            status: 500,
+            status: error instanceof ClaimsBackendInputError ? 400 : 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -2182,7 +2190,7 @@ export default {
 
           const message = error instanceof Error ? error.message : 'Failed to build agent claim report';
           return new Response(JSON.stringify({ error: message }), {
-            status: 500,
+            status: error instanceof ClaimsBackendInputError ? 400 : 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -2312,7 +2320,7 @@ export default {
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Failed to compile receipts PDF';
           return new Response(JSON.stringify({ error: message }), {
-            status: 502,
+            status: err instanceof ClaimsBackendInputError ? 400 : 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }

@@ -395,10 +395,12 @@ After the DONE button is clicked, **immediately show the next claim summary** an
 **Background cleanup agent prompt**:
 ```
 "Complete claim cleanup for transaction [TRANSACTION_ID]:
-1. Update YNAB memo from 'TODO: X' to 'CLAIMED: X' via PUT to transactions API
-2. Delete receipt [key] from R2 via DELETE endpoint
-3. Delete local file /tmp/claims/[filename] using trash command
-4. Remove ~/.dev-browser/tmp/receipt.b64
+Verified source provenance at handoff: linkedClaimsBackend=ynab.
+1. Before any mutation, refetch receipt [key] from the R2 list and verify linkedClaimsBackend is exactly 'ynab'. Abort without updating YNAB or deleting anything if it is HowMuch, absent, or changed.
+2. Update YNAB memo from 'TODO: X' to 'CLAIMED: X' via PUT to transactions API
+3. Delete receipt [key] from R2 via DELETE endpoint
+4. Delete local file /tmp/claims/[filename] using trash command
+5. Remove ~/.dev-browser/tmp/receipt.b64
 Credentials: YNAB_API_KEY=[key], YNAB_BUDGET_ID=[id], R2_WORKER_URL=[url], R2_PASSWORD=[pwd]"
 ```
 

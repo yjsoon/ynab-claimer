@@ -230,6 +230,9 @@ async function main() {
   if (await page.locator('#matchReviewSection').isVisible()) {
     throw new Error('backend change should immediately invalidate stale match suggestions');
   }
+  if (await page.locator('.linked-pair-unlink').count() !== 0) {
+    throw new Error('backend change should immediately remove stale unlink actions');
+  }
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForTimeout(250);
   const visibleBackendClaim = await page.locator('#todoList .todo-item[data-claim-id="claim-2"] .todo-payee').textContent();
@@ -330,6 +333,40 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('push should enable after review');
 
+  const invoiceReceipt = receiptsPageOne.find((item) => item.key === 'receipt-2.pdf');
+  invoiceReceipt.linkedClaimsBackend = 'ynab';
+  invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForSelector('#invoicesLoading:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (!await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    throw new Error('saved HowMuch review must not apply to the same receipt and claim IDs in YNAB');
+  }
+  const persistedBackends = await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem('claim_manager_invoice_edits') || '{}');
+    return {
+      howmuch: store['howmuch::receipt-2.pdf::claim-1']?.claimsBackend,
+      ynab: store['ynab::receipt-2.pdf::claim-1']?.claimsBackend,
+    };
+  });
+  if (persistedBackends.howmuch !== 'howmuch' || persistedBackends.ynab !== undefined) {
+    throw new Error(`invoice edit provenance crossed backends: ${JSON.stringify(persistedBackends)}`);
+  }
+  invoiceReceipt.linkedClaimsBackend = 'howmuch';
+  invoiceReceipt.xeroPendingClaimsBackend = 'howmuch';
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForSelector('#invoicesLoading:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    const state = await page.evaluate(() => localStorage.getItem('claim_manager_invoice_edits'));
+    const sectionMeta = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
+    throw new Error(`HowMuch review should survive switching to YNAB and back: ${sectionMeta} ${state}`);
+  }
+
   primaryMockState.delayedBackend = 'ynab';
   await page.locator('#claimsBackend').selectOption('ynab');
   if (await page.locator('.invoice-push-btn').count() !== 0) {
@@ -373,7 +410,7 @@ async function main() {
 
   await page.evaluate(() => {
     const store = JSON.parse(localStorage.getItem('claim_manager_invoice_edits') || '{}');
-    const entry = store['receipt-2.pdf::claim-1'];
+    const entry = store['howmuch::receipt-2.pdf::claim-1'];
     if (!entry) throw new Error('missing persisted invoice review');
     entry.reviewedSourceSnapshot = {
       ...entry.reviewedSourceSnapshot,
