@@ -1633,7 +1633,12 @@ async function patchReceiptLink(receiptKey, claim) {
   return patchReceiptLinks(receiptKey, [claim]);
 }
 
-async function patchReceiptLinks(receiptKey, claims, backend = getClaimsBackend()) {
+async function patchReceiptLinks(
+  receiptKey,
+  claims,
+  backend = getClaimsBackend(),
+  expectedClaimsBackend = undefined,
+) {
   try {
     const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
       method: 'PATCH',
@@ -1643,6 +1648,7 @@ async function patchReceiptLinks(receiptKey, claims, backend = getClaimsBackend(
       },
       body: JSON.stringify({
         backend,
+        ...(expectedClaimsBackend ? { expectedClaimsBackend } : {}),
         linkedClaims: claims.map((claim) => ({
           id: claim.id,
           description: claim.description,
@@ -1839,7 +1845,7 @@ async function unlinkClaimFromReceipt(receiptKey, claimId, backend) {
 
   const remainingClaims = remainingClaimIds.map((id, index) => buildLinkedClaimPayload(receipt, id, index));
   showStatus('uploading', 'Updating linked claims...');
-  const result = await patchReceiptLinks(receiptKey, remainingClaims, backend);
+  const result = await patchReceiptLinks(receiptKey, remainingClaims, backend, backend);
   if (!result.ok) {
     showStatus('error', result.error || 'Failed to unlink pair');
     return;

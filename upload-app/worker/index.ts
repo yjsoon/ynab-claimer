@@ -2007,6 +2007,7 @@ export default {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
         const body = (await request.json()) as {
           backend?: unknown;
+          expectedClaimsBackend?: unknown;
           linkedClaimId?: string;
           linkedClaimDescription?: string;
           linkedClaimAmount?: number;
@@ -2014,6 +2015,12 @@ export default {
           linkedClaims?: LinkedClaimPayload[];
         };
         const backend = parseMutationBackend(body.backend);
+        const expectedClaimsBackend = body.expectedClaimsBackend === undefined
+          ? undefined
+          : parseExplicitClaimsBackend(body.expectedClaimsBackend);
+        if (expectedClaimsBackend && expectedClaimsBackend !== backend) {
+          throw new ClaimsBackendInputError('Expected claims backend must match the link backend.');
+        }
 
         const linkedClaims = Array.isArray(body.linkedClaims) && body.linkedClaims.length > 0
           ? body.linkedClaims
@@ -2060,7 +2067,7 @@ export default {
             typeof primaryClaim.amount === 'number' ? String(primaryClaim.amount) : undefined,
           linkedClaimDate: primaryClaim.date,
           linkedClaimsBackend: backend,
-        });
+        }, expectedClaimsBackend);
         if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
