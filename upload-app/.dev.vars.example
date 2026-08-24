@@ -12,7 +12,13 @@ XERO_CLIENT_SECRET = "your-xero-client-secret"
 # the worker can be exercised locally.
 AUTH_PASSWORD = "your-web-app-password"
 
-# Optional: YNAB + Gemini if you want those paths to work under `wrangler dev`.
+# HowMuch is the default claims backend. Create a PAT in HowMuch under personal
+# tokens; HOWMUCH_PLAN_ID may be omitted when it matches YNAB_BUDGET_ID.
+# HOWMUCH_PAT = "hm_pat_..."
+# HOWMUCH_PLAN_ID = "..."
+# HOWMUCH_API_URL = "https://howmuch.soon.sg/v1"
+
+# Optional: YNAB fallback + Gemini if you want those paths under `wrangler dev`.
 # YNAB_API_KEY = "..."
 # YNAB_BUDGET_ID = "..."
 # GEMINI_API_KEY = "..."

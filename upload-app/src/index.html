@@ -48,13 +48,22 @@
     <header class="app-header">
       <div class="app-header-row">
         <h1>Receipt Upload</h1>
-        <button
-          id="themeToggle"
-          class="btn-theme-toggle"
-          type="button"
-          aria-label="Colour theme: system. Click to change."
-          title="System theme"
-        ></button>
+        <div class="app-header-controls">
+          <label class="backend-picker">
+            Backend
+            <select id="claimsBackend" aria-label="Claims backend">
+              <option value="howmuch">HowMuch</option>
+              <option value="ynab">YNAB</option>
+            </select>
+          </label>
+          <button
+            id="themeToggle"
+            class="btn-theme-toggle"
+            type="button"
+            aria-label="Colour theme: system. Click to change."
+            title="System theme"
+          ></button>
+        </div>
       </div>
       <nav class="app-nav" aria-label="App mode">
         <a href="/" class="app-nav-link" id="navClaims" data-mode="claims">Claims</a>
@@ -176,7 +185,7 @@
 
       <div id="invoicesSections" class="invoices-sections"></div>
       <p id="invoicesEmpty" class="empty-state" hidden>
-        No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.
+        No ready-to-claim items. Mark receipts ready or link them to claims first.
       </p>
     </div>
   </div>

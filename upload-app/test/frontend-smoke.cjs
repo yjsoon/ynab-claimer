@@ -30,6 +30,7 @@ const receiptsPageOne = [
     originalName: 'Invoice Line.pdf',
     uploaded: '2026-06-25T00:00:00Z',
     linkedClaimIds: ['claim-1'],
+    linkedClaimsBackend: 'howmuch',
     taggedAmount: 50,
     taggedCurrency: 'MYR',
     taggedAmountSgdApprox: 15,
@@ -38,6 +39,7 @@ const receiptsPageOne = [
     taggedGstShown: false,
     xeroPendingInvoiceId: 'pending-bill-1',
     xeroPendingInvoiceNumber: 'DRAFT-1',
+    xeroPendingClaimsBackend: 'howmuch',
   },
 ];
 
@@ -117,6 +119,7 @@ async function main() {
   let uploadCount = 0;
   const markClaimRequests = [];
   const linkRequests = [];
+  const todoBackends = [];
 
   async function setupMockApi(page, mockState = {}) {
     await page.route('**/*', async (route) => {
@@ -138,7 +141,17 @@ async function main() {
         return route.fulfill({ json: { success: true, key: 'blob.png' } });
       }
 
-      if (url.pathname === '/ynab/todos') return route.fulfill({ json: { todos } });
+      if (url.pathname === '/ynab/todos') {
+        const backend = url.searchParams.get('backend');
+        todoBackends.push(backend);
+        if (mockState.delayedBackend === backend) {
+          await new Promise((resolve) => setTimeout(resolve, 200));
+        }
+        const responseTodos = mockState.labelByBackend
+          ? todos.map((todo) => ({ ...todo, description: `${backend}: ${todo.description}` }))
+          : todos;
+        return route.fulfill({ json: { todos: responseTodos, backend } });
+      }
       if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'PATCH') {
         const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/link'.length));
         const body = JSON.parse(route.request().postData() || '{}');
@@ -149,8 +162,9 @@ async function main() {
         if (receipt) {
           receipt.linkedClaimIds = linkedIds;
           receipt.linkedClaimId = linkedIds[0] || undefined;
+          receipt.linkedClaimsBackend = body.backend;
         }
-        linkRequests.push({ key, linkedIds });
+        linkRequests.push({ key, linkedIds, backend: body.backend });
         return route.fulfill({ json: { success: true } });
       }
       if (url.pathname === '/xero/status') return route.fulfill({ json: { connected: true, tenantName: 'Test Xero' } });
@@ -170,6 +184,7 @@ async function main() {
       if (url.pathname === '/xero/invoices/mark-claimed') {
         const body = JSON.parse(route.request().postData() || '{}');
         markClaimRequests.push(body);
+        if (mockState.delayMarkClaimed) await new Promise((resolve) => setTimeout(resolve, 100));
         return route.fulfill({
           json: {
             success: true,
@@ -201,9 +216,34 @@ async function main() {
       quickFilters: ['Transfer'],
     }));
   });
-  await setupMockApi(page);
+  const primaryMockState = {};
+  await setupMockApi(page, primaryMockState);
 
   await page.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
+  if (await page.locator('#claimsBackend').inputValue() !== 'howmuch') {
+    throw new Error('HowMuch should be the default claims backend');
+  }
+  if (todoBackends[0] !== 'howmuch') throw new Error(`expected HowMuch request, got ${todoBackends[0]}`);
+  primaryMockState.delayedBackend = 'ynab';
+  primaryMockState.labelByBackend = true;
+  await page.locator('#claimsBackend').selectOption('ynab');
+  if (await page.locator('#matchReviewSection').isVisible()) {
+    throw new Error('backend change should immediately invalidate stale match suggestions');
+  }
+  if (await page.locator('.linked-pair-unlink').count() !== 0) {
+    throw new Error('backend change should immediately remove stale unlink actions');
+  }
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.waitForTimeout(250);
+  const visibleBackendClaim = await page.locator('#todoList .todo-item[data-claim-id="claim-2"] .todo-payee').textContent();
+  if (visibleBackendClaim !== 'howmuch: Software') {
+    throw new Error(`stale backend response replaced current claims: ${visibleBackendClaim}`);
+  }
+  primaryMockState.delayedBackend = null;
+  primaryMockState.labelByBackend = false;
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  if (!todoBackends.includes('ynab')) throw new Error('backend selector did not request YNAB');
   await page.waitForSelector('#matchReviewSection:not([hidden]) .match-review-item');
   const matchCountText = await page.locator('#matchReviewCount').textContent();
   if (matchCountText !== '(1)') throw new Error(`expected one match suggestion, got ${matchCountText}`);
@@ -272,6 +312,7 @@ async function main() {
   if (linkRequests.length !== 1 || linkRequests[0].key !== 'receipt-1.pdf' || linkRequests[0].linkedIds[0] !== 'claim-2') {
     throw new Error(`expected accept to link receipt-1 to claim-2, got ${JSON.stringify(linkRequests)}`);
   }
+  if (linkRequests[0].backend !== 'howmuch') throw new Error('linked receipt should retain HowMuch provenance');
 
   // Restore unlinked state for invoice tests that expect the original ready set.
   const receiptOne = receiptsPageOne.find((item) => item.key === 'receipt-1.pdf');
@@ -292,15 +333,68 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('push should enable after review');
 
+  const invoiceReceipt = receiptsPageOne.find((item) => item.key === 'receipt-2.pdf');
+  invoiceReceipt.linkedClaimsBackend = 'ynab';
+  invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForSelector('#invoicesLoading:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (!await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    throw new Error('saved HowMuch review must not apply to the same receipt and claim IDs in YNAB');
+  }
+  const persistedBackends = await page.evaluate(() => {
+    const store = JSON.parse(localStorage.getItem('claim_manager_invoice_edits') || '{}');
+    return {
+      howmuch: store['howmuch::receipt-2.pdf::claim-1']?.claimsBackend,
+      ynab: store['ynab::receipt-2.pdf::claim-1']?.claimsBackend,
+    };
+  });
+  if (persistedBackends.howmuch !== 'howmuch' || persistedBackends.ynab !== undefined) {
+    throw new Error(`invoice edit provenance crossed backends: ${JSON.stringify(persistedBackends)}`);
+  }
+  invoiceReceipt.linkedClaimsBackend = 'howmuch';
+  invoiceReceipt.xeroPendingClaimsBackend = 'howmuch';
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForSelector('#invoicesLoading:not([hidden])');
+  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    const state = await page.evaluate(() => localStorage.getItem('claim_manager_invoice_edits'));
+    const sectionMeta = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
+    throw new Error(`HowMuch review should survive switching to YNAB and back: ${sectionMeta} ${state}`);
+  }
+
+  primaryMockState.delayedBackend = 'ynab';
+  await page.locator('#claimsBackend').selectOption('ynab');
+  if (await page.locator('.invoice-push-btn').count() !== 0) {
+    throw new Error('backend change should immediately remove stale invoice actions');
+  }
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  primaryMockState.delayedBackend = null;
+
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
+  primaryMockState.delayMarkClaimed = true;
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.locator('#claimsBackend').selectOption('ynab');
+  await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
   if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
     throw new Error(`mark claimed should use pending receipt invoice id, got ${markClaimRequests[0].invoiceID}`);
   }
+  if (markClaimRequests[0].backend !== 'howmuch') {
+    throw new Error(`mark claimed should use HowMuch, got ${markClaimRequests[0].backend}`);
+  }
+  if (markClaimRequests[0].lineItems[0].claimsBackend !== 'howmuch') {
+    throw new Error(`mark claimed line should retain HowMuch provenance, got ${markClaimRequests[0].lineItems[0].claimsBackend}`);
+  }
+  primaryMockState.delayMarkClaimed = false;
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');
   const taxText = await taxCell.locator('.inv-cell-text').textContent();
@@ -316,7 +410,7 @@ async function main() {
 
   await page.evaluate(() => {
     const store = JSON.parse(localStorage.getItem('claim_manager_invoice_edits') || '{}');
-    const entry = store['receipt-2.pdf::claim-1'];
+    const entry = store['howmuch::receipt-2.pdf::claim-1'];
     if (!entry) throw new Error('missing persisted invoice review');
     entry.reviewedSourceSnapshot = {
       ...entry.reviewedSourceSnapshot,
@@ -384,6 +478,24 @@ async function main() {
   if (rejectedAfterListFailure.join(',') !== 'claim-2::receipt-1.pdf') {
     throw new Error('failed receipt loads must not erase dismissed matches');
   }
+
+  const compactPage = await browser.newPage({ viewport: { width: 320, height: 700 } });
+  await compactPage.addInitScript(() => {
+    localStorage.setItem('claim_manager_auth', 'test');
+    localStorage.setItem('claim_manager_remember', 'true');
+  });
+  await setupMockApi(compactPage);
+  await compactPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
+  const compactLayout = await compactPage.evaluate(() => ({
+    bodyWidth: document.body.scrollWidth,
+    viewportWidth: innerWidth,
+    themeRight: document.querySelector('#themeToggle')?.getBoundingClientRect().right || Infinity,
+    backendVisible: Boolean(document.querySelector('#claimsBackend')?.getBoundingClientRect().width),
+  }));
+  if (compactLayout.bodyWidth > compactLayout.viewportWidth || compactLayout.themeRight > compactLayout.viewportWidth) {
+    throw new Error(`320px header overflowed: ${JSON.stringify(compactLayout)}`);
+  }
+  if (!compactLayout.backendVisible) throw new Error('backend selector should be visible on compact Invoices view');
 
   await browser.close();
   server.close();

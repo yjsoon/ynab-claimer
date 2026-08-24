@@ -21,6 +21,7 @@ import {
 import {
   receiptsData,
   claimsData,
+  claimsDataBackend,
   claimsLoadErrorMessage,
   setReceiptsData,
   setClaimsData,
@@ -57,6 +58,7 @@ const acceptAllClearBtn = document.getElementById('acceptAllClearBtn');
 const clearDismissedMatchesBtn = document.getElementById('clearDismissedMatchesBtn');
 const todoList = document.getElementById('todoList');
 const todoCount = document.getElementById('todoCount');
+const claimsBackendSelect = document.getElementById('claimsBackend');
 const claimFilterInput = document.getElementById('claimFilterInput');
 const claimFilterPills = document.getElementById('claimFilterPills');
 const claimFilterClear = document.getElementById('claimFilterClear');
@@ -88,6 +90,33 @@ let selectedClaimIds = new Set();
 let linkingSource = null; // 'receipt' | 'claim'
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
+let claimsRequestId = 0;
+const CLAIMS_BACKEND_KEY = 'claim_manager_backend';
+
+export function getClaimsBackend() {
+  return claimsBackendSelect?.value === 'ynab' ? 'ynab' : 'howmuch';
+}
+
+if (claimsBackendSelect) {
+  claimsBackendSelect.value = localStorage.getItem(CLAIMS_BACKEND_KEY) === 'ynab' ? 'ynab' : 'howmuch';
+  claimsBackendSelect.addEventListener('change', async () => {
+    const backend = getClaimsBackend();
+    localStorage.setItem(CLAIMS_BACKEND_KEY, backend);
+    setClaimsLoadErrorMessage('');
+    setClaimsData([]);
+    clearSelection();
+    matchSuggestions = [];
+    renderMatchReview();
+    renderOutstandingClaims();
+    renderLinkedPairs();
+    updateUploadZoneCompact();
+    window.dispatchEvent(new CustomEvent('claims-backend-change', { detail: { backend, loaded: false } }));
+    await loadYnabTodos();
+    if (backend === getClaimsBackend() && claimsDataBackend === backend) {
+      window.dispatchEvent(new CustomEvent('claims-backend-change', { detail: { backend, loaded: true } }));
+    }
+  });
+}
 let matchSuggestions = [];
 let matchSuggestionRefreshTimer = null;
 let matchAcceptInFlight = false;
@@ -553,6 +582,7 @@ function renderLinkedPairs() {
 
   receiptsData.forEach((receipt) => {
     getActiveReadyClaimIds(receipt).forEach((claimId, index) => {
+      if (!isReadyOnlyClaimId(claimId) && receiptClaimsBackend(receipt) !== claimsDataBackend) return;
       linkedPairs.push({
         receipt,
         claimId,
@@ -590,7 +620,7 @@ function renderLinkedPairs() {
       const claimSub = claim
         ? (claim.payee || (claim.accountName || 'Unknown account'))
         : isReadyOnly
-          ? 'No YNAB claim linked'
+          ? 'No claim linked'
           : 'Claim details unavailable';
       const claimDate = claim
         ? formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date))
@@ -653,13 +683,14 @@ function renderLinkedPairs() {
       if (!receiptKey || !claimId) return;
 
       const receipt = receiptsData.find((item) => item.key === receiptKey);
+      const backend = receipt ? receiptClaimsBackend(receipt) : getClaimsBackend();
       const linkedCountForReceipt = receipt ? getLinkedClaimIds(receipt).length : 1;
       const confirmation = linkedCountForReceipt > 1
         ? `This receipt is linked to ${linkedCountForReceipt} claims. Unlink only this pair?`
         : 'Unlink this claim-receipt pair?';
 
       if (!window.confirm(confirmation)) return;
-      await unlinkClaimFromReceipt(receiptKey, claimId);
+      await unlinkClaimFromReceipt(receiptKey, claimId, backend);
     });
   });
 }
@@ -1201,16 +1232,19 @@ dropzone.addEventListener('drop', (e) => {
   uploadFiles(e.dataTransfer.files);
 });
 
-// Load YNAB TODOs
+// Load TODO claims from the selected financial backend.
 export async function loadYnabTodos() {
+  const requestId = ++claimsRequestId;
+  const backend = getClaimsBackend();
   todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
 
   try {
-    const response = await fetch(`${API_BASE}/ynab/todos`, {
+    const response = await fetch(`${API_BASE}/ynab/todos?backend=${encodeURIComponent(backend)}`, {
       headers: authHeaders(),
     });
 
     const data = await response.json().catch(() => null);
+    if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
 
     if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
       clearAuthToken();
@@ -1228,14 +1262,19 @@ export async function loadYnabTodos() {
       return;
     }
 
+    if (data.backend !== backend) {
+      throw new Error(`Claims backend mismatch: requested ${backend}, received ${data.backend || 'unknown'}`);
+    }
+
     setClaimsLoadErrorMessage('');
-    setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)));
+    setClaimsData(data.todos.sort((a, b) => new Date(b.date) - new Date(a.date)), backend);
     renderOutstandingClaims();
     renderLinkedPairs();
     updateUploadZoneCompact();
     scheduleMatchSuggestionRefresh();
   } catch (err) {
-    console.error('Failed to load YNAB todos:', err);
+    if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
+    console.error('Failed to load claims:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
   }
 }
@@ -1243,6 +1282,7 @@ export async function loadYnabTodos() {
 function getOutstandingClaims() {
   const linkedReceiptsByClaimId = new Map();
   receiptsData.forEach((receipt) => {
+    if (receiptClaimsBackend(receipt) !== claimsDataBackend) return;
     const linkedClaimIds = getLinkedClaimIds(receipt);
     linkedClaimIds.forEach((linkedClaimId) => {
       const linkedReceipts = linkedReceiptsByClaimId.get(linkedClaimId) || [];
@@ -1252,6 +1292,13 @@ function getOutstandingClaims() {
   });
 
   return claimsData.filter((claim) => !linkedReceiptsByClaimId.has(claim.id));
+}
+
+function receiptClaimsBackend(receipt) {
+  if (receipt?.linkedClaimsBackend === 'howmuch' || receipt?.linkedClaimsBackend === 'ynab') {
+    return receipt.linkedClaimsBackend;
+  }
+  return getLinkedClaimIds(receipt).some((id) => !isReadyOnlyClaimId(id)) ? 'ynab' : null;
 }
 
 function renderOutstandingClaims() {
@@ -1586,7 +1633,12 @@ async function patchReceiptLink(receiptKey, claim) {
   return patchReceiptLinks(receiptKey, [claim]);
 }
 
-async function patchReceiptLinks(receiptKey, claims) {
+async function patchReceiptLinks(
+  receiptKey,
+  claims,
+  backend = getClaimsBackend(),
+  expectedClaimsBackend = undefined,
+) {
   try {
     const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
       method: 'PATCH',
@@ -1595,6 +1647,8 @@ async function patchReceiptLinks(receiptKey, claims) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
+        backend,
+        ...(expectedClaimsBackend ? { expectedClaimsBackend } : {}),
         linkedClaims: claims.map((claim) => ({
           id: claim.id,
           description: claim.description,
@@ -1770,7 +1824,7 @@ function buildLinkedClaimPayload(receipt, claimId, index) {
   };
 }
 
-async function unlinkClaimFromReceipt(receiptKey, claimId) {
+async function unlinkClaimFromReceipt(receiptKey, claimId, backend) {
   const receipt = receiptsData.find((item) => item.key === receiptKey);
   if (!receipt) {
     showStatus('error', 'Linked receipt not found');
@@ -1785,13 +1839,13 @@ async function unlinkClaimFromReceipt(receiptKey, claimId) {
 
   const remainingClaimIds = existingClaimIds.filter((id) => id !== claimId);
   if (remainingClaimIds.length === 0) {
-    await unlinkReceipt(receiptKey);
+    await unlinkReceipt(receiptKey, backend);
     return;
   }
 
   const remainingClaims = remainingClaimIds.map((id, index) => buildLinkedClaimPayload(receipt, id, index));
   showStatus('uploading', 'Updating linked claims...');
-  const result = await patchReceiptLinks(receiptKey, remainingClaims);
+  const result = await patchReceiptLinks(receiptKey, remainingClaims, backend, backend);
   if (!result.ok) {
     showStatus('error', result.error || 'Failed to unlink pair');
     return;
@@ -1803,12 +1857,15 @@ async function unlinkClaimFromReceipt(receiptKey, claimId) {
 }
 
 // Unlink a receipt from its claim
-async function unlinkReceipt(receiptKey) {
+async function unlinkReceipt(receiptKey, backend = getClaimsBackend()) {
   try {
-    const response = await fetch(`${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link`, {
-      method: 'DELETE',
-      headers: authHeaders(),
-    });
+    const response = await fetch(
+      `${API_BASE}/receipt/${encodeURIComponent(receiptKey)}/link?backend=${encodeURIComponent(backend)}`,
+      {
+        method: 'DELETE',
+        headers: authHeaders(),
+      },
+    );
 
     if (response.ok) {
       showStatus('success', 'Receipt unlinked');

@@ -176,6 +176,12 @@ h2 {
   margin-bottom: 14px;
 }
 
+.app-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .btn-theme-toggle {
   flex-shrink: 0;
   background: transparent;
@@ -691,6 +697,36 @@ h2 {
 /* YNAB TODO list */
 .todo-list {
   list-style: none;
+}
+
+.backend-picker {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #4b5563;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+@media (max-width: 420px) {
+  .app-header-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .app-header-controls {
+    width: 100%;
+    justify-content: space-between;
+  }
+}
+
+.backend-picker select {
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  background: #fff;
+  color: #1f2937;
+  padding: 5px 8px;
+  font: inherit;
 }
 
 .claim-filter {
@@ -2273,10 +2309,15 @@ body.selecting .claims-view {
   border-color: #334155;
 }
 
-:root[data-theme="dark"] .claim-filter-input {
+:root[data-theme="dark"] .claim-filter-input,
+:root[data-theme="dark"] .backend-picker select {
   background: #0f172a;
   color: #e2e8f0;
   border-color: #334155;
+}
+
+:root[data-theme="dark"] .backend-picker {
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] .claim-filter-input:focus {

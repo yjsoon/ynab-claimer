@@ -88,6 +88,9 @@ interface Env {
   AUTH_PASSWORD: string;
   YNAB_API_KEY: string;
   YNAB_BUDGET_ID: string;
+  HOWMUCH_PAT?: string;
+  HOWMUCH_PLAN_ID?: string;
+  HOWMUCH_API_URL?: string;
   GEMINI_API_KEY?: string;
   GEMINI_MODEL?: string;
   // Receipt vision tagging (amount extraction + GST detection): MiniMax
@@ -139,6 +142,14 @@ interface YnabTodo {
   parentTransactionId?: string;
 }
 
+type ClaimsBackend = 'howmuch' | 'ynab';
+
+interface ClaimsBackendConfig {
+  apiUrl: string;
+  token: string;
+  planId: string;
+}
+
 interface GeminiAmountResult {
   amount: number | null;
   confidence: number;
@@ -188,6 +199,8 @@ interface LinkedClaimPayload {
 interface PushLineItem {
   receiptKey: string;
   ynabClaimId?: string | null;
+  claimSource?: 'transaction' | 'subtransaction' | null;
+  claimsBackend?: ClaimsBackend;
   date: string;
   description: string;
   accountCode: string;
@@ -204,6 +217,7 @@ interface ReceiptSummary {
   originalName?: string;
   linkedClaimId?: string;
   linkedClaimIds: string[];
+  linkedClaimsBackend?: ClaimsBackend;
   linkedClaimDescription?: string;
   receiptDate?: string;
   receiptDateSource?: string;
@@ -236,6 +250,7 @@ interface ReceiptSummary {
   xeroPendingInvoiceId?: string;
   xeroPendingInvoiceNumber?: string;
   xeroPendingAt?: string;
+  xeroPendingClaimsBackend?: ClaimsBackend;
 }
 
 interface ReceiptListResult {
@@ -244,16 +259,18 @@ interface ReceiptListResult {
   hasMore: boolean;
 }
 
-class YnabApiError extends Error {
+class ClaimsBackendApiError extends Error {
   status: number;
   details: string;
 
-  constructor(status: number, details: string) {
-    super('YNAB API error');
+  constructor(backend: ClaimsBackend, status: number, details: string) {
+    super(`${backend === 'howmuch' ? 'HowMuch' : 'YNAB'} API error`);
     this.status = status;
     this.details = details;
   }
 }
+
+class ClaimsBackendInputError extends Error {}
 
 const fxRateCache = new Map<string, { value: FxRateResult; expiresAt: number }>();
 
@@ -401,6 +418,42 @@ function sortYnabTodos(todos: YnabTodo[]): YnabTodo[] {
   return todos.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
+function parseExplicitClaimsBackend(value: unknown): ClaimsBackend {
+  if (value === 'howmuch' || value === 'ynab') return value;
+  throw new ClaimsBackendInputError(`Unsupported claims backend: ${String(value)}`);
+}
+
+function parseClaimsBackend(value: unknown): ClaimsBackend {
+  if (value === null || value === undefined) return 'howmuch';
+  return parseExplicitClaimsBackend(value);
+}
+
+function parseMutationBackend(value: unknown): ClaimsBackend {
+  if (value === undefined) return 'ynab';
+  return parseExplicitClaimsBackend(value);
+}
+
+function claimsBackendConfig(env: Env, backend: ClaimsBackend): ClaimsBackendConfig {
+  if (backend === 'ynab') {
+    if (!env.YNAB_API_KEY || !env.YNAB_BUDGET_ID) throw new Error('YNAB backend is not configured.');
+    return {
+      apiUrl: 'https://api.ynab.com/v1',
+      token: env.YNAB_API_KEY,
+      planId: env.YNAB_BUDGET_ID,
+    };
+  }
+
+  const planId = env.HOWMUCH_PLAN_ID || env.YNAB_BUDGET_ID;
+  if (!env.HOWMUCH_PAT || !planId) {
+    throw new Error('HowMuch backend is not configured (HOWMUCH_PAT and a plan ID are required).');
+  }
+  return {
+    apiUrl: (env.HOWMUCH_API_URL || 'https://howmuch.soon.sg/v1').replace(/\/+$/, ''),
+    token: env.HOWMUCH_PAT,
+    planId,
+  };
+}
+
 async function mapWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
@@ -423,25 +476,62 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-async function fetchYnabTodos(env: Env, sinceDate = getDefaultYnabSinceDate()): Promise<YnabTodo[]> {
-  const ynabResponse = await fetch(
-    `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions?since_date=${encodeURIComponent(sinceDate)}`,
-    {
-      headers: {
-        Authorization: `Bearer ${env.YNAB_API_KEY}`,
-      },
-    }
-  );
+async function fetchYnabTodos(
+  env: Env,
+  sinceDate = getDefaultYnabSinceDate(),
+  backend: ClaimsBackend = 'howmuch'
+): Promise<YnabTodo[]> {
+  const config = claimsBackendConfig(env, backend);
+  let transactions: YnabTransaction[] = [];
+  let settled = false;
 
-  if (!ynabResponse.ok) {
-    const errorText = await ynabResponse.text();
-    throw new YnabApiError(ynabResponse.status, errorText);
+  for (let attempt = 0; attempt < 2 && !settled; attempt += 1) {
+    transactions = [];
+    let offset = 0;
+    let serverKnowledge: number | undefined;
+    let knowledgeChanged = false;
+
+    do {
+      const query = new URLSearchParams({ since_date: sinceDate });
+      if (backend === 'howmuch') {
+        query.set('limit', '250');
+        query.set('offset', String(offset));
+      }
+      const response = await fetch(
+        `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions?${query}`,
+        { headers: { Authorization: `Bearer ${config.token}` } }
+      );
+      if (!response.ok) {
+        throw new ClaimsBackendApiError(backend, response.status, await response.text());
+      }
+
+      const body = (await response.json()) as {
+        data: {
+          transactions: YnabTransaction[];
+          has_more?: boolean;
+          next_offset?: number | null;
+          server_knowledge?: number;
+        };
+      };
+      if (backend === 'howmuch' && serverKnowledge !== undefined && body.data.server_knowledge !== serverKnowledge) {
+        knowledgeChanged = true;
+        break;
+      }
+      serverKnowledge = body.data.server_knowledge;
+      transactions.push(...body.data.transactions);
+      if (backend !== 'howmuch' || !body.data.has_more || body.data.next_offset == null) break;
+      if (body.data.next_offset <= offset) throw new Error('HowMuch returned an invalid transaction page cursor.');
+      offset = body.data.next_offset;
+    } while (true);
+
+    settled = !knowledgeChanged;
   }
 
-  const data = (await ynabResponse.json()) as { data: { transactions: YnabTransaction[] } };
+  if (!settled) throw new Error('HowMuch transactions changed repeatedly while loading; please retry.');
+
   const todos: YnabTodo[] = [];
 
-  data.data.transactions.forEach((transaction) => {
+  transactions.forEach((transaction) => {
     const subtransactionTodos: YnabTodo[] = [];
     (transaction.subtransactions || []).forEach((subtransaction) => {
       const subtransactionTodo = toYnabTodoFromSubtransaction(transaction, subtransaction);
@@ -483,6 +573,10 @@ async function listReceiptSummaries(
         originalName: metadata.originalName,
         linkedClaimId: primaryLinkedClaimId,
         linkedClaimIds,
+        linkedClaimsBackend:
+          metadata.linkedClaimsBackend === 'howmuch' ? 'howmuch'
+            : metadata.linkedClaimsBackend === 'ynab' ? 'ynab'
+              : linkedClaimIds.length > 0 ? 'ynab' : undefined,
         linkedClaimDescription: metadata.linkedClaimDescription,
         receiptDate: metadata.receiptDate,
         receiptDateSource: metadata.receiptDateSource,
@@ -514,6 +608,10 @@ async function listReceiptSummaries(
         xeroPendingInvoiceId: metadata.xeroPendingInvoiceId,
         xeroPendingInvoiceNumber: metadata.xeroPendingInvoiceNumber,
         xeroPendingAt: metadata.xeroPendingAt,
+        xeroPendingClaimsBackend:
+          metadata.xeroPendingClaimsBackend === 'ynab' ? 'ynab'
+            : metadata.xeroPendingClaimsBackend === 'howmuch' ? 'howmuch'
+              : undefined,
       };
     }
   );
@@ -679,30 +777,39 @@ async function getUsdSgdRate(date: string): Promise<FxRateResult> {
 async function patchReceiptMetadata(
   env: Env,
   key: string,
-  metadataPatch: Record<string, string | undefined>
+  metadataPatch: Record<string, string | undefined>,
+  expectedClaimsBackend?: ClaimsBackend
 ): Promise<boolean> {
-  const existing = await env.RECEIPTS.get(key);
-  if (!existing) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await env.RECEIPTS.get(key);
+    if (!existing) return false;
 
-  const content = await existing.arrayBuffer();
-  const mergedMetadata: Record<string, string> = {
-    ...(existing.customMetadata || {}),
-  };
-
-  Object.entries(metadataPatch).forEach(([metaKey, value]) => {
-    if (value === undefined) {
-      delete mergedMetadata[metaKey];
-      return;
+    const content = await existing.arrayBuffer();
+    const mergedMetadata: Record<string, string> = {
+      ...(existing.customMetadata || {}),
+    };
+    const currentClaimsBackend = mergedMetadata.linkedClaimsBackend === 'howmuch' ? 'howmuch' : 'ynab';
+    if (expectedClaimsBackend && currentClaimsBackend !== expectedClaimsBackend) {
+      throw new ClaimsBackendInputError('Receipt link belongs to a different claims backend.');
     }
-    mergedMetadata[metaKey] = value;
-  });
 
-  await env.RECEIPTS.put(key, content, {
-    httpMetadata: existing.httpMetadata,
-    customMetadata: mergedMetadata,
-  });
+    Object.entries(metadataPatch).forEach(([metaKey, value]) => {
+      if (value === undefined) {
+        delete mergedMetadata[metaKey];
+        return;
+      }
+      mergedMetadata[metaKey] = value;
+    });
 
-  return true;
+    const updated = await env.RECEIPTS.put(key, content, {
+      onlyIf: { etagMatches: existing.etag },
+      httpMetadata: existing.httpMetadata,
+      customMetadata: mergedMetadata,
+    });
+    if (updated) return true;
+  }
+
+  throw new Error(`Receipt metadata changed concurrently: ${key}`);
 }
 
 async function callGeminiWithFile(
@@ -1270,26 +1377,82 @@ function addCalendarDays(date: string, days: number): string {
 }
 
 function parsePushLineItems(raw: unknown): PushLineItem[] {
-  return (Array.isArray(raw) ? raw : [])
-    .filter(
-      (l) =>
-        l &&
-        typeof l.receiptKey === 'string' && l.receiptKey &&
-        typeof l.description === 'string' && l.description.trim() &&
-        typeof l.accountCode === 'string' && l.accountCode &&
-        typeof l.taxType === 'string' && l.taxType &&
-        Number(l.amount) > 0
-    )
-    .map((l) => ({
-      receiptKey: l.receiptKey,
-      ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
-      date: typeof l.date === 'string' ? l.date : '',
-      description: l.description.trim(),
-      accountCode: l.accountCode,
-      taxType: l.taxType,
-      currency: typeof l.currency === 'string' ? l.currency : undefined,
-      amount: Number(l.amount),
-    }));
+  if (!Array.isArray(raw)) return [];
+
+  return raw.map((value, index) => {
+    if (!value || typeof value !== 'object') {
+      throw new ClaimsBackendInputError(`Invalid invoice line ${index + 1}.`);
+    }
+    const line = value as Record<string, unknown>;
+    const amount = line.amount;
+    if (
+      typeof line.receiptKey !== 'string' || !line.receiptKey.trim() ||
+      typeof line.description !== 'string' || !line.description.trim() ||
+      typeof line.accountCode !== 'string' || !line.accountCode.trim() ||
+      typeof line.taxType !== 'string' || !line.taxType.trim() ||
+      typeof amount !== 'number' || !Number.isFinite(amount) || amount <= 0
+    ) {
+      throw new ClaimsBackendInputError(
+        `Invalid invoice line ${index + 1}: receipt, description, positive amount, account and tax code are required.`
+      );
+    }
+    if (
+      line.ynabClaimId !== undefined && line.ynabClaimId !== null &&
+      typeof line.ynabClaimId !== 'string'
+    ) {
+      throw new ClaimsBackendInputError(`Invalid claim ID on invoice line ${index + 1}.`);
+    }
+    if (
+      line.claimSource !== undefined && line.claimSource !== null &&
+      line.claimSource !== 'transaction' && line.claimSource !== 'subtransaction'
+    ) {
+      throw new ClaimsBackendInputError(`Invalid claim source on invoice line ${index + 1}.`);
+    }
+    if (line.date !== undefined && typeof line.date !== 'string') {
+      throw new ClaimsBackendInputError(`Invalid date on invoice line ${index + 1}.`);
+    }
+    if (line.currency !== undefined && typeof line.currency !== 'string') {
+      throw new ClaimsBackendInputError(`Invalid currency on invoice line ${index + 1}.`);
+    }
+
+    return {
+      receiptKey: line.receiptKey,
+      ynabClaimId: typeof line.ynabClaimId === 'string' ? line.ynabClaimId : null,
+      claimSource:
+        line.claimSource === 'transaction' || line.claimSource === 'subtransaction' ? line.claimSource : null,
+      claimsBackend:
+        line.claimsBackend === undefined ? undefined : parseExplicitClaimsBackend(line.claimsBackend),
+      date: typeof line.date === 'string' ? line.date : '',
+      description: line.description.trim(),
+      accountCode: line.accountCode.trim(),
+      taxType: line.taxType.trim(),
+      currency: typeof line.currency === 'string' ? line.currency : undefined,
+      amount,
+    };
+  });
+}
+
+function resolveMutationBackend(value: unknown, lineItems: PushLineItem[]): ClaimsBackend {
+  const claimLines = lineItems.filter((line) => line.ynabClaimId);
+  if (value === undefined) {
+    if (claimLines.some((line) => line.claimsBackend !== undefined)) {
+      throw new ClaimsBackendInputError('Request backend is required when line-item backend provenance is present.');
+    }
+    return 'ynab';
+  }
+
+  const bodyBackend = parseExplicitClaimsBackend(value);
+  if (claimLines.some((line) => line.claimsBackend === undefined)) {
+    throw new ClaimsBackendInputError('Every claim-bearing line must include backend provenance.');
+  }
+  const lineBackends = Array.from(new Set(claimLines.map((line) => line.claimsBackend)));
+  if (lineBackends.length > 1) {
+    throw new ClaimsBackendInputError('Line items from different claims backends cannot be processed together.');
+  }
+  if (lineBackends.length === 1 && lineBackends[0] !== bodyBackend) {
+    throw new ClaimsBackendInputError('Line-item backend does not match the request backend.');
+  }
+  return lineBackends[0] || bodyBackend;
 }
 
 function nonGstTaxTypeForCurrency(currency?: string): string {
@@ -1540,12 +1703,22 @@ async function readYnabError(response: Response): Promise<string> {
   return text.replace(/\s+/g, ' ').slice(0, 180);
 }
 
-// Flip a YNAB transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
-async function markYnabClaimed(env: Env, transactionId: string, claimedDate = singaporeToday()): Promise<YnabClaimResult> {
-  if (transactionId.includes('_st_')) return { status: 'skipped', detail: 'Subtransactions must be updated manually in YNAB.' };
+// Flip a transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
+async function markYnabClaimed(
+  env: Env,
+  transactionId: string,
+  claimedDate = singaporeToday(),
+  backend: ClaimsBackend = 'howmuch',
+  source: 'transaction' | 'subtransaction' | null = null
+): Promise<YnabClaimResult> {
+  if (source === 'subtransaction' || transactionId.includes('_st_')) {
+    return { status: 'skipped', detail: 'Subtransactions must be updated manually.' };
+  }
   try {
-    const base = `https://api.ynab.com/v1/plans/${encodeURIComponent(env.YNAB_BUDGET_ID)}/transactions/${encodeURIComponent(transactionId)}`;
-    const getRes = await fetch(base, { headers: { Authorization: `Bearer ${env.YNAB_API_KEY}` } });
+    const config = claimsBackendConfig(env, backend);
+    const base = `${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions/${encodeURIComponent(transactionId)}`;
+    const authHeaders = { Authorization: `Bearer ${config.token}` };
+    const getRes = await fetch(base, { headers: authHeaders });
     if (!getRes.ok) return { status: 'failed', detail: await readYnabError(getRes) };
     const getData = (await getRes.json()) as { data?: { transaction?: { memo?: string | null } } };
     const memo = getData.data?.transaction?.memo || '';
@@ -1555,7 +1728,7 @@ async function markYnabClaimed(env: Env, transactionId: string, claimedDate = si
       : `CLAIMED - ${claimedDate}: ${memo}`.trim();
     const putRes = await fetch(base, {
       method: 'PUT',
-      headers: { Authorization: `Bearer ${env.YNAB_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { ...authHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ transaction: { memo: newMemo } }),
     });
     return putRes.ok ? { status: 'claimed' } : { status: 'failed', detail: await readYnabError(putRes) };
@@ -1833,12 +2006,21 @@ export default {
       if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'PATCH') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
         const body = (await request.json()) as {
+          backend?: unknown;
+          expectedClaimsBackend?: unknown;
           linkedClaimId?: string;
           linkedClaimDescription?: string;
           linkedClaimAmount?: number;
           linkedClaimDate?: string;
           linkedClaims?: LinkedClaimPayload[];
         };
+        const backend = parseMutationBackend(body.backend);
+        const expectedClaimsBackend = body.expectedClaimsBackend === undefined
+          ? undefined
+          : parseExplicitClaimsBackend(body.expectedClaimsBackend);
+        if (expectedClaimsBackend && expectedClaimsBackend !== backend) {
+          throw new ClaimsBackendInputError('Expected claims backend must match the link backend.');
+        }
 
         const linkedClaims = Array.isArray(body.linkedClaims) && body.linkedClaims.length > 0
           ? body.linkedClaims
@@ -1884,7 +2066,8 @@ export default {
           linkedClaimAmount:
             typeof primaryClaim.amount === 'number' ? String(primaryClaim.amount) : undefined,
           linkedClaimDate: primaryClaim.date,
-        });
+          linkedClaimsBackend: backend,
+        }, expectedClaimsBackend);
         if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
@@ -1900,6 +2083,9 @@ export default {
       // DELETE /receipt/:key/link - Unlink a receipt from a claim
       if (path.startsWith('/receipt/') && path.endsWith('/link') && request.method === 'DELETE') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/link', ''));
+        const backend = parseMutationBackend(
+          url.searchParams.has('backend') ? url.searchParams.get('backend') : undefined
+        );
 
         const updated = await patchReceiptMetadata(env, key, {
           linkedClaimId: undefined,
@@ -1907,7 +2093,8 @@ export default {
           linkedClaimDescription: undefined,
           linkedClaimAmount: undefined,
           linkedClaimDate: undefined,
-        });
+          linkedClaimsBackend: undefined,
+        }, backend);
         if (!updated) {
           return new Response(JSON.stringify({ error: 'Receipt not found' }), {
             status: 404,
@@ -1920,26 +2107,27 @@ export default {
         });
       }
 
-      // GET /ynab/todos - Fetch pending claims from YNAB
+      // GET /ynab/todos - Fetch pending claims from HowMuch (default) or YNAB.
       if (path === '/ynab/todos' && request.method === 'GET') {
         try {
           const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
-          const todos = await fetchYnabTodos(env, sinceDate);
+          const backend = parseClaimsBackend(url.searchParams.get('backend'));
+          const todos = await fetchYnabTodos(env, sinceDate, backend);
 
-          return new Response(JSON.stringify({ todos }), {
+          return new Response(JSON.stringify({ todos, backend }), {
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         } catch (error) {
-          if (error instanceof YnabApiError) {
-            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+          if (error instanceof ClaimsBackendApiError) {
+            return new Response(JSON.stringify({ error: error.message, details: error.details }), {
               status: error.status,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
 
-          const message = error instanceof Error ? error.message : 'Failed to fetch YNAB data';
+          const message = error instanceof Error ? error.message : 'Failed to fetch claims data';
           return new Response(JSON.stringify({ error: message }), {
-            status: 500,
+            status: error instanceof ClaimsBackendInputError ? 400 : 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -1949,13 +2137,15 @@ export default {
       if (path === '/agent/unclaimed-expenditures' && request.method === 'GET') {
         try {
           const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
+          const backend = parseClaimsBackend(url.searchParams.get('backend'));
           const [todos, receiptResult] = await Promise.all([
-            fetchYnabTodos(env, sinceDate),
+            fetchYnabTodos(env, sinceDate, backend),
             listAllReceiptSummaries(env),
           ]);
 
           const linkedReceiptsByClaimId = new Map<string, ReceiptSummary[]>();
           receiptResult.receipts.forEach((receipt) => {
+            if (receipt.linkedClaimsBackend !== backend) return;
             receipt.linkedClaimIds.forEach((claimId) => {
               const linkedReceipts = linkedReceiptsByClaimId.get(claimId) || [];
               linkedReceipts.push(receipt);
@@ -1981,6 +2171,7 @@ export default {
             JSON.stringify({
               generatedAt: new Date().toISOString(),
               sinceDate,
+              backend,
               summary: {
                 todoClaimCount: todos.length,
                 missingReceiptClaimCount: missingReceiptClaims.length,
@@ -1997,8 +2188,8 @@ export default {
             }
           );
         } catch (error) {
-          if (error instanceof YnabApiError) {
-            return new Response(JSON.stringify({ error: 'YNAB API error', details: error.details }), {
+          if (error instanceof ClaimsBackendApiError) {
+            return new Response(JSON.stringify({ error: error.message, details: error.details }), {
               status: error.status,
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
@@ -2006,7 +2197,7 @@ export default {
 
           const message = error instanceof Error ? error.message : 'Failed to build agent claim report';
           return new Response(JSON.stringify({ error: message }), {
-            status: 500,
+            status: error instanceof ClaimsBackendInputError ? 400 : 500,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -2136,19 +2327,20 @@ export default {
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Failed to compile receipts PDF';
           return new Response(JSON.stringify({ error: message }), {
-            status: 502,
+            status: err instanceof ClaimsBackendInputError ? 400 : 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
       }
 
       // POST /xero/invoices/mark-claimed - after the draft bill and receipts
-      // have been reviewed, tag receipts as invoiced and flip linked YNAB TODOs.
+      // have been reviewed, tag receipts as invoiced and flip linked claim TODOs.
       if (path === '/xero/invoices/mark-claimed' && request.method === 'POST') {
         try {
           const body = (await request.json()) as {
             invoiceID?: string;
             lineItems?: PushLineItem[];
+            backend?: unknown;
           };
           const invoiceID = typeof body.invoiceID === 'string' ? body.invoiceID : '';
           const lineItems = parsePushLineItems(body.lineItems);
@@ -2158,26 +2350,27 @@ export default {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
+          const backend = resolveMutationBackend(body.backend, lineItems);
 
           const claimedDate = singaporeToday();
-          const claimIds = Array.from(
-            new Set(
+          const claims = Array.from(
+            new Map(
               lineItems
-                .map((l) => l.ynabClaimId)
-                .filter((id): id is string => typeof id === 'string' && id.length > 0)
-            )
+                .filter((line): line is PushLineItem & { ynabClaimId: string } => Boolean(line.ynabClaimId))
+                .map((line) => [line.ynabClaimId, line])
+            ).values()
           );
           const claimedYnab: Array<{ id: string; status: string; detail?: string }> = [];
-          for (const id of claimIds) {
-            const result = await markYnabClaimed(env, id, claimedDate);
-            claimedYnab.push({ id, ...result });
+          for (const claim of claims) {
+            const result = await markYnabClaimed(env, claim.ynabClaimId, claimedDate, backend, claim.claimSource || null);
+            claimedYnab.push({ id: claim.ynabClaimId, ...result });
           }
 
-          const ynabIssues = claimedYnab.filter((item) => item.status !== 'claimed');
+          const ynabIssues = claimedYnab.filter((item) => item.status === 'failed');
           if (ynabIssues.length > 0) {
             return new Response(
               JSON.stringify({
-                error: 'YNAB update failed; receipts were not marked invoiced.',
+                error: `${backend === 'howmuch' ? 'HowMuch' : 'YNAB'} update failed; receipts were not marked invoiced.`,
                 claimedDate,
                 taggedReceipts: [],
                 claimedYnab,
@@ -2197,6 +2390,7 @@ export default {
                 xeroPendingInvoiceId: undefined,
                 xeroPendingInvoiceNumber: undefined,
                 xeroPendingAt: undefined,
+                xeroPendingClaimsBackend: undefined,
               });
               taggedReceipts.push({ key, status: 'tagged' });
             } catch (err) {
@@ -2205,13 +2399,13 @@ export default {
           }
 
           return new Response(
-            JSON.stringify({ success: true, claimedDate, taggedReceipts, claimedYnab }),
+            JSON.stringify({ success: true, backend, claimedDate, taggedReceipts, claimedYnab }),
             { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Failed to mark claims as claimed';
           return new Response(JSON.stringify({ error: message }), {
-            status: 502,
+            status: err instanceof ClaimsBackendInputError ? 400 : 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -2226,6 +2420,7 @@ export default {
             reference?: string;
             lineItems?: PushLineItem[];
             receiptPdf?: unknown;
+            backend?: unknown;
           };
           const lineItems = parsePushLineItems(body.lineItems).map((l) => ({
             ...l,
@@ -2237,6 +2432,7 @@ export default {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
+          const backend = resolveMutationBackend(body.backend, lineItems);
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
           // Bill date in Singapore time — toISOString() is UTC and would backdate
@@ -2249,7 +2445,7 @@ export default {
           const lineKeys = lineItems
             .map((l) => `${l.receiptKey}:${Number(l.amount).toFixed(2)}:${l.accountCode}:${l.taxType}:${l.description}`)
             .sort();
-          const idem = await xero.idempotencyKey(['claim-bill', body.bucket || '', body.reference || '', ...lineKeys]);
+          const idem = await xero.idempotencyKey(['claim-bill', backend, body.bucket || '', body.reference || '', ...lineKeys]);
 
           const bill = await xero.createBill(env, {
             contactName: 'Soon Yin Jie',
@@ -2308,6 +2504,7 @@ export default {
                 xeroPendingInvoiceId: bill.invoiceID,
                 xeroPendingInvoiceNumber: bill.invoiceNumber,
                 xeroPendingAt: pendingAt,
+                xeroPendingClaimsBackend: backend,
               });
             } catch (err) {
               pendingReceiptFailures.push(`${key}: ${cleanError(err)}`);
@@ -2323,6 +2520,7 @@ export default {
             JSON.stringify({
               invoiceID: bill.invoiceID,
               invoiceNumber: bill.invoiceNumber,
+              backend,
               url: bill.url,
               allAttached,
               attachments,
@@ -2333,7 +2531,7 @@ export default {
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Failed to push invoice to Xero';
           return new Response(JSON.stringify({ error: message }), {
-            status: 502,
+            status: err instanceof ClaimsBackendInputError ? 400 : 502,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' },
           });
         }
@@ -2374,7 +2572,7 @@ export default {
       }
       const message = error instanceof Error ? error.message : 'Unknown error';
       return new Response(JSON.stringify({ error: message }), {
-        status: 500,
+        status: error instanceof ClaimsBackendInputError ? 400 : 500,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' },
       });
     }

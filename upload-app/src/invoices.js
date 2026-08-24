@@ -7,7 +7,7 @@ import {
   escapeHtml,
   formatCurrencyAmount,
 } from './lib/core.js';
-import { receiptsData, claimsData, claimsLoadErrorMessage } from './lib/state.js';
+import { receiptsData, claimsData, claimsDataBackend, claimsLoadErrorMessage } from './lib/state.js';
 import {
   getLinkedClaimIds,
   getReceiptMatchDate,
@@ -16,7 +16,7 @@ import {
   getComparableReceiptAmounts,
 } from './lib/match.js';
 import { openPreview } from './lib/preview.js';
-import { clearSelection, loadReceipts, loadYnabTodos } from './claims.js';
+import { clearSelection, getClaimsBackend, loadReceipts, loadYnabTodos } from './claims.js';
 
 const claimsView = document.getElementById('claimsView');
 const navClaims = document.getElementById('navClaims');
@@ -88,7 +88,7 @@ const ACCOUNT_HINTS = [
   { code: '467', re: /\b(phone|mobile|telco|singtel|starhub|\bm1\b|internet|broadband|data plan|\bsim\b)\b/i },
   { code: '463', re: /\b(subscription|software|saas|\bapp\b|\bai\b|\bapi\b|github|openai|chatgpt|claude|anthropic|lovable|figma|notion|adobe|cloud|domain|hosting)\b/i },
 ];
-const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to YNAB claims first.';
+const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link them to claims first.';
 const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
 function invoiceAccounts() {
@@ -252,7 +252,12 @@ function writeInvoiceEdits(store) {
 
 function saveInvoiceEdit(lineId, patch) {
   const store = loadInvoiceEdits();
-  store[lineId] = { ...(store[lineId] || {}), ...patch };
+  const line = invoiceLines.find((item) => item.id === lineId);
+  store[lineId] = {
+    ...(store[lineId] || {}),
+    ...(line?.claimsBackend ? { claimsBackend: line.claimsBackend } : {}),
+    ...patch,
+  };
   writeInvoiceEdits(store);
 }
 
@@ -294,6 +299,18 @@ function loadPushHistory() {
   }
 }
 
+function legacyLineItemKey(item) {
+  return `${item.receiptKey || ''}::${item.ynabClaimId || ''}`;
+}
+
+function pushHistoryEntryForItem(item) {
+  const byLine = loadPushHistory().byLine || {};
+  const current = byLine[lineItemKey(item)];
+  if (current) return current;
+  const backend = item?.claimsBackend === 'howmuch' ? 'howmuch' : 'ynab';
+  return backend === 'ynab' ? byLine[legacyLineItemKey(item)] : undefined;
+}
+
 function writePushHistory(history) {
   try {
     localStorage.setItem(INVOICE_PUSH_HISTORY_KEY, JSON.stringify(history));
@@ -311,6 +328,7 @@ function rememberPushedInvoice(data, payload) {
     byLine[lineItemKey(item)] = {
       invoiceID: data.invoiceID,
       invoiceNumber: data.invoiceNumber || '',
+      claimsBackend: item.claimsBackend || payload.backend || '',
       bucket: payload.bucket || '',
       reference: payload.reference || '',
       savedAt,
@@ -323,8 +341,14 @@ function rememberedInvoiceIDForItem(item) {
   if (typeof item?.xeroPendingInvoiceId === 'string' && item.xeroPendingInvoiceId) {
     return item.xeroPendingInvoiceId;
   }
-  const entry = loadPushHistory().byLine?.[lineItemKey(item)];
+  const entry = pushHistoryEntryForItem(item);
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
+}
+
+function rememberedClaimsBackendForItem(item) {
+  if (item?.claimsBackend === 'howmuch' || item?.claimsBackend === 'ynab') return item.claimsBackend;
+  const backend = pushHistoryEntryForItem(item)?.claimsBackend;
+  return backend === 'ynab' ? 'ynab' : backend === 'howmuch' ? 'howmuch' : getClaimsBackend();
 }
 
 function lineReviewSnapshot(line) {
@@ -358,16 +382,26 @@ function snapshotsMatch(a, b) {
   return JSON.stringify(a || null) === JSON.stringify(b || null);
 }
 
-// Re-apply saved manual edits onto freshly-built lines, and prune saved edits
-// for lines that no longer exist (e.g. once a receipt has been invoiced).
+// Re-apply saved manual edits onto freshly-built lines. Keep edits for lines
+// outside the current backend/load snapshot so asynchronous refreshes cannot
+// discard review state from another ledger.
 function applySavedInvoiceEdits(lines) {
   const store = loadInvoiceEdits();
-  const liveIds = new Set(lines.map((l) => l.id));
   lines.forEach((line) => {
+    const legacyId = legacyLineItemKey(line);
+    const legacySaved = line.claimsBackend === 'ynab' ? store[legacyId] : undefined;
+    if (!store[line.id] && legacySaved) {
+      store[line.id] = { ...legacySaved, claimsBackend: 'ynab' };
+      delete store[legacyId];
+    }
     const saved = store[line.id];
     const sourceSnapshot = lineSourceSnapshot(line);
     line.sourceSnapshot = sourceSnapshot;
-    if (saved) Object.assign(line, saved);
+    if (saved) {
+      const { claimsBackend: _savedBackend, ...savedEdits } = saved;
+      Object.assign(line, savedEdits);
+    }
+    if (saved && line.claimsBackend) store[line.id].claimsBackend = line.claimsBackend;
     const before = JSON.stringify({
       section: line.section,
       gstShown: line.gstShown,
@@ -407,15 +441,11 @@ function applySavedInvoiceEdits(lines) {
       Object.assign(line, store[line.id]);
     }
   });
-  const pruned = {};
-  Object.keys(store).forEach((id) => {
-    if (liveIds.has(id)) pruned[id] = store[id];
-  });
-  writeInvoiceEdits(pruned);
+  writeInvoiceEdits(store);
 }
 
 function buildInvoiceLines() {
-  if (claimsLoadErrorMessage) {
+  if (claimsLoadErrorMessage || claimsDataBackend !== getClaimsBackend()) {
     invoiceLines = [];
     return;
   }
@@ -428,6 +458,8 @@ function buildInvoiceLines() {
     getLinkedClaimIds(receipt).forEach((claimId) => {
       const claim = claimsById.get(claimId) || null;
       const isReadyOnly = isReadyOnlyClaimId(claimId);
+      const linkedBackend = receipt.linkedClaimsBackend || 'ynab';
+      if (!isReadyOnly && linkedBackend !== claimsDataBackend) return;
       if (!claim && !isReadyOnly) return;
       const matchDate = getReceiptMatchDate(receipt).date;
       const date = (claim && claim.date) || (matchDate ? matchDate.toISOString().slice(0, 10) : '');
@@ -448,11 +480,15 @@ function buildInvoiceLines() {
         if (pref) amount = pref.value;
       }
 
+      const claimsBackend = receipt.xeroPendingClaimsBackend
+        || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend);
       lines.push({
-        id: `${receipt.key}::${claimId}`,
+        id: `${claimsBackend}::${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
+        claimSource: claim?.source || null,
+        claimsBackend,
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
         xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
@@ -1187,12 +1223,20 @@ function lineTaxTypeForPush(line, bucket) {
 }
 
 function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
+  const claimBackends = [...new Set(lines.filter((line) => line.ynabClaimId).map((line) => line.claimsBackend))];
+  if (claimBackends.length > 1 || claimBackends.some((backend) => backend !== 'howmuch' && backend !== 'ynab')) {
+    throw new Error('Invoice lines must come from one known claims backend.');
+  }
+  const backend = claimBackends[0] || getClaimsBackend();
   return {
     bucket,
     reference,
+    backend,
     lineItems: lines.map((l) => ({
       receiptKey: l.receiptKey,
       ynabClaimId: l.ynabClaimId,
+      claimSource: l.claimSource || null,
+      claimsBackend: l.claimsBackend || backend,
       xeroPendingInvoiceId: l.xeroPendingInvoiceId || '',
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
@@ -1593,7 +1637,8 @@ async function downloadReceiptsPdf(payload, btn) {
 }
 
 function lineItemKey(item) {
-  return `${item.receiptKey || ''}::${item.ynabClaimId || ''}`;
+  const backend = item?.claimsBackend === 'ynab' ? 'ynab' : item?.claimsBackend === 'howmuch' ? 'howmuch' : '';
+  return `${backend}::${legacyLineItemKey(item)}`;
 }
 
 function checkedClaimLineItems(bucket, payload) {
@@ -1606,10 +1651,17 @@ function checkedClaimLineItems(bucket, payload) {
 }
 
 async function submitClaimed(invoiceID, lineItems) {
+  const backends = [...new Set(lineItems.filter((item) => item.ynabClaimId).map(rememberedClaimsBackendForItem))];
+  if (backends.length > 1) throw new Error('Cannot mark claims from different backends together.');
+  const backend = backends[0] || getClaimsBackend();
+  const attributedLineItems = lineItems.map((item) => ({
+    ...item,
+    claimsBackend: item.ynabClaimId ? rememberedClaimsBackendForItem(item) : undefined,
+  }));
   const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
     method: 'POST',
     headers: { ...authHeaders(), 'Content-Type': 'application/json' },
-    body: JSON.stringify({ invoiceID, lineItems }),
+    body: JSON.stringify({ invoiceID, lineItems: attributedLineItems, backend }),
   });
   const result = await res.json().catch(() => ({}));
   if (!res.ok || result.error) {
@@ -1665,9 +1717,9 @@ async function markLineItemGroupsClaimed(groups, bucket) {
   }
   if (failedYnab || failedReceipts) {
     const detail = failureDetails.length ? ` ${failureDetails.slice(0, 2).join(' ')}` : '';
-    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} YNAB failure(s), ${skippedYnab} skipped.${detail}`);
+    showStatus('error', `Marked with issues: ${failedReceipts} receipt tag failure(s), ${failedYnab} backend failure(s), ${skippedYnab} skipped.${detail}`);
   } else {
-    showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} YNAB subtransaction(s) skipped)` : ''}.`);
+    showStatus('success', `Marked ${count} checked ${BUCKET_LABEL[bucket]} item${count === 1 ? '' : 's'} claimed${claimedDate ? ` for ${claimedDate}` : ''}${skippedYnab ? ` (${skippedYnab} subtransaction(s) skipped)` : ''}.`);
   }
 }
 
@@ -1793,7 +1845,7 @@ function invoicePushSummary(bucket, lines) {
   return [
     `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
     `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
-    'YNAB TODO memos change only when you click Mark checked as claimed.',
+    'TODO memos change in the selected backend only when you click Mark checked as claimed.',
   ].join('\n');
 }
 
@@ -1997,6 +2049,13 @@ export function showInvoicesView(show, { refresh = true } = {}) {
 }
 
 export function initInvoices() {
+  window.addEventListener('claims-backend-change', (event) => {
+    closeActiveInvoiceEdit({ commit: false });
+    invoiceLines = [];
+    if (event.detail?.loaded) buildInvoiceLines();
+    if (invoicesActive) renderInvoiceEditor();
+  });
+
   document.querySelectorAll('.app-nav-link').forEach((link) => {
     link.addEventListener('click', (event) => {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {
