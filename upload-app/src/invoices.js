@@ -252,7 +252,12 @@ function writeInvoiceEdits(store) {
 
 function saveInvoiceEdit(lineId, patch) {
   const store = loadInvoiceEdits();
-  store[lineId] = { ...(store[lineId] || {}), ...patch };
+  const line = invoiceLines.find((item) => item.id === lineId);
+  store[lineId] = {
+    ...(store[lineId] || {}),
+    ...(line?.claimsBackend ? { claimsBackend: line.claimsBackend } : {}),
+    ...patch,
+  };
   writeInvoiceEdits(store);
 }
 
@@ -374,7 +379,11 @@ function applySavedInvoiceEdits(lines) {
     const saved = store[line.id];
     const sourceSnapshot = lineSourceSnapshot(line);
     line.sourceSnapshot = sourceSnapshot;
-    if (saved) Object.assign(line, saved);
+    if (saved) {
+      const { claimsBackend: _savedBackend, ...savedEdits } = saved;
+      Object.assign(line, savedEdits);
+    }
+    if (saved && line.claimsBackend) store[line.id].claimsBackend = line.claimsBackend;
     const before = JSON.stringify({
       section: line.section,
       gstShown: line.gstShown,
@@ -416,7 +425,9 @@ function applySavedInvoiceEdits(lines) {
   });
   const pruned = {};
   Object.keys(store).forEach((id) => {
-    if (liveIds.has(id)) pruned[id] = store[id];
+    if (liveIds.has(id) || (store[id].claimsBackend && store[id].claimsBackend !== claimsDataBackend)) {
+      pruned[id] = store[id];
+    }
   });
   writeInvoiceEdits(pruned);
 }
@@ -2024,6 +2035,13 @@ export function showInvoicesView(show, { refresh = true } = {}) {
 }
 
 export function initInvoices() {
+  window.addEventListener('claims-backend-change', (event) => {
+    closeActiveInvoiceEdit({ commit: false });
+    invoiceLines = [];
+    if (event.detail?.loaded) buildInvoiceLines();
+    if (invoicesActive) renderInvoiceEditor();
+  });
+
   document.querySelectorAll('.app-nav-link').forEach((link) => {
     link.addEventListener('click', (event) => {
       if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey || event.button !== 0) {

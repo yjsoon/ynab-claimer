@@ -227,6 +227,9 @@ async function main() {
   primaryMockState.delayedBackend = 'ynab';
   primaryMockState.labelByBackend = true;
   await page.locator('#claimsBackend').selectOption('ynab');
+  if (await page.locator('#matchReviewSection').isVisible()) {
+    throw new Error('backend change should immediately invalidate stale match suggestions');
+  }
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForTimeout(250);
   const visibleBackendClaim = await page.locator('#todoList .todo-item[data-claim-id="claim-2"] .todo-payee').textContent();
@@ -327,12 +330,21 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('push should enable after review');
 
+  primaryMockState.delayedBackend = 'ynab';
+  await page.locator('#claimsBackend').selectOption('ynab');
+  if (await page.locator('.invoice-push-btn').count() !== 0) {
+    throw new Error('backend change should immediately remove stale invoice actions');
+  }
+  await page.locator('#claimsBackend').selectOption('howmuch');
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  primaryMockState.delayedBackend = null;
+
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
   primaryMockState.delayMarkClaimed = true;
-  await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);

@@ -100,9 +100,18 @@ export function getClaimsBackend() {
 if (claimsBackendSelect) {
   claimsBackendSelect.value = localStorage.getItem(CLAIMS_BACKEND_KEY) === 'ynab' ? 'ynab' : 'howmuch';
   claimsBackendSelect.addEventListener('change', async () => {
-    localStorage.setItem(CLAIMS_BACKEND_KEY, getClaimsBackend());
+    const backend = getClaimsBackend();
+    localStorage.setItem(CLAIMS_BACKEND_KEY, backend);
+    setClaimsLoadErrorMessage('');
+    setClaimsData([]);
     clearSelection();
+    matchSuggestions = [];
+    renderMatchReview();
+    window.dispatchEvent(new CustomEvent('claims-backend-change', { detail: { backend, loaded: false } }));
     await loadYnabTodos();
+    if (backend === getClaimsBackend() && claimsDataBackend === backend) {
+      window.dispatchEvent(new CustomEvent('claims-backend-change', { detail: { backend, loaded: true } }));
+    }
   });
 }
 let matchSuggestions = [];

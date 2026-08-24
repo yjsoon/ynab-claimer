@@ -779,28 +779,32 @@ async function patchReceiptMetadata(
   key: string,
   metadataPatch: Record<string, string | undefined>
 ): Promise<boolean> {
-  const existing = await env.RECEIPTS.get(key);
-  if (!existing) return false;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const existing = await env.RECEIPTS.get(key);
+    if (!existing) return false;
 
-  const content = await existing.arrayBuffer();
-  const mergedMetadata: Record<string, string> = {
-    ...(existing.customMetadata || {}),
-  };
+    const content = await existing.arrayBuffer();
+    const mergedMetadata: Record<string, string> = {
+      ...(existing.customMetadata || {}),
+    };
 
-  Object.entries(metadataPatch).forEach(([metaKey, value]) => {
-    if (value === undefined) {
-      delete mergedMetadata[metaKey];
-      return;
-    }
-    mergedMetadata[metaKey] = value;
-  });
+    Object.entries(metadataPatch).forEach(([metaKey, value]) => {
+      if (value === undefined) {
+        delete mergedMetadata[metaKey];
+        return;
+      }
+      mergedMetadata[metaKey] = value;
+    });
 
-  await env.RECEIPTS.put(key, content, {
-    httpMetadata: existing.httpMetadata,
-    customMetadata: mergedMetadata,
-  });
+    const updated = await env.RECEIPTS.put(key, content, {
+      onlyIf: { etagMatches: existing.etag },
+      httpMetadata: existing.httpMetadata,
+      customMetadata: mergedMetadata,
+    });
+    if (updated) return true;
+  }
 
-  return true;
+  throw new Error(`Receipt metadata changed concurrently: ${key}`);
 }
 
 async function callGeminiWithFile(
@@ -1368,30 +1372,82 @@ function addCalendarDays(date: string, days: number): string {
 }
 
 function parsePushLineItems(raw: unknown): PushLineItem[] {
-  return (Array.isArray(raw) ? raw : [])
-    .filter(
-      (l) =>
-        l &&
-        typeof l.receiptKey === 'string' && l.receiptKey &&
-        typeof l.description === 'string' && l.description.trim() &&
-        typeof l.accountCode === 'string' && l.accountCode &&
-        typeof l.taxType === 'string' && l.taxType &&
-        Number(l.amount) > 0
-    )
-    .map((l) => ({
-      receiptKey: l.receiptKey,
-      ynabClaimId: typeof l.ynabClaimId === 'string' ? l.ynabClaimId : null,
+  if (!Array.isArray(raw)) return [];
+
+  return raw.map((value, index) => {
+    if (!value || typeof value !== 'object') {
+      throw new ClaimsBackendInputError(`Invalid invoice line ${index + 1}.`);
+    }
+    const line = value as Record<string, unknown>;
+    const amount = Number(line.amount);
+    if (
+      typeof line.receiptKey !== 'string' || !line.receiptKey ||
+      typeof line.description !== 'string' || !line.description.trim() ||
+      typeof line.accountCode !== 'string' || !line.accountCode ||
+      typeof line.taxType !== 'string' || !line.taxType ||
+      !Number.isFinite(amount) || amount <= 0
+    ) {
+      throw new ClaimsBackendInputError(
+        `Invalid invoice line ${index + 1}: receipt, description, positive amount, account and tax code are required.`
+      );
+    }
+    if (
+      line.ynabClaimId !== undefined && line.ynabClaimId !== null &&
+      typeof line.ynabClaimId !== 'string'
+    ) {
+      throw new ClaimsBackendInputError(`Invalid claim ID on invoice line ${index + 1}.`);
+    }
+    if (
+      line.claimSource !== undefined && line.claimSource !== null &&
+      line.claimSource !== 'transaction' && line.claimSource !== 'subtransaction'
+    ) {
+      throw new ClaimsBackendInputError(`Invalid claim source on invoice line ${index + 1}.`);
+    }
+    if (line.date !== undefined && typeof line.date !== 'string') {
+      throw new ClaimsBackendInputError(`Invalid date on invoice line ${index + 1}.`);
+    }
+    if (line.currency !== undefined && typeof line.currency !== 'string') {
+      throw new ClaimsBackendInputError(`Invalid currency on invoice line ${index + 1}.`);
+    }
+
+    return {
+      receiptKey: line.receiptKey,
+      ynabClaimId: typeof line.ynabClaimId === 'string' ? line.ynabClaimId : null,
       claimSource:
-        l.claimSource === 'transaction' || l.claimSource === 'subtransaction' ? l.claimSource : null,
+        line.claimSource === 'transaction' || line.claimSource === 'subtransaction' ? line.claimSource : null,
       claimsBackend:
-        l.claimsBackend === undefined ? undefined : parseExplicitClaimsBackend(l.claimsBackend),
-      date: typeof l.date === 'string' ? l.date : '',
-      description: l.description.trim(),
-      accountCode: l.accountCode,
-      taxType: l.taxType,
-      currency: typeof l.currency === 'string' ? l.currency : undefined,
-      amount: Number(l.amount),
-    }));
+        line.claimsBackend === undefined ? undefined : parseExplicitClaimsBackend(line.claimsBackend),
+      date: typeof line.date === 'string' ? line.date : '',
+      description: line.description.trim(),
+      accountCode: line.accountCode,
+      taxType: line.taxType,
+      currency: typeof line.currency === 'string' ? line.currency : undefined,
+      amount,
+    };
+  });
+}
+
+function resolveMutationBackend(value: unknown, lineItems: PushLineItem[]): ClaimsBackend {
+  const claimLines = lineItems.filter((line) => line.ynabClaimId);
+  if (value === undefined) {
+    if (claimLines.some((line) => line.claimsBackend !== undefined)) {
+      throw new ClaimsBackendInputError('Request backend is required when line-item backend provenance is present.');
+    }
+    return 'ynab';
+  }
+
+  const bodyBackend = parseExplicitClaimsBackend(value);
+  if (claimLines.some((line) => line.claimsBackend === undefined)) {
+    throw new ClaimsBackendInputError('Every claim-bearing line must include backend provenance.');
+  }
+  const lineBackends = Array.from(new Set(claimLines.map((line) => line.claimsBackend)));
+  if (lineBackends.length > 1) {
+    throw new ClaimsBackendInputError('Line items from different claims backends cannot be processed together.');
+  }
+  if (lineBackends.length === 1 && lineBackends[0] !== bodyBackend) {
+    throw new ClaimsBackendInputError('Line-item backend does not match the request backend.');
+  }
+  return lineBackends[0] || bodyBackend;
 }
 
 function nonGstTaxTypeForCurrency(currency?: string): string {
@@ -2074,6 +2130,7 @@ export default {
 
           const linkedReceiptsByClaimId = new Map<string, ReceiptSummary[]>();
           receiptResult.receipts.forEach((receipt) => {
+            if (receipt.linkedClaimsBackend !== backend) return;
             receipt.linkedClaimIds.forEach((claimId) => {
               const linkedReceipts = linkedReceiptsByClaimId.get(claimId) || [];
               linkedReceipts.push(receipt);
@@ -2270,7 +2327,6 @@ export default {
             lineItems?: PushLineItem[];
             backend?: unknown;
           };
-          const bodyBackend = parseMutationBackend(body.backend);
           const invoiceID = typeof body.invoiceID === 'string' ? body.invoiceID : '';
           const lineItems = parsePushLineItems(body.lineItems);
           if (!invoiceID || lineItems.length === 0) {
@@ -2279,27 +2335,7 @@ export default {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
-
-          const claimBackends = Array.from(
-            new Set(
-              lineItems
-                .filter((line) => line.ynabClaimId)
-                .map((line) => line.claimsBackend || bodyBackend)
-            )
-          );
-          if (claimBackends.length > 1) {
-            return new Response(JSON.stringify({ error: 'Line items from different claims backends cannot be marked together.' }), {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
-          }
-          const backend = claimBackends[0] || bodyBackend;
-          if (body.backend !== undefined && backend !== bodyBackend) {
-            return new Response(JSON.stringify({ error: 'Line-item backend does not match the request backend.' }), {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
-          }
+          const backend = resolveMutationBackend(body.backend, lineItems);
 
           const claimedDate = singaporeToday();
           const claims = Array.from(
@@ -2371,7 +2407,6 @@ export default {
             receiptPdf?: unknown;
             backend?: unknown;
           };
-          const bodyBackend = parseMutationBackend(body.backend);
           const lineItems = parsePushLineItems(body.lineItems).map((l) => ({
             ...l,
             taxType: taxTypeForBucket(body.bucket, l),
@@ -2382,26 +2417,7 @@ export default {
               headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             });
           }
-          const claimBackends = Array.from(
-            new Set(
-              lineItems
-                .filter((line) => line.ynabClaimId)
-                .map((line) => line.claimsBackend || bodyBackend)
-            )
-          );
-          if (claimBackends.length > 1) {
-            return new Response(JSON.stringify({ error: 'Line items from different claims backends cannot be invoiced together.' }), {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
-          }
-          const backend = claimBackends[0] || bodyBackend;
-          if (body.backend !== undefined && backend !== bodyBackend) {
-            return new Response(JSON.stringify({ error: 'Line-item backend does not match the request backend.' }), {
-              status: 400,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-            });
-          }
+          const backend = resolveMutationBackend(body.backend, lineItems);
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
           // Bill date in Singapore time — toISOString() is UTC and would backdate

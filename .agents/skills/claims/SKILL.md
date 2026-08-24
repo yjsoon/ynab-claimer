@@ -7,6 +7,17 @@ description: Process expense claims by matching YNAB transactions with uploaded 
 
 Process expense claims by matching YNAB transactions with uploaded receipts.
 
+## Backend Boundary
+
+This workflow is explicitly **YNAB-only**. Before matching, run the conservative helper with an explicit backend and show its complete dry-run output to the user:
+
+```bash
+cd scripts
+npm run link:matches -- --backend ynab
+```
+
+Do not apply the helper without the confirmation required by the repository instructions. Treat a receipt link as YNAB-owned only when `linkedClaimsBackend` is `"ynab"` or absent (legacy links). Never match, unlink, delete, or mark a `"howmuch"`-owned link through this workflow. If the user wants to process HowMuch claims, stop and use the backend-aware web Claims/Invoices flow instead.
+
 ## Instructions
 
 You are helping the user process expense claims. Follow this workflow.
@@ -73,11 +84,12 @@ curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/list" | jq '.receipts'
   "uploaded": "2025-01-01T12:00:00.000Z",
   "originalName": "receipt.pdf",
   "linkedClaimId": "ynab-transaction-id",      // If pre-linked
+  "linkedClaimsBackend": "ynab",               // "ynab" or "howmuch"; absent means legacy YNAB
   "linkedClaimDescription": "ChatGPT"          // Claim description
 }
 ```
 
-**Pre-linked receipts**: When `linkedClaimId` is present, auto-match this receipt to the corresponding YNAB TODO - skip manual matching for these.
+**Pre-linked receipts**: Auto-match only when `linkedClaimId` is present and `linkedClaimsBackend` is `"ynab"` or absent. Ignore HowMuch-owned links in this YNAB workflow.
 
 ### 4. Identify All Receipts
 

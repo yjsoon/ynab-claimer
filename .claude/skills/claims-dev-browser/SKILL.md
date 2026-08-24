@@ -9,6 +9,12 @@ Process expense claims by matching YNAB transactions with uploaded receipts.
 Uses **dev-browser** for persistent browser sessions — login once, process many claims
 with an in-browser "DONE" button (no chat interaction needed between claims).
 
+## Backend Boundary
+
+This workflow is explicitly **YNAB-only**. Before matching, run `npm run link:matches -- --backend ynab` from `scripts/` and show the complete dry-run output to the user. Do not apply it without the confirmation required by the repository instructions.
+
+Treat a receipt link as YNAB-owned only when `linkedClaimsBackend` is `"ynab"` or absent (legacy links). Never match, unlink, delete, or mark a `"howmuch"`-owned link through this workflow. If the user wants HowMuch claims, stop and use the backend-aware web Claims/Invoices flow instead.
+
 ## Prerequisites
 
 - `dev-browser` installed globally (`npm i -g dev-browser && dev-browser install`)
@@ -72,7 +78,7 @@ List receipts from R2:
 curl -s -H "X-Auth-Token: <R2_PASSWORD>" "<R2_WORKER_URL>/list" | jq '.receipts'
 ```
 
-**Pre-linked receipts**: When `linkedClaimId` is present, auto-match this receipt to the corresponding YNAB TODO — skip manual matching for these.
+**Pre-linked receipts**: Auto-match only when `linkedClaimId` is present and `linkedClaimsBackend` is `"ynab"` or absent. Ignore HowMuch-owned links in this YNAB workflow.
 
 ### 4. Identify All Receipts
 
@@ -105,7 +111,7 @@ For each receipt, the agent should:
 Compare TODOs against **identified** receipts and show a summary:
 
 **Matching priority:**
-1. **Pre-linked receipts** - If `linkedClaimId` matches a TODO's transaction ID, use that receipt (highest priority)
+1. **Pre-linked receipts** - If a YNAB-owned `linkedClaimId` matches a TODO's transaction ID, use that receipt (highest priority)
 2. **Date proximity** - Within 3 days
 3. **Amount match** - Exact or within 10%
 
