@@ -1,5 +1,9 @@
 name = "receipt-upload"
 main = "worker/index.ts"
+# Pinned to the "YJ" Cloudflare account so a deploy under another wrangler auth
+# profile (e.g. the one bound to ~/Developer/tt-projects) fails instead of
+# creating a duplicate worker there.
+account_id = "810a0c404daff0737f4a2a97a7aab092"
 compatibility_date = "2024-01-01"
 
 # Custom domain
