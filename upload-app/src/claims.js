@@ -329,6 +329,7 @@ export async function loadReceipts() {
 
     if (outstandingReceipts.length === 0) {
       receiptList.innerHTML = '<li class="empty-state">No outstanding receipts</li>';
+      if (!claimsLoadInFlight && !claimsLoadErrorMessage) renderOutstandingClaims();
       applyLinkingHighlights();
       renderLinkedPairs();
       updateUploadZoneCompact();
@@ -424,6 +425,10 @@ export async function loadReceipts() {
       li.querySelector('.delete-btn').addEventListener('click', (e) => handleDeleteBtnClick(e, li));
     });
 
+    // Which claims are outstanding depends on receipt links, so re-render that
+    // list whenever receipts change and claims are already loaded (covers a
+    // parallel load where receipts finish last, and receipt-only refreshes).
+    if (!claimsLoadInFlight && !claimsLoadErrorMessage) renderOutstandingClaims();
     applyLinkingHighlights();
     renderLinkedPairs();
     updateUploadZoneCompact();
