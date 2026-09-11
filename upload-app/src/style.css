@@ -2092,8 +2092,19 @@ body.selecting .claims-view {
     display: none;
   }
 
+  /* Card: tick + description + amount in a header row, then labelled fields */
   .invoice-doc-table tbody tr {
-    display: block;
+    display: grid;
+    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-areas:
+      "check desc amount"
+      "date date date"
+      "account account account"
+      "type type type"
+      "remark remark remark"
+      "tax tax tax"
+      "actions actions actions";
+    column-gap: 10px;
     border: 1px solid #e5e7eb;
     border-radius: 10px;
     margin-bottom: 12px;
@@ -2111,17 +2122,81 @@ body.selecting .claims-view {
     background: #fffbeb;
   }
 
-  .invoice-doc-table tbody td.col-reviewed {
-    order: -10;
-    border-bottom: 1px solid #e5e7eb;
-    padding-bottom: 10px;
-    margin-bottom: 2px;
-    justify-content: space-between;
+  .invoice-doc-table tbody tr.inv-row-note {
+    display: block;
+    margin: -6px 0 12px;
+    padding: 8px 12px;
+    border-color: #fcd34d;
+    background: #fffbeb;
   }
 
-  .invoice-doc-table tbody td.col-reviewed::before {
+  .invoice-doc-table tbody tr.inv-row-note td {
+    display: block;
+    padding: 0;
+  }
+
+  .invoice-doc-table tbody td.col-reviewed {
+    grid-area: check;
+    padding: 0;
+    align-items: flex-start;
+  }
+
+  .invoice-doc-table tbody td.inv-cell-description {
+    grid-area: desc;
+    padding: 0;
+    flex-direction: column;
+    gap: 4px;
+    font-weight: 600;
+    font-size: 1rem;
+    line-height: 1.3;
+    min-height: 44px;
+    justify-content: center;
+  }
+
+  /* Editing the title: take the amount's column too so the input has room */
+  .invoice-doc-table tbody td.inv-cell-description.is-editing {
+    grid-area: auto;
+    grid-column: 2 / -1;
+    grid-row: 1;
+  }
+
+  .invoice-doc-table tbody td.inv-cell-description.is-editing ~ td.inv-cell-amount {
+    grid-area: auto;
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+  }
+
+  .invoice-doc-table tbody td.col-actions .inv-draft-chip {
+    margin: 0 auto 0 0;
+  }
+
+  .invoice-doc-table tbody td.inv-cell-amount {
+    grid-area: amount;
+    padding: 0;
+    align-items: center;
+    min-height: 44px;
+    font-weight: 600;
+    font-size: 1rem;
+  }
+
+  .invoice-doc-table tbody td.col-reviewed::before,
+  .invoice-doc-table tbody td.inv-cell-description::before,
+  .invoice-doc-table tbody td.inv-cell-amount::before {
+    display: none;
+  }
+
+  .invoice-doc-table tbody td.inv-cell-date {
+    grid-area: date;
+    margin-top: 10px;
+    border-top: 1px solid #e5e7eb;
     padding-top: 10px;
   }
+
+  .invoice-doc-table tbody td[data-field="accountCode"] { grid-area: account; }
+  .invoice-doc-table tbody td.inv-cell-type { grid-area: type; }
+  .invoice-doc-table tbody td[data-field="remark"] { grid-area: remark; }
+  .invoice-doc-table tbody td.inv-cell-tax { grid-area: tax; }
+  .invoice-doc-table tbody td.col-actions { grid-area: actions; }
 
   .invoice-doc-table tbody td {
     display: flex;
@@ -2129,7 +2204,7 @@ body.selecting .claims-view {
     justify-content: space-between;
     gap: 12px;
     border-bottom: none;
-    padding: 8px 0;
+    padding: 6px 0;
     text-align: left;
   }
 
@@ -2153,7 +2228,10 @@ body.selecting .claims-view {
   }
 
   .invoice-doc-table tbody td.col-actions {
+    width: auto;
     justify-content: flex-end;
+    align-items: center;
+    flex-wrap: wrap;
     padding-top: 4px;
   }
 
@@ -3106,14 +3184,70 @@ body.selecting .claims-view {
   border-color: #fbbf24 !important;
 }
 
+.inv-row-stale td {
+  background: #fffbeb;
+}
+
+/* Full-width strip under a reviewed line whose source data changed */
+.inv-row-note td {
+  padding: 6px 10px 10px;
+  background: #fffbeb;
+  border-bottom: 1px solid #fde68a;
+}
+
 .inv-review-stale {
-  margin: 8px 0 0;
-  font-size: 0.75rem;
+  display: block;
+  font-size: 0.8rem;
   font-weight: 500;
   color: #b45309;
   line-height: 1.35;
   text-align: left;
-  flex: 1 1 100%;
+}
+
+/* Lines already sitting in a Xero draft bill */
+.inv-draft-chip {
+  display: inline-block;
+  margin-bottom: 4px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #fef3c7;
+  color: #92400e;
+  font-size: 0.72rem;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: help;
+}
+
+.inv-cell-date,
+.inv-cell-type {
+  white-space: nowrap;
+}
+
+.inv-cell-description .inv-cell-text {
+  display: inline-block;
+}
+
+.inv-tax-code {
+  display: block;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.inv-tax-name {
+  display: block;
+  font-size: 0.78rem;
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.invoices-sections {
+  transition: opacity 0.15s ease;
+}
+
+/* Refreshing in place: dim the current sections instead of swapping in a spinner */
+.invoices-sections[aria-busy="true"] {
+  opacity: 0.55;
+  pointer-events: none;
 }
 
 .inv-row-actions {
@@ -3202,6 +3336,10 @@ body.selecting .claims-view {
   gap: 12px;
   margin-top: 16px;
   flex-wrap: wrap;
+}
+
+.invoice-doc-actions .btn-primary {
+  width: auto;
 }
 
 .invoice-doc-note {
@@ -3388,4 +3526,29 @@ body.selecting .claims-view {
 
 :root[data-theme="dark"] .receipt-date {
   text-decoration-color: #475569;
+}
+
+/* Dark mode: invoices review additions */
+:root[data-theme="dark"] .inv-row-stale td,
+:root[data-theme="dark"] .inv-row-note td {
+  background: #422006;
+  border-bottom-color: #713f12;
+}
+
+:root[data-theme="dark"] .inv-draft-chip {
+  background: #713f12;
+  color: #fde68a;
+}
+
+:root[data-theme="dark"] .inv-tax-name {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .invoice-doc-table tbody td.inv-cell-date {
+  border-top-color: #334155;
+}
+
+:root[data-theme="dark"] .invoice-doc-table tbody tr.inv-row-note {
+  border-color: #a16207;
+  background: #422006;
 }

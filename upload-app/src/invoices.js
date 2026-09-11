@@ -153,10 +153,6 @@ function normaliseLineForSection(line) {
 }
 
 function setLineSection(line, section) {
-  if (getLineSection(line) !== section && isLineReviewed(line)) {
-    line.reviewed = false;
-    saveInvoiceEdit(line.id, { reviewed: false });
-  }
   line.section = section;
   normaliseLineForSection(line);
   saveInvoiceEdit(line.id, {
@@ -165,6 +161,7 @@ function setLineSection(line, section) {
     taxType: line.taxType,
     accountCode: line.accountCode,
   });
+  reaffirmLineReviewAfterEdit(line);
 }
 
 function defaultForeignCurrencyRemark(receipt) {
@@ -224,8 +221,16 @@ function setInvoicesLoading(loading) {
 }
 
 function updateInvoicesVisibility() {
-  if (invoicesLoadingEl) invoicesLoadingEl.hidden = !invoicesLoading;
-  if (invoicesSectionsEl) invoicesSectionsEl.hidden = invoicesLoading;
+  // Keep rendered sections on screen (dimmed) while refreshing; the loading
+  // box only replaces the content when there is nothing to show yet.
+  const hasRenderedSections = Boolean(invoicesSectionsEl?.querySelector('.invoice-section'));
+  const showLoadingBox = invoicesLoading && !hasRenderedSections;
+  if (invoicesLoadingEl) invoicesLoadingEl.hidden = !showLoadingBox;
+  if (invoicesSectionsEl) {
+    invoicesSectionsEl.hidden = showLoadingBox;
+    if (invoicesLoading && hasRenderedSections) invoicesSectionsEl.setAttribute('aria-busy', 'true');
+    else invoicesSectionsEl.removeAttribute('aria-busy');
+  }
   if (invoicesEmpty) invoicesEmpty.hidden = invoicesLoading || invoiceLines.length > 0;
 }
 
@@ -533,6 +538,20 @@ function taxTypeLabel(taxType, taxTypes = invoiceTaxTypes()) {
   return match ? `${match.taxType} - ${match.name}` : taxType;
 }
 
+// Short names for the table cell; the full Xero name stays in the tooltip and
+// the dropdown.
+const TAX_TYPE_SHORT_NAME = {
+  INPUTY24: 'Standard-rated',
+  NRINPUT: 'Non-GST supplier',
+  OPINPUT: 'Out of scope',
+};
+
+function taxTypeCellHtml(taxType, taxTypes = invoiceTaxTypes()) {
+  const short = TAX_TYPE_SHORT_NAME[taxType] || '';
+  const full = taxTypeLabel(taxType, taxTypes);
+  return `<span class="inv-cell-text" title="${escapeHtml(full)}"><span class="inv-tax-code">${escapeHtml(taxType)}</span>${short ? `<span class="inv-tax-name">${escapeHtml(short)}</span>` : ''}</span>`;
+}
+
 function isLineReviewed(line) {
   return line.reviewed === true;
 }
@@ -586,35 +605,39 @@ function setLineReviewed(line, reviewed, btn) {
     row.classList.toggle('inv-row-reviewed', reviewed);
     if (reviewed) {
       row.classList.remove('inv-row-stale');
-      row.querySelector('.inv-review-stale')?.remove();
+      const note = row.nextElementSibling;
+      if (note?.classList.contains('inv-row-note')) note.remove();
     }
   }
   updateSectionHeaders();
 }
 
-function invalidateLineReviewAfterEdit(line, contextEl) {
+// The user just changed this line by hand, so it is still reviewed: refresh the
+// stored snapshot so the reload-time "data changed underneath you" check keeps
+// matching. Only source data changing on its own should untick a line.
+function reaffirmLineReviewAfterEdit(line, contextEl) {
   if (!isLineReviewed(line)) return;
-  line.reviewInvalidated = true;
   const tr = contextEl?.closest?.('tr[data-id]');
   const btn = tr?.querySelector('.inv-review-btn');
-  setLineReviewed(line, false, btn);
-  line.reviewInvalidated = true;
-  saveInvoiceEdit(line.id, { reviewInvalidated: true });
-  if (!tr) return;
-  tr.classList.add('inv-row-stale');
-  const reviewedCell = tr.querySelector('.col-reviewed');
-  if (reviewedCell && !reviewedCell.querySelector('.inv-review-stale')) {
-    const notice = document.createElement('p');
-    notice.className = 'inv-review-stale';
-    notice.textContent = 'Edited — open the receipt, then mark reviewed again.';
-    reviewedCell.appendChild(notice);
-  }
+  setLineReviewed(line, true, btn);
+}
+
+function renderInvoiceStaleNoteRow() {
+  return `
+    <tr class="inv-row-note">
+      <td colspan="9">
+        <span class="inv-review-stale">Receipt or claim data changed since this line was reviewed — check it and tick again.</span>
+      </td>
+    </tr>`;
 }
 
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   const reviewed = isLineReviewed(line);
   const invalidated = line.reviewInvalidated === true;
+  const pendingDraft = line.xeroPendingInvoiceId
+    ? `<span class="inv-draft-chip" title="Already in Xero draft bill ${escapeHtml(line.xeroPendingInvoiceNumber || line.xeroPendingInvoiceId)}. Mark it claimed once the bill is done, or push again to create another draft.">In ${escapeHtml(line.xeroPendingInvoiceNumber || 'Xero draft')}</span>`
+    : '';
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
       <td class="col-reviewed" data-label="Reviewed">
@@ -623,22 +646,22 @@ function renderInvoiceLineRow(line, accounts) {
             aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
           <span class="inv-review-check" aria-hidden="true">✓</span>
         </button>
-        ${invalidated ? '<p class="inv-review-stale">Receipt data changed — review again before pushing.</p>' : ''}
       </td>
-      <td class="inv-cell-editable" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
+      <td class="inv-cell-editable inv-cell-date" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
+      <td class="inv-cell-editable inv-cell-description" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
-      <td class="inv-cell-editable" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
+      <td class="inv-cell-editable inv-cell-type" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
       <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(taxTypeLabel(deriveTaxType(line)))}</span></td>
-      <td class="num inv-cell-editable" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
+      <td class="inv-cell-editable inv-cell-tax" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit">${taxTypeCellHtml(deriveTaxType(line))}</td>
+      <td class="num inv-cell-editable inv-cell-amount" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
       <td class="col-actions" data-label="Actions">
+        ${pendingDraft}
         <div class="inv-row-actions">
           <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
           <button type="button" class="inv-unlink-btn" title="Unlink from invoice list">Unlink</button>
         </div>
       </td>
-    </tr>`;
+    </tr>${invalidated ? renderInvoiceStaleNoteRow() : ''}`;
 }
 
 function renderInvoiceSortOptions(bucket) {
@@ -727,7 +750,9 @@ function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs 
   const renderDisplay = () => {
     cell.classList.remove('is-editing');
     const value = format ? format(line[field]) : (line[field] ?? '');
-    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(String(value ?? '—'))}</span>`;
+    const text = String(value ?? '').trim();
+    // An empty value still needs something to tap on.
+    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(text || '—')}</span>`;
     cell.onclick = () => startEdit();
   };
 
@@ -755,7 +780,7 @@ function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs 
       const changed = parsed !== original;
       line[field] = parsed;
       saveInvoiceEdit(line.id, { [field]: parsed });
-      if (changed) invalidateLineReviewAfterEdit(line, cell);
+      if (changed) reaffirmLineReviewAfterEdit(line, cell);
       activeInvoiceEditCell = null;
       renderDisplay();
       updateSectionHeaders();
@@ -818,7 +843,7 @@ function attachAccountEditCell(cell, line, accounts) {
     const commit = () => {
       const nextCode = select.value;
       const prevSection = getLineSection(line);
-      if (nextCode !== originalCode) invalidateLineReviewAfterEdit(line, cell);
+      const changed = nextCode !== originalCode;
       line.accountCode = nextCode;
       saveInvoiceEdit(line.id, { accountCode: line.accountCode });
       activeInvoiceEditCell = null;
@@ -830,9 +855,11 @@ function attachAccountEditCell(cell, line, accounts) {
       if (line.section === 'transport' && !TRANSPORT_CODES.includes(line.accountCode)) {
         line.section = lineBucket(line);
         saveInvoiceEdit(line.id, { section: line.section, accountCode: line.accountCode });
+        reaffirmLineReviewAfterEdit(line);
         renderInvoiceEditor();
         return;
       }
+      if (changed) reaffirmLineReviewAfterEdit(line, cell);
       renderDisplay();
       if (getLineSection(line) !== prevSection) renderInvoiceEditor();
       else updateSectionHeaders();
@@ -863,7 +890,7 @@ function attachTaxTypeEditCell(cell, line) {
   const taxTypes = invoiceTaxTypes();
   const renderDisplay = () => {
     cell.classList.remove('is-editing');
-    cell.innerHTML = `<span class="inv-cell-text">${escapeHtml(taxTypeLabel(deriveTaxType(line), taxTypes))}</span>`;
+    cell.innerHTML = taxTypeCellHtml(deriveTaxType(line), taxTypes);
     cell.onclick = () => startEdit();
   };
 
@@ -882,7 +909,7 @@ function attachTaxTypeEditCell(cell, line) {
     const commit = () => {
       const next = select.value;
       const prevSection = getLineSection(line);
-      if (next !== current) invalidateLineReviewAfterEdit(line, cell);
+      const changed = next !== current;
       line.taxType = next;
       line.gstShown = next === 'INPUTY24';
       saveInvoiceEdit(line.id, { taxType: line.taxType, gstShown: line.gstShown });
@@ -891,6 +918,7 @@ function attachTaxTypeEditCell(cell, line) {
         line.section = lineBucket(line);
         saveInvoiceEdit(line.id, { section: line.section });
       }
+      if (changed) reaffirmLineReviewAfterEdit(line, cell);
       if (getLineSection(line) !== prevSection) renderInvoiceEditor();
       else renderDisplay();
       updateSectionHeaders();
@@ -938,7 +966,6 @@ function attachTypeEditCell(cell, line) {
     select.focus();
     const commit = () => {
       const next = select.value;
-      if (next !== current) invalidateLineReviewAfterEdit(line, cell);
       activeInvoiceEditCell = null;
       if (next !== getLineSection(line)) {
         setLineSection(line, next);
@@ -1873,6 +1900,15 @@ async function pushInvoice(bucket, btn) {
   if (!xeroConnected) {
     showStatus('error', 'Connect Xero first.');
     return;
+  }
+  const alreadyDrafted = lines.filter((l) => l.xeroPendingInvoiceId);
+  if (alreadyDrafted.length > 0) {
+    const drafts = [...new Set(alreadyDrafted.map((l) => l.xeroPendingInvoiceNumber || l.xeroPendingInvoiceId))].join(', ');
+    const proceed = window.confirm(
+      `${alreadyDrafted.length} of ${lines.length} ${BUCKET_LABEL[bucket]} line${alreadyDrafted.length === 1 ? ' is' : 's are'} already in Xero draft ${drafts}. ` +
+      'Pushing again creates another draft bill with the same lines. Continue?',
+    );
+    if (!proceed) return;
   }
   const reference = window.prompt(
     `${invoicePushSummary(bucket, lines)}\n\nReference / note for this Xero DRAFT bill:`,

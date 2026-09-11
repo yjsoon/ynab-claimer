@@ -338,8 +338,7 @@ async function main() {
   invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
   await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('#invoicesRefreshBtn').click();
-  await page.waitForSelector('#invoicesLoading:not([hidden])');
-  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForFunction(() => document.querySelector('#invoicesSections')?.getAttribute('aria-busy') !== 'true');
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
   if (!await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
     throw new Error('saved HowMuch review must not apply to the same receipt and claim IDs in YNAB');
@@ -358,8 +357,7 @@ async function main() {
   invoiceReceipt.xeroPendingClaimsBackend = 'howmuch';
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.locator('#invoicesRefreshBtn').click();
-  await page.waitForSelector('#invoicesLoading:not([hidden])');
-  await page.waitForFunction(() => document.querySelector('#invoicesLoading')?.hidden === true);
+  await page.waitForFunction(() => document.querySelector('#invoicesSections')?.getAttribute('aria-busy') !== 'true');
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
   if (await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
     const state = await page.evaluate(() => localStorage.getItem('claim_manager_invoice_edits'));
@@ -444,8 +442,31 @@ async function main() {
   const editedTaxText = await taxCell.locator('.inv-cell-text').textContent();
   if (!editedTaxText.startsWith('NRINPUT')) throw new Error(`tax type should be editable to NRINPUT, got ${editedTaxText}`);
 
+  // A hand edit is the reviewer's own decision: the line stays reviewed, the
+  // stored snapshot follows the edit, and that survives a reload.
   const disabledAfterTaxEdit = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
-  if (!disabledAfterTaxEdit) throw new Error('editing the tax type should require review again before push');
+  if (disabledAfterTaxEdit) throw new Error('editing the tax type must not untick a reviewed line');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .inv-row-note').count() !== 0) {
+    throw new Error('a hand edit must not show the "data changed" notice');
+  }
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    throw new Error('review after a hand edit should survive reload');
+  }
+  // Source data changing underneath a reviewed line still invalidates it.
+  invoiceReceipt.taggedAmount = 51;
+  invoiceReceipt.taggedAmountSgdApprox = 16;
+  todos.find((todo) => todo.id === 'claim-1').amount = 16;
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForFunction(() => document.querySelector('#invoicesSections')?.getAttribute('aria-busy') !== 'true');
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .inv-row-note').count() !== 1) {
+    throw new Error('a claim amount change should flag the reviewed line');
+  }
+  if (!await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled()) {
+    throw new Error('push should be disabled after source data changed');
+  }
   if (failedSubresources.length > 0) throw new Error(`subresource load failures: ${failedSubresources.join(', ')}`);
 
   const authPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
