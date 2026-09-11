@@ -448,7 +448,7 @@ function claimsBackendConfig(env: Env, backend: ClaimsBackend): ClaimsBackendCon
     throw new Error('HowMuch backend is not configured (HOWMUCH_PAT and a plan ID are required).');
   }
   return {
-    apiUrl: (env.HOWMUCH_API_URL || 'https://howmuch.soon.sg/v1').replace(/\/+$/, ''),
+    apiUrl: (env.HOWMUCH_API_URL || 'https://howmuch.tk.sg/v1').replace(/\/+$/, ''),
     token: env.HOWMUCH_PAT,
     planId,
   };
