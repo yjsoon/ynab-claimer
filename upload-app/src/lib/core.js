@@ -139,12 +139,20 @@ export async function handlePasswordSubmit() {
   }
 }
 
+let statusHideTimer = null;
+
 export function showStatus(type, message) {
+  // A stale success timer must not hide a newer message.
+  if (statusHideTimer) {
+    clearTimeout(statusHideTimer);
+    statusHideTimer = null;
+  }
   status.className = `status ${type}`;
   status.textContent = message;
 
   if (type === 'success') {
-    setTimeout(() => {
+    statusHideTimer = setTimeout(() => {
+      statusHideTimer = null;
       status.className = 'status';
     }, 3000);
   }

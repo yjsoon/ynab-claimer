@@ -8,6 +8,7 @@ import {
   CLAIM_FILTER_KEY,
   DEFAULT_CLAIM_FILTERS,
   REJECTED_MATCHES_KEY,
+  MATCH_REVIEW_COLLAPSED_KEY,
 } from './lib/constants.js';
 import {
   authHeaders,
@@ -54,6 +55,8 @@ const findMatchesBtn = document.getElementById('findMatchesBtn');
 const matchReviewSection = document.getElementById('matchReviewSection');
 const matchReviewList = document.getElementById('matchReviewList');
 const matchReviewCount = document.getElementById('matchReviewCount');
+const matchReviewToggle = document.getElementById('matchReviewToggle');
+const matchReviewBody = document.getElementById('matchReviewBody');
 const acceptAllClearBtn = document.getElementById('acceptAllClearBtn');
 const clearDismissedMatchesBtn = document.getElementById('clearDismissedMatchesBtn');
 const todoList = document.getElementById('todoList');
@@ -67,7 +70,6 @@ const claimFilterClear = document.getElementById('claimFilterClear');
 const linkingDock = document.getElementById('linkingDock');
 const linkingContextText = document.getElementById('linkingContextText');
 const linkingContextPreview = document.getElementById('linkingContextPreview');
-const linkingContextChange = document.getElementById('linkingContextChange');
 const actionBar = document.getElementById('actionBar');
 const actionText = document.getElementById('actionText');
 const confirmSelection = document.getElementById('confirmSelection');
@@ -91,6 +93,10 @@ let linkingSource = null; // 'receipt' | 'claim'
 let amountTaggingInFlight = false;
 let lastAmountTagAttempt = 0;
 let claimsRequestId = 0;
+// Starts true: claims always load after receipts, so the upload zone must not
+// judge "nothing outstanding" against an empty claims list before that.
+let claimsLoadInFlight = true;
+let matchReviewCollapsed = loadMatchReviewCollapsed();
 const CLAIMS_BACKEND_KEY = 'claim_manager_backend';
 
 export function getClaimsBackend() {
@@ -102,6 +108,7 @@ if (claimsBackendSelect) {
   claimsBackendSelect.addEventListener('change', async () => {
     const backend = getClaimsBackend();
     localStorage.setItem(CLAIMS_BACKEND_KEY, backend);
+    claimsLoadInFlight = true;
     setClaimsLoadErrorMessage('');
     setClaimsData([]);
     clearSelection();
@@ -143,6 +150,31 @@ function saveRejectedMatchPairs() {
   } catch (error) {
     console.warn('Rejected match preferences could not be saved:', error);
   }
+}
+
+function loadMatchReviewCollapsed() {
+  try {
+    return localStorage.getItem(MATCH_REVIEW_COLLAPSED_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function setMatchReviewCollapsed(collapsed) {
+  matchReviewCollapsed = Boolean(collapsed);
+  try {
+    localStorage.setItem(MATCH_REVIEW_COLLAPSED_KEY, String(matchReviewCollapsed));
+  } catch (error) {
+    console.warn('Match review preference could not be saved:', error);
+  }
+  applyMatchReviewCollapsed();
+}
+
+function applyMatchReviewCollapsed() {
+  if (!matchReviewSection || !matchReviewBody || !matchReviewToggle) return;
+  matchReviewSection.classList.toggle('is-collapsed', matchReviewCollapsed);
+  matchReviewBody.hidden = matchReviewCollapsed;
+  matchReviewToggle.setAttribute('aria-expanded', matchReviewCollapsed ? 'false' : 'true');
 }
 
 
@@ -337,9 +369,13 @@ export async function loadReceipts() {
         const titleUnderName = titleLabel
           ? `<span class="receipt-title-tag">${escapeHtml(titleLabel)}</span>`
           : '';
-        const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        const linkBtnIcon = `<svg class="icon-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+            </svg>
+            <svg class="icon-preview" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/>
+              <circle cx="12" cy="12" r="3"/>
             </svg>`;
         const deleteBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="3 6 5 6 21 6"/>
@@ -364,7 +400,7 @@ export async function loadReceipts() {
                 <span class="receipt-date ${dateDisplay.className}" title="${escapeHtml(dateDisplay.title)}">${dateDisplay.text}</span>
                 ${primaryAmountBadge}
               </div>
-              <button class="link-btn" title="Link to claim">
+              <button class="link-btn" title="Link to claim" aria-label="Link to claim">
                 ${linkBtnIcon}
               </button>
               <button class="delete-btn" title="Delete receipt">
@@ -738,12 +774,14 @@ function formatClaimAmount(amount) {
 
 function updateUploadZoneCompact() {
   if (!dropzone) return;
+  // Stay compact until both lists have settled, so the zone doesn't flash
+  // big → small while data is still loading.
+  if (claimsLoadInFlight || !receiptsLoadSucceeded) return;
   const outstandingClaims = claimsLoadErrorMessage ? 0 : getOutstandingClaims().length;
   const outstandingReceipts = receiptsData.filter((receipt) => getLinkedClaimIds(receipt).length === 0).length;
-  const compact = outstandingClaims > 0 || outstandingReceipts > 0;
+  const readyPairs = countReadyToClaimPairs();
+  const compact = outstandingClaims > 0 || outstandingReceipts > 0 || readyPairs > 0;
   dropzone.classList.toggle('is-compact', compact);
-  const compactLabel = dropzone.querySelector('.dropzone-compact-label');
-  if (compactLabel) compactLabel.hidden = !compact;
 }
 
 function scheduleMatchSuggestionRefresh() {
@@ -838,6 +876,7 @@ function refreshMatchSuggestions({ announce = false } = {}) {
 function renderMatchReview() {
   if (!matchReviewSection || !matchReviewList || !matchReviewCount) return;
 
+  applyMatchReviewCollapsed();
   const clearCount = matchSuggestions.filter((item) => item.kind === 'clear').length;
   matchReviewCount.textContent = `(${matchSuggestions.length})`;
   if (acceptAllClearBtn) {
@@ -869,7 +908,7 @@ function renderMatchReview() {
       ? 'Clear'
       : (altCount > 0 ? `Best of ${altCount + 1}` : 'Ambiguous');
     const altNote = altCount > 0
-      ? `<p class="match-review-alt">${altCount} other receipt${altCount === 1 ? '' : 's'} also match — use Change to pick</p>`
+      ? `<p class="match-review-alt">${altCount} other receipt${altCount === 1 ? ' also matches' : 's also match'} — use Change to pick</p>`
       : (suggestion.kind === 'ambiguous'
         ? '<p class="match-review-alt">Also matches other claims — confirm carefully</p>'
         : '');
@@ -969,15 +1008,13 @@ function changeMatchSuggestion(suggestion) {
   selectedReceiptKeys = new Set([suggestion.receipt.key]);
   applyLinkingHighlights();
 
-  // Rank shortlisted receipts to the top of the outstanding list when possible.
+  // Candidates share a date, and the list is date-sorted, so they already sit
+  // together; scroll the suggested one into view rather than reordering the list.
   if (receiptList && candidateKeys.length > 0) {
-    const preferred = new Set(candidateKeys);
-    const items = Array.from(receiptList.querySelectorAll('li[data-key]'));
-    items
-      .sort((a, b) => Number(preferred.has(b.dataset.key)) - Number(preferred.has(a.dataset.key)))
-      .forEach((item) => receiptList.appendChild(item));
-    receiptList.querySelector(`li[data-key="${CSS.escape(suggestion.receipt.key)}"]`)
-      ?.scrollIntoView({ block: 'nearest' });
+    const target = receiptList.querySelector(`li[data-key="${CSS.escape(suggestion.receipt.key)}"]`);
+    if (target && window.innerWidth > 700) {
+      target.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   if (window.innerWidth <= 700) {
@@ -1040,7 +1077,7 @@ function updateLinkingContext() {
     const amount = getReceiptAmountLabel(receipt);
     const dateInfo = getReceiptMatchDate(receipt);
     const dateStr = dateInfo.date ? formatDateForLocale(dateInfo.date) : '';
-    linkingContextText.textContent = ['Linking receipt:', name, amount, dateStr].filter(Boolean).join(' · ');
+    linkingContextText.textContent = `Linking receipt: ${[name, amount, dateStr].filter(Boolean).join(' · ')}`;
     if (linkingContextPreview) {
       linkingContextPreview.hidden = false;
       linkingContextPreview.onclick = () => openPreview(receipt.key, name);
@@ -1056,7 +1093,8 @@ function updateLinkingContext() {
       return;
     }
     const dateStr = formatDateForLocale(parseDateOnly(claim.date) || new Date(claim.date));
-    linkingContextText.textContent = `Linking claim: ${claim.description} · ${formatCurrencyAmount('SGD', Number(claim.amount))} · ${dateStr}`;
+    const claimLabel = (claim.description || claim.payee || 'Claim').trim();
+    linkingContextText.textContent = `Linking claim: ${[claimLabel, formatCurrencyAmount('SGD', Number(claim.amount)), dateStr].filter(Boolean).join(' · ')}`;
     if (linkingContextPreview) linkingContextPreview.hidden = true;
     linkingDock.hidden = false;
     return;
@@ -1092,7 +1130,7 @@ function updateActionBar() {
     }
 
     actionText.textContent = `${selectionCount} claim${selectionCount === 1 ? '' : 's'} selected`;
-    confirmSelection.textContent = `Link ${selectionCount}`;
+    confirmSelection.textContent = `Link ${selectionCount} claim${selectionCount === 1 ? '' : 's'}`;
     confirmSelection.hidden = false;
     confirmSelection.disabled = false;
     markReadySelection.hidden = true;
@@ -1112,7 +1150,7 @@ function updateActionBar() {
   }
 
   actionText.textContent = `${selectionCount} receipt${selectionCount === 1 ? '' : 's'} selected`;
-  confirmSelection.textContent = `Link ${selectionCount}`;
+  confirmSelection.textContent = `Link ${selectionCount} receipt${selectionCount === 1 ? '' : 's'}`;
   confirmSelection.hidden = false;
   confirmSelection.disabled = false;
 }
@@ -1164,12 +1202,19 @@ function applyLinkingHighlights() {
 
   receiptList.querySelectorAll('li[data-key]').forEach((li) => {
     const key = li.dataset.key;
-    const isChecked = linkingSource === 'claim' && selectedReceiptKeys.has(key);
+    const pickingForClaim = linkingSource === 'claim';
+    const isChecked = pickingForClaim && selectedReceiptKeys.has(key);
     const isSource = linkingSource === 'receipt' && sourceReceiptKey === key;
     li.classList.remove('selected');
-    li.classList.toggle('show-selector', linkingSource === 'claim');
+    li.classList.toggle('show-selector', pickingForClaim);
     li.classList.toggle('checked', isChecked);
     li.classList.toggle('source-selected', isSource);
+    const linkBtn = li.querySelector('.link-btn');
+    if (linkBtn) {
+      const label = pickingForClaim ? 'Preview receipt' : 'Link to claim';
+      linkBtn.title = label;
+      linkBtn.setAttribute('aria-label', label);
+    }
   });
 
   todoList.querySelectorAll('.todo-item[data-claim-id]').forEach((li) => {
@@ -1236,7 +1281,15 @@ dropzone.addEventListener('drop', (e) => {
 export async function loadYnabTodos() {
   const requestId = ++claimsRequestId;
   const backend = getClaimsBackend();
-  todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
+  claimsLoadInFlight = true;
+  // Keep the current list on screen while refreshing; only show the spinner
+  // when there is nothing to show yet (first load, backend switch, error).
+  const hasRenderedClaims = Boolean(todoList.querySelector('.todo-item'));
+  if (hasRenderedClaims) {
+    todoList.setAttribute('aria-busy', 'true');
+  } else {
+    todoList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
+  }
 
   try {
     const response = await fetch(`${API_BASE}/ynab/todos?backend=${encodeURIComponent(backend)}`, {
@@ -1245,6 +1298,8 @@ export async function loadYnabTodos() {
 
     const data = await response.json().catch(() => null);
     if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
+    claimsLoadInFlight = false;
+    todoList.removeAttribute('aria-busy');
 
     if (response.status === 401 && (!data || data.error === 'Unauthorized')) {
       clearAuthToken();
@@ -1274,6 +1329,8 @@ export async function loadYnabTodos() {
     scheduleMatchSuggestionRefresh();
   } catch (err) {
     if (requestId !== claimsRequestId || backend !== getClaimsBackend()) return;
+    claimsLoadInFlight = false;
+    todoList.removeAttribute('aria-busy');
     console.error('Failed to load claims:', err);
     resetClaimsAfterLoadFailure('Failed to load claims');
   }
@@ -1338,7 +1395,7 @@ function renderOutstandingClaims() {
     .map((t) => {
       const accountName = (t.accountName || '').trim();
       const accountLabel = accountName || 'Unknown account';
-      const linkBtnIcon = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      const linkBtnIcon = `<svg class="icon-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
               <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>`;
@@ -1359,7 +1416,7 @@ function renderOutstandingClaims() {
               <span class="todo-date">${formatDateForLocale(parseDateOnly(t.date) || new Date(t.date))}</span>
               <span class="todo-amount">${escapeHtml(formatClaimAmount(t.amount))}</span>
             </div>
-            <button class="link-btn claim-link-btn" title="Link receipts to this claim">
+            <button class="link-btn claim-link-btn" title="Link receipts to this claim" aria-label="Link receipts to this claim">
               ${linkBtnIcon}
             </button>
           </div>
@@ -1398,6 +1455,12 @@ if (clearDismissedMatchesBtn) {
     rejectedMatchPairs = new Set();
     saveRejectedMatchPairs();
     refreshMatchSuggestions({ announce: true });
+  });
+}
+
+if (matchReviewToggle) {
+  matchReviewToggle.addEventListener('click', () => {
+    setMatchReviewCollapsed(!matchReviewCollapsed);
   });
 }
 
@@ -1531,13 +1594,10 @@ function handleLinkBtnClick(e, li) {
     return;
   }
 
+  // While picking receipts for a claim the row itself toggles selection, so
+  // this button becomes the way to look at the receipt before ticking it.
   if (linkingSource === 'claim' && sourceClaimId) {
-    if (selectedReceiptKeys.has(key)) {
-      selectedReceiptKeys.delete(key);
-    } else {
-      selectedReceiptKeys.add(key);
-    }
-    applyLinkingHighlights();
+    openPreview(key, li.dataset.name);
     return;
   }
 
@@ -1627,6 +1687,17 @@ export function clearSelection() {
   selectedClaimIds.clear();
   document.body.classList.remove('selecting');
   applyLinkingHighlights();
+}
+
+// Cancel from the user's side: drop the selection and, on mobile, go back to
+// the tab the flow started from.
+function cancelLinking() {
+  if (!linkingSource) return;
+  const returnTab = linkingSource === 'receipt' ? 'receipts' : 'claims';
+  clearSelection();
+  if (window.innerWidth <= 700) {
+    switchTab(returnTab);
+  }
 }
 
 async function patchReceiptLink(receiptKey, claim) {
@@ -1881,16 +1952,16 @@ async function unlinkReceipt(receiptKey, backend = getClaimsBackend()) {
 }
 
 // Cancel selection button
-cancelSelection.addEventListener('click', clearSelection);
+cancelSelection.addEventListener('click', cancelLinking);
 confirmSelection.addEventListener('click', handleConfirmSelection);
 markReadySelection.addEventListener('click', markSourceReceiptReady);
-if (linkingContextChange) {
-  linkingContextChange.addEventListener('click', () => {
-    const returnTab = linkingSource === 'receipt' ? 'receipts' : 'claims';
-    clearSelection();
-    switchTab(returnTab);
-  });
-}
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape' || !linkingSource) return;
+  if (document.getElementById('previewOverlay')?.classList.contains('active')) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  cancelLinking();
+});
 
 // ===== Mobile Tab Toggle =====
 
@@ -1904,6 +1975,13 @@ function switchTab(tab) {
 
 function scrollTabToggleIntoView() {
   requestAnimationFrame(() => {
+    // The header is sticky on narrow screens; tell scroll-margin-top how tall it is
+    // so the tab toggle lands below it rather than underneath it.
+    const header = document.querySelector('.app-header');
+    const stickyHeight = header && getComputedStyle(header).position === 'sticky'
+      ? header.getBoundingClientRect().height + 8
+      : 0;
+    document.documentElement.style.setProperty('--sticky-header-height', `${Math.round(stickyHeight)}px`);
     document.querySelector('.tab-toggle')?.scrollIntoView({ block: 'start' });
   });
 }

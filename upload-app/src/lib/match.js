@@ -179,6 +179,10 @@ export function scoreReceiptClaimMatch(receipt, claim) {
   const isExactDate = dayDiff === 0;
   const isNearDate = dayDiff !== null && dayDiff >= 1 && dayDiff <= DATE_NEAR_THRESHOLD_DAYS;
 
+  // A receipt with no detected date falls back to its upload date, which is a
+  // much weaker signal; say so rather than presenting it as a real date match.
+  const dateSuffix = receiptDateInfo.source === 'upload' ? ' (upload date)' : '';
+
   if (amountMatch && (isExactDate || isNearDate)) {
     return {
       className: 'match-best',
@@ -192,10 +196,10 @@ export function scoreReceiptClaimMatch(receipt, claim) {
     };
   }
   if (isExactDate) {
-    return { className: 'match-date', label: 'Date match' };
+    return { className: 'match-date', label: `Date match${dateSuffix}` };
   }
   if (isNearDate) {
-    return { className: 'match-date-near', label: 'Near date' };
+    return { className: 'match-date-near', label: `Near date${dateSuffix}` };
   }
   return { className: '', label: '' };
 }
@@ -347,11 +351,15 @@ export function buildMatchSuggestions(claims, receipts, options = {}) {
   });
 
   const clearClaimIds = new Set(clear.map((candidate) => candidate.claim.id));
+  // When several claims tie on the same receipts, spread the primaries so two
+  // rows don't both suggest the same file.
+  const usedPrimaryReceiptKeys = new Set();
   for (const [claimId, claimCandidates] of byClaim.entries()) {
     if (clearClaimIds.has(claimId)) continue;
     const ranked = [...claimCandidates].sort(compareMatchCandidates);
     if (ranked.length === 0) continue;
-    const primary = ranked[0];
+    const primary = ranked.find((candidate) => !usedPrimaryReceiptKeys.has(candidate.receipt.key)) || ranked[0];
+    usedPrimaryReceiptKeys.add(primary.receipt.key);
     suggestions.push({
       id: makeSuggestionPairId(primary.claim.id, primary.receipt.key),
       kind: 'ambiguous',
@@ -362,7 +370,7 @@ export function buildMatchSuggestions(claims, receipts, options = {}) {
       amount: primary.amount,
       amountKind: primary.amountKind,
       dayDiff: primary.dayDiff,
-      alternatives: ranked.slice(1).map((candidate) => ({
+      alternatives: ranked.filter((candidate) => candidate !== primary).map((candidate) => ({
         receipt: candidate.receipt,
         receiptDate: candidate.receiptDate,
         dateSource: candidate.dateSource,

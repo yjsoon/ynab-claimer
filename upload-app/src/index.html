@@ -29,7 +29,7 @@
       document.documentElement.dataset.themePreference = preference;
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=20260722-match-review">
+  <link rel="stylesheet" href="/style.css?v=20260911-claims-ux">
 </head>
 <body>
   <div id="authOverlay" class="auth-overlay" style="display: none;">
@@ -74,16 +74,14 @@
     </header>
 
     <div id="claimsView" class="claims-view">
-    <div id="dropzone" class="dropzone">
+    <div id="dropzone" class="dropzone is-compact">
       <input type="file" id="fileInput" accept="image/*,.pdf" multiple>
       <div class="dropzone-expanded">
         <p>Tap to upload or drag files here</p>
         <p class="hint">Images and PDFs accepted</p>
       </div>
-      <p class="dropzone-compact-label" hidden>+ Upload receipt</p>
+      <p class="dropzone-compact-label">+ Upload receipt</p>
     </div>
-
-    <div id="status" class="status"></div>
 
     <div class="claims-toolbar">
       <button id="findMatchesBtn" class="btn-secondary btn-compact" type="button">Find matches</button>
@@ -92,22 +90,27 @@
 
     <section id="matchReviewSection" class="match-review-section" hidden>
       <div class="match-review-header">
-        <h2>Match review <span id="matchReviewCount">(0)</span></h2>
+        <button id="matchReviewToggle" class="match-review-toggle" type="button" aria-expanded="true" aria-controls="matchReviewBody">
+          <span class="match-review-chevron" aria-hidden="true"></span>
+          <h2>Match review <span id="matchReviewCount">(0)</span></h2>
+        </button>
         <div class="match-review-actions">
           <button id="acceptAllClearBtn" class="btn-primary btn-compact" type="button" hidden>Accept all clear</button>
           <button id="clearDismissedMatchesBtn" class="btn-secondary btn-compact" type="button" hidden>Clear dismissed</button>
         </div>
       </div>
-      <p class="match-review-intro">
-        Best-effort claim ↔ receipt suggestions. Accept to link, reject to dismiss, or change to pick another receipt.
-      </p>
-      <ul id="matchReviewList" class="match-review-list"></ul>
+      <div id="matchReviewBody" class="match-review-body">
+        <p class="match-review-intro">
+          Best-effort claim ↔ receipt suggestions. Accept to link, reject to dismiss, or change to pick another receipt.
+        </p>
+        <ul id="matchReviewList" class="match-review-list"></ul>
+      </div>
     </section>
 
     <!-- Mobile tab toggle -->
     <div class="tab-toggle">
       <button class="tab-btn active" data-tab="claims">
-        To match <span id="claimBadge" class="badge"></span>
+        Claims <span id="claimBadge" class="badge"></span>
       </button>
       <button class="tab-btn" data-tab="receipts">
         Receipts <span id="receiptBadge" class="badge"></span>
@@ -124,7 +127,7 @@
             id="claimFilterInput"
             class="claim-filter-input"
             aria-label="Hide outstanding claims by keyword"
-            placeholder="Hide words or phrases"
+            placeholder="Hide claims containing…"
             autocomplete="off"
           >
           <div id="claimFilterPills" class="claim-filter-pills" role="group" aria-label="Quick hide filters"></div>
@@ -149,7 +152,6 @@
         <p id="linkingContextText" class="linking-context-text"></p>
         <div class="linking-context-actions">
           <button id="linkingContextPreview" class="btn-secondary btn-compact" type="button" hidden>Preview</button>
-          <button id="linkingContextChange" class="btn-secondary btn-compact" type="button">Change</button>
         </div>
       </div>
       <div id="actionBar" class="action-bar">
@@ -190,6 +192,9 @@
     </div>
   </div>
 
+  <!-- Status toast: fixed so it never shifts the layout -->
+  <div id="status" class="status" role="status" aria-live="polite"></div>
+
   <!-- Receipt Preview Modal -->
   <div id="previewOverlay" class="preview-overlay">
     <div class="preview-backdrop"></div>
@@ -212,6 +217,6 @@
     </div>
   </div>
 
-  <script type="module" src="/main.js?v=20260722-match-review"></script>
+  <script type="module" src="/main.js?v=20260911-claims-ux"></script>
 </body>
 </html>

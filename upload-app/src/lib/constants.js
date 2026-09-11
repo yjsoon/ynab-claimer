@@ -11,6 +11,7 @@ export const THEME_ICONS = {
 };
 export const CLAIM_FILTER_KEY = 'claim_manager_claim_filter';
 export const REJECTED_MATCHES_KEY = 'claim_manager_rejected_matches';
+export const MATCH_REVIEW_COLLAPSED_KEY = 'claim_manager_match_review_collapsed';
 
 export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 export const ALLOWED_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.heic', '.heif', '.pdf'];
