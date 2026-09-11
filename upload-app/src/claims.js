@@ -293,6 +293,10 @@ async function fetchAllReceipts() {
 // Load receipt list
 export async function loadReceipts() {
   receiptsLoadSucceeded = false;
+  // First load: show that something is happening rather than an empty column.
+  if (receiptsData.length === 0 && !receiptList.querySelector('li')) {
+    receiptList.innerHTML = '<li class="loading-state"><span class="spinner"></span> Loading...</li>';
+  }
   try {
     const receipts = await fetchAllReceipts();
     if (!receipts) {
@@ -735,6 +739,17 @@ function getActiveReadyClaimIds(receipt) {
   return receipt.xeroInvoiceId ? [] : getLinkedClaimIds(receipt);
 }
 
+// Linking, unlinking, deleting or re-dating a receipt only changes receipt
+// metadata, so re-render the claim-side views from the claims already loaded
+// instead of fetching them from the backend again.
+function refreshClaimViews() {
+  if (claimsLoadErrorMessage) return;
+  renderOutstandingClaims();
+  renderLinkedPairs();
+  updateUploadZoneCompact();
+  scheduleMatchSuggestionRefresh();
+}
+
 
 function clearMatchDecorations(root) {
   root.querySelectorAll('.match-badge').forEach((badge) => badge.remove());
@@ -981,7 +996,7 @@ async function acceptMatchSuggestion(suggestion) {
     renderMatchReview();
     showStatus('success', 'Match linked');
     await loadReceipts();
-    await loadYnabTodos();
+    refreshClaimViews();
     refreshMatchSuggestions({ announce: false });
   } finally {
     matchAcceptInFlight = false;
@@ -1051,7 +1066,7 @@ async function acceptAllClearSuggestions() {
     }
 
     await loadReceipts();
-    await loadYnabTodos();
+    refreshClaimViews();
     refreshMatchSuggestions({ announce: false });
   } finally {
     matchAcceptInFlight = false;
@@ -1434,8 +1449,7 @@ function renderOutstandingClaims() {
 }
 
 refreshBtn.addEventListener('click', async () => {
-  await loadReceipts();
-  await loadYnabTodos();
+  await Promise.all([loadReceipts(), loadYnabTodos()]);
 });
 
 if (findMatchesBtn) {
@@ -1574,7 +1588,7 @@ async function handleDateOverrideClick(e, li) {
     }
 
     showStatus('success', nextValue ? 'Receipt date updated' : 'Manual date override cleared');
-    loadReceipts().then(() => loadYnabTodos());
+    loadReceipts().then(refreshClaimViews);
   } catch (error) {
     console.error('Date override failed:', error);
     showStatus('error', 'Failed to update receipt date');
@@ -1774,7 +1788,7 @@ async function linkSelectedReceiptsToClaim() {
   }
 
   clearSelection();
-  loadReceipts().then(() => loadYnabTodos());
+  loadReceipts().then(refreshClaimViews);
 }
 
 async function linkSourceReceiptToClaim() {
@@ -1800,7 +1814,7 @@ async function linkSourceReceiptToClaim() {
   }
 
   clearSelection();
-  loadReceipts().then(() => loadYnabTodos());
+  loadReceipts().then(refreshClaimViews);
 }
 
 function buildReadyClaimPayload(receipt) {
@@ -1844,7 +1858,7 @@ async function markSourceReceiptReady() {
   }
 
   clearSelection();
-  loadReceipts().then(() => loadYnabTodos());
+  loadReceipts().then(refreshClaimViews);
 }
 
 function handleConfirmSelection() {
@@ -1870,7 +1884,7 @@ async function deleteReceipt(receiptKey) {
         clearSelection();
       }
       showStatus('success', 'Receipt deleted');
-      loadReceipts().then(() => loadYnabTodos());
+      loadReceipts().then(refreshClaimViews);
       return;
     }
 
@@ -1924,7 +1938,7 @@ async function unlinkClaimFromReceipt(receiptKey, claimId, backend) {
 
   clearSelection();
   showStatus('success', 'Unlinked claim-receipt pair');
-  loadReceipts().then(() => loadYnabTodos());
+  loadReceipts().then(refreshClaimViews);
 }
 
 // Unlink a receipt from its claim
@@ -1940,7 +1954,7 @@ async function unlinkReceipt(receiptKey, backend = getClaimsBackend()) {
 
     if (response.ok) {
       showStatus('success', 'Receipt unlinked');
-      loadReceipts().then(() => loadYnabTodos());
+      loadReceipts().then(refreshClaimViews);
     } else {
       const data = await response.json();
       showStatus('error', data.error || 'Failed to unlink');

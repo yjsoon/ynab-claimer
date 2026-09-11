@@ -102,7 +102,8 @@ export async function checkAuth() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/list`, {
+    // Cheapest authenticated call: one receipt, not the default page of 100.
+    const response = await fetch(`${API_BASE}/list?limit=1`, {
       headers: authHeaders(),
     });
     if (response.status === 401) {
@@ -123,7 +124,7 @@ export async function handlePasswordSubmit() {
   setAuthToken(password, rememberMe.checked);
 
   try {
-    const response = await fetch(`${API_BASE}/list`, {
+    const response = await fetch(`${API_BASE}/list?limit=1`, {
       headers: authHeaders(),
     });
     if (response.status === 401) {

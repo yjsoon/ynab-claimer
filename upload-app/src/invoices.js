@@ -1060,7 +1060,7 @@ async function unlinkInvoiceLine(line, btn) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
     showStatus('success', `Unlinked ${line.receiptName || line.description || 'receipt'} from the invoice list.`);
-    await refreshInvoicesView({ showLoading: false });
+    await refreshInvoicesView({ showLoading: false, reloadClaims: false });
   } catch (err) {
     showStatus('error', `Could not unlink receipt: ${err instanceof Error ? err.message : String(err)}`);
     if (btn) {
@@ -1169,15 +1169,23 @@ function renderInvoiceEditorDeferred() {
   });
 }
 
-async function refreshInvoicesView({ showLoading = true } = {}) {
+// Rebuild and render the editor from data that is already loaded (page init,
+// auth success), so the Invoices tab doesn't fetch everything a second time.
+export function renderInvoicesFromLoadedData() {
+  buildInvoiceLines();
+  renderInvoiceEditor();
+}
+
+// reloadClaims: false when the action only touched receipt metadata (unlink,
+// GST detection, push) — claim memos only change on "mark claimed".
+async function refreshInvoicesView({ showLoading = true, reloadClaims = true } = {}) {
   commitActiveInvoiceEdit();
   if (showLoading) {
     invoiceLoadingRequests += 1;
     setInvoicesLoading(true);
   }
   try {
-    await loadReceipts();
-    await loadYnabTodos();
+    await Promise.all([loadReceipts(), reloadClaims ? loadYnabTodos() : Promise.resolve()]);
     buildInvoiceLines();
     await renderInvoiceEditorDeferred();
   } finally {
@@ -1976,7 +1984,7 @@ async function pushInvoice(bucket, btn) {
     showSectionPushResult(bucket, data, warnings, payload);
 
     try {
-      await refreshInvoicesView({ showLoading: false });
+      await refreshInvoicesView({ showLoading: false, reloadClaims: false });
       showSectionPushResult(bucket, data, warnings, payload);
     } catch (refreshErr) {
       showStatus(
@@ -2066,7 +2074,7 @@ function updateAppTitle(invoices) {
   document.title = invoices ? 'Invoices — Receipt Upload' : 'Claims — Receipt Upload';
 }
 
-export function navigateToMode(invoices, { replace = false } = {}) {
+export function navigateToMode(invoices, { replace = false, refresh = true } = {}) {
   const targetPath = invoices ? INVOICES_PATH : '/';
   const state = { mode: invoices ? 'invoices' : 'claims' };
   if (replace) {
@@ -2075,7 +2083,7 @@ export function navigateToMode(invoices, { replace = false } = {}) {
     history.pushState(state, '', targetPath);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
-  showInvoicesView(invoices);
+  showInvoicesView(invoices, { refresh });
 }
 
 export function showInvoicesView(show, { refresh = true } = {}) {
@@ -2149,7 +2157,7 @@ export function initInvoices() {
         if (result.remaining <= 0 || result.processed === 0 || result.tagged === 0) break;
       }
       detectGstBtn.textContent = failed ? `Done: ${tagged} tagged, ${failed} failed` : `Done: ${tagged} tagged`;
-      await refreshInvoicesView({ showLoading: false });
+      await refreshInvoicesView({ showLoading: false, reloadClaims: false });
     } catch (error) {
       detectGstBtn.textContent = 'Detect GST failed';
       console.error('GST detection failed', error);

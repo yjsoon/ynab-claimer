@@ -553,15 +553,17 @@ async function listReceiptSummaries(
   options: { limit?: number; cursor?: string } = {}
 ): Promise<ReceiptListResult> {
   const limit = Math.min(Math.max(options.limit || 100, 1), 1000);
-  const listed = await env.RECEIPTS.list({ limit, cursor: options.cursor });
+  // Ask R2 to return custom metadata inline so a page load is one list call
+  // rather than one head() per receipt. R2 may shorten a page to fit the
+  // response size; the cursor loop in the client picks up the remainder.
+  const listed = await env.RECEIPTS.list({ limit, cursor: options.cursor, include: ['customMetadata'] });
 
-  // Fetch metadata for each receipt (R2 list() doesn't return customMetadata)
   const receipts = await mapWithConcurrency(
     listed.objects,
     RECEIPT_METADATA_CONCURRENCY,
     async (obj): Promise<ReceiptSummary> => {
-      const head = await env.RECEIPTS.head(obj.key);
-      const metadata = head?.customMetadata || {};
+      // Fall back to head() only if the runtime ignored `include`.
+      const metadata = obj.customMetadata ?? (await env.RECEIPTS.head(obj.key))?.customMetadata ?? {};
       const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
       const primaryLinkedClaimId = linkedClaimIds[0];
       return {
@@ -2559,7 +2561,9 @@ export default {
         }
       );
       const headers = new Headers(assetResponse.headers);
-      headers.set('Cache-Control', 'no-store');
+      // Revalidate on every visit (ETag → 304) instead of re-downloading the
+      // whole module graph; a deploy still shows up immediately.
+      headers.set('Cache-Control', 'no-cache');
       return new Response(assetResponse.body, {
         status: assetResponse.status,
         statusText: assetResponse.statusText,
