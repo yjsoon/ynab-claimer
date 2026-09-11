@@ -631,12 +631,26 @@ function renderInvoiceStaleNoteRow() {
     </tr>`;
 }
 
+// The draft a line already belongs to: stamped on the receipt by the worker,
+// or remembered locally when that stamp failed after a push.
+function lineDraftInfo(line) {
+  if (line.xeroPendingInvoiceId) {
+    return { id: line.xeroPendingInvoiceId, number: line.xeroPendingInvoiceNumber || '' };
+  }
+  const entry = pushHistoryEntryForItem(line);
+  if (typeof entry?.invoiceID === 'string' && entry.invoiceID) {
+    return { id: entry.invoiceID, number: entry.invoiceNumber || '' };
+  }
+  return null;
+}
+
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   const reviewed = isLineReviewed(line);
   const invalidated = line.reviewInvalidated === true;
-  const pendingDraft = line.xeroPendingInvoiceId
-    ? `<span class="inv-draft-chip" title="Already in Xero draft bill ${escapeHtml(line.xeroPendingInvoiceNumber || line.xeroPendingInvoiceId)}. Mark it claimed once the bill is done, or push again to create another draft.">In ${escapeHtml(line.xeroPendingInvoiceNumber || 'Xero draft')}</span>`
+  const draft = lineDraftInfo(line);
+  const pendingDraft = draft
+    ? `<span class="inv-draft-chip" title="Already in Xero draft bill ${escapeHtml(draft.number || draft.id)}. Mark it claimed once the bill is done, or push again to create another draft.">In ${escapeHtml(draft.number || 'Xero draft')}</span>`
     : '';
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
@@ -1901,9 +1915,9 @@ async function pushInvoice(bucket, btn) {
     showStatus('error', 'Connect Xero first.');
     return;
   }
-  const alreadyDrafted = lines.filter((l) => l.xeroPendingInvoiceId);
+  const alreadyDrafted = lines.map((l) => ({ line: l, draft: lineDraftInfo(l) })).filter((item) => item.draft);
   if (alreadyDrafted.length > 0) {
-    const drafts = [...new Set(alreadyDrafted.map((l) => l.xeroPendingInvoiceNumber || l.xeroPendingInvoiceId))].join(', ');
+    const drafts = [...new Set(alreadyDrafted.map((item) => item.draft.number || item.draft.id))].join(', ');
     const proceed = window.confirm(
       `${alreadyDrafted.length} of ${lines.length} ${BUCKET_LABEL[bucket]} line${alreadyDrafted.length === 1 ? ' is' : 's are'} already in Xero draft ${drafts}. ` +
       'Pushing again creates another draft bill with the same lines. Continue?',

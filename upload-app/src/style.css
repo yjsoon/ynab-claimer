@@ -2153,17 +2153,24 @@ body.selecting .claims-view {
     justify-content: center;
   }
 
-  /* Editing the title: take the amount's column too so the input has room */
-  .invoice-doc-table tbody td.inv-cell-description.is-editing {
-    grid-area: auto;
-    grid-column: 2 / -1;
-    grid-row: 1;
+  /* Editing the title: give the input the full header width and drop the
+     amount to its own row directly beneath, keeping every named area placed. */
+  .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) {
+    grid-template-areas:
+      "check desc desc"
+      "amount amount amount"
+      "date date date"
+      "account account account"
+      "type type type"
+      "remark remark remark"
+      "tax tax tax"
+      "actions actions actions";
   }
 
-  .invoice-doc-table tbody td.inv-cell-description.is-editing ~ td.inv-cell-amount {
-    grid-area: auto;
-    grid-column: 1 / -1;
+  .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) td.inv-cell-amount {
     justify-content: flex-end;
+    min-height: 0;
+    padding-top: 6px;
   }
 
   .invoice-doc-table tbody td.col-actions .inv-draft-chip {
@@ -3338,8 +3345,11 @@ body.selecting .claims-view {
   flex-wrap: wrap;
 }
 
-.invoice-doc-actions .btn-primary {
-  width: auto;
+/* Desktop only: the mobile block above keeps the push button full width */
+@media (min-width: 701px) {
+  .invoice-doc-actions .btn-primary {
+    width: auto;
+  }
 }
 
 .invoice-doc-note {
