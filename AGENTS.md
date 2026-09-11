@@ -177,6 +177,14 @@ Receipt amount tagging uses MiniMax coding-plan VLM for image receipts when
   - day-rate conversion
   - day-rate conversion plus 3.25%
 
+### Load-time diagnostics
+
+`GET /list` and `GET /ynab/todos` return a `Server-Timing` header (`r2-list`,
+`r2-metadata`, `claims-upstream`, in ms). In the browser, Network → pick the
+request → Timing shows where a slow page load spent its time; with curl use
+`-D -` to print the headers. `r2-metadata` says `inline` when R2 returned
+receipt metadata in the listing, or how many `head()` fallbacks were needed.
+
 ### Common Pitfalls
 
 1. **Auth header name**: Use `X-Auth-Token`, not `Authorization` or `X-Auth-Password`

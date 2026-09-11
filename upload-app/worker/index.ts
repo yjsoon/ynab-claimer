@@ -257,6 +257,19 @@ interface ReceiptListResult {
   receipts: ReceiptSummary[];
   cursor: string | null;
   hasMore: boolean;
+  timings: {
+    listMs: number;
+    metadataMs: number;
+    headFallbacks: number;
+  };
+}
+
+// Server-Timing lets the browser's Network → Timing panel show where a slow
+// request spent its time (R2 vs the claims backend) without any extra tooling.
+function serverTimingHeader(entries: Array<{ name: string; ms: number; desc?: string }>): string {
+  return entries
+    .map(({ name, ms, desc }) => `${name};dur=${Math.round(ms)}${desc ? `;desc="${desc.replace(/"/g, "'")}"` : ''}`)
+    .join(', ');
 }
 
 class ClaimsBackendApiError extends Error {
@@ -556,14 +569,22 @@ async function listReceiptSummaries(
   // Ask R2 to return custom metadata inline so a page load is one list call
   // rather than one head() per receipt. R2 may shorten a page to fit the
   // response size; the cursor loop in the client picks up the remainder.
+  const listStarted = Date.now();
   const listed = await env.RECEIPTS.list({ limit, cursor: options.cursor, include: ['customMetadata'] });
+  const listMs = Date.now() - listStarted;
+  const metadataStarted = Date.now();
+  let headFallbacks = 0;
 
   const receipts = await mapWithConcurrency(
     listed.objects,
     RECEIPT_METADATA_CONCURRENCY,
     async (obj): Promise<ReceiptSummary> => {
       // Fall back to head() only if the runtime ignored `include`.
-      const metadata = obj.customMetadata ?? (await env.RECEIPTS.head(obj.key))?.customMetadata ?? {};
+      let metadata = obj.customMetadata;
+      if (!metadata) {
+        headFallbacks += 1;
+        metadata = (await env.RECEIPTS.head(obj.key))?.customMetadata ?? {};
+      }
       const linkedClaimIds = parseLinkedClaimIds(metadata.linkedClaimIds, metadata.linkedClaimId);
       const primaryLinkedClaimId = linkedClaimIds[0];
       return {
@@ -622,6 +643,7 @@ async function listReceiptSummaries(
     receipts,
     cursor: listed.truncated ? listed.cursor || null : null,
     hasMore: listed.truncated,
+    timings: { listMs, metadataMs: Date.now() - metadataStarted, headFallbacks },
   };
 }
 
@@ -1854,7 +1876,20 @@ export default {
             cursor: result.cursor,
             hasMore: result.hasMore,
           }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          {
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json',
+              'Server-Timing': serverTimingHeader([
+                { name: 'r2-list', ms: result.timings.listMs, desc: `${result.receipts.length} receipts` },
+                {
+                  name: 'r2-metadata',
+                  ms: result.timings.metadataMs,
+                  desc: result.timings.headFallbacks ? `${result.timings.headFallbacks} head() fallbacks` : 'inline',
+                },
+              ]),
+            },
+          }
         );
       }
 
@@ -2114,10 +2149,18 @@ export default {
         try {
           const sinceDate = extractIsoDate(url.searchParams.get('since_date')) || getDefaultYnabSinceDate();
           const backend = parseClaimsBackend(url.searchParams.get('backend'));
+          const upstreamStarted = Date.now();
           const todos = await fetchYnabTodos(env, sinceDate, backend);
+          const upstreamMs = Date.now() - upstreamStarted;
 
           return new Response(JSON.stringify({ todos, backend }), {
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+            headers: {
+              ...corsHeaders,
+              'Content-Type': 'application/json',
+              'Server-Timing': serverTimingHeader([
+                { name: 'claims-upstream', ms: upstreamMs, desc: `${backend} since ${sinceDate}, ${todos.length} todos` },
+              ]),
+            },
           });
         } catch (error) {
           if (error instanceof ClaimsBackendApiError) {
