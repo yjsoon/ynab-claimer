@@ -9,10 +9,10 @@
     "smoke:frontend": "node test/frontend-smoke.cjs"
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20241205.0",
+    "@cloudflare/workers-types": "^5.20260911.1",
     "playwright": "^1.61.1",
     "typescript": "^5.3.3",
-    "wrangler": "^4.54.0"
+    "wrangler": "^4.131.0"
   },
   "dependencies": {
     "@cloudflare/kv-asset-handler": "^0.4.1",
