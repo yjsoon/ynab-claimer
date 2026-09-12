@@ -407,8 +407,26 @@ async function main() {
 
   await page.goto(`http://127.0.0.1:${port}/invoices/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  const sectionTitle = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-title').textContent();
+  if (!sectionTitle.includes('Xero draft (not claimed yet)') || sectionTitle.includes('claims')) {
+    throw new Error(`invoice section title should be a draft bucket, not a claim: ${sectionTitle}`);
+  }
+  const intro = await page.locator('.invoices-intro').textContent();
+  if (!intro.includes('not claim status') || !intro.includes('TODO')) {
+    throw new Error(`invoice intro should say groups are drafts still TODO, got: ${intro}`);
+  }
+  const draftChip = await page.locator('.invoice-section[data-bucket="nongst"] .inv-draft-chip').textContent();
+  if (!draftChip.includes('Xero draft DRAFT-1') || !draftChip.includes('still TODO')) {
+    throw new Error(`pending draft chip should wrap the invoice number as still TODO, got: ${draftChip}`);
+  }
+  const sectionStatus = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-doc-sub').textContent();
+  if (!sectionStatus.includes('already in a Xero draft') || !sectionStatus.includes('still TODO')) {
+    throw new Error(`section status should say the Xero draft is not claimed, got: ${sectionStatus}`);
+  }
   const meta = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
-  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed')) throw new Error(`unexpected invoice meta: ${meta}`);
+  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed') || !meta.includes('in Xero draft (still TODO)')) {
+    throw new Error(`unexpected invoice meta: ${meta}`);
+  }
 
   const disabledBefore = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (!disabledBefore) throw new Error('push should be disabled before review');

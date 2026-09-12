@@ -2480,6 +2480,8 @@ export default {
           const backend = resolveMutationBackend(body.backend, lineItems);
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
+          // Fallback name is a draft label, not claim status — a Xero draft is
+          // not reimbursement; HowMuch/YNAB stay TODO until /mark-claimed.
           // Bill date in Singapore time — toISOString() is UTC and would backdate
           // the bill by a day when pushing between 00:00 and 07:59 SGT.
           const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
@@ -2496,7 +2498,7 @@ export default {
             contactName: 'Soon Yin Jie',
             date: today,
             dueDate,
-            reference: body.reference || `${bucketLabel} claims`,
+            reference: body.reference || `${bucketLabel} Xero draft`,
             idempotencyKey: idem,
             lineItems: lineItems.map((l) => ({
               description: l.description,
