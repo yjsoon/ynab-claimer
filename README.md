@@ -266,11 +266,3 @@ then use `agent-browser webmcp list` to discover tools and, for example,
 `agent-browser webmcp invoke list_receipts --params '{"limit":20}'` to read a page.
 Native discovery, logged-out rejection and a mocked receipt read were also
 verified with Chrome 153 using experimental web-platform features.
-
-### Landing without deploying
-
-The main-branch workflow normally deploys after checks pass. Include `[skip deploy]`
-in the pushed head commit message to run CI without the production secret check
-or Worker deployment. This is a per-push opt-out, not a persistent deployment hold:
-a later matching push without the marker deploys the then-current code, including
-previously deferred changes. Do not use `[skip ci]`; verification must still run.
