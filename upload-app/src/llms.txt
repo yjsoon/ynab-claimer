@@ -9,7 +9,8 @@ Do not expose receipt contents, credentials, or personal financial data publicly
 - list_receipts({limit?: 1..100, cursor?: string}): one fresh metadata page;
   default limit 20. Follow nextCursor until null before claiming completeness.
 - list_pending_claims({backend: "ynab" | "howmuch"}): fresh pending claims,
-  including those hidden by UI filters. Amounts are SGD dollars, NOT milliunits.
+  within the backend's default six-calendar-month window, including those hidden
+  by UI filters, but not older historical claims. Amounts are SGD dollars, NOT milliunits.
 - get_xero_status({}): connection status, not invoice contents or push history.
 
 Tools use the existing signed-in session and return JSON in a text content block.

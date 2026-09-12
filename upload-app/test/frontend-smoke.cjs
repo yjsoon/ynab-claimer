@@ -264,6 +264,18 @@ async function main() {
     await toolPage.unroute(failureRoute);
     await toolPage.route('**/ynab/todos?*', route => route.fulfill({ json: { backend: 'howmuch', todos: [] } }));
     assert.equal((await call('list_pending_claims', { backend: 'ynab' })).isError, true);
+    for (const backend of ['ynab', 'howmuch']) {
+      await toolPage.route('**/ynab/todos?*', route => route.fulfill({
+        status: 401,
+        json: { error: backend === 'ynab' ? 'YNAB API error' : 'HowMuch API error', details: 'private upstream details' },
+      }));
+      const upstreamFailure = await call('list_pending_claims', { backend });
+      assert.equal(upstreamFailure.isError, true);
+      assert(!JSON.stringify(upstreamFailure).includes('private upstream details'));
+      assert.equal(await toolPage.evaluate(() => sessionStorage.getItem('claim_manager_auth')), 'test',
+        'upstream 401 must preserve valid app authentication');
+      assert.equal(unpack(await call('list_receipts', {})).receipts[0].key, 'receipt-1.pdf');
+    }
     await toolPage.route(failureRoute, route => route.fulfill({ status: 401, json: { error: 'Unauthorized' } }));
     assert.equal((await call('list_receipts', {})).isError, true);
     assert.equal(await toolPage.evaluate(() => sessionStorage.getItem('claim_manager_auth')), null);
