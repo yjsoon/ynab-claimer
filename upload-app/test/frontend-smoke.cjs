@@ -1,6 +1,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const assert = require('node:assert/strict');
 const { chromium } = require('playwright');
 
 const root = path.join(__dirname, '..', 'src');
@@ -200,6 +201,77 @@ async function main() {
   }
 
   const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  // Exercise both experimental API locations using a registration harness.
+  // The rest of this suite runs without WebMCP, covering progressive enhancement.
+  for (const apiOwner of ['document', 'navigator']) {
+    const toolPage = await browser.newPage();
+    await toolPage.addInitScript((owner) => {
+      window.registeredTools = {};
+      Object.defineProperty(document, 'modelContext', { value: undefined, configurable: true });
+      Object.defineProperty(navigator, 'modelContext', { value: undefined, configurable: true });
+      Object.defineProperty(owner === 'document' ? document : navigator, 'modelContext', {
+        value: { registerTool(tool) { window.registeredTools[tool.name] = tool; } },
+      });
+    }, apiOwner);
+    await setupMockApi(toolPage);
+    await toolPage.goto(`http://127.0.0.1:${port}/`, { waitUntil: 'networkidle' });
+    await toolPage.waitForFunction(() => Object.keys(window.registeredTools).length === 3);
+    assert.equal(await toolPage.getByLabel('Password', { exact: true }).count(), 1);
+    assert.equal(await toolPage.getByLabel('Upload receipts', { exact: true }).count(), 1);
+    assert.equal(await toolPage.getByTitle('Receipt PDF preview', { exact: true }).count(), 1);
+    const call = (name, input) => toolPage.evaluate(async ({ name, input }) => {
+      return window.registeredTools[name].execute(input);
+    }, { name, input });
+    const unpack = (result) => {
+      assert.notEqual(result.isError, true, result.content[0].text);
+      return JSON.parse(result.content[0].text);
+    };
+    const requests = [];
+    toolPage.on('request', request => requests.push({ method: request.method(), url: new URL(request.url()) }));
+    assert.equal((await call('list_receipts', {})).isError, true);
+    assert.equal(requests.length, 0, 'logged-out tools must not fetch');
+    await toolPage.evaluate(() => sessionStorage.setItem('claim_manager_auth', 'test'));
+    for (const invalid of [{ limit: 0 }, { limit: 101 }, { limit: 1.5 }, { limit: '2' }, { cursor: 2 }, { extra: true }, { toString: 'x' }]) {
+      assert.equal((await call('list_receipts', invalid)).isError, true);
+    }
+    for (const invalid of [{}, { backend: 'other' }, { backend: 'ynab&write=true' }]) {
+      assert.equal((await call('list_pending_claims', invalid)).isError, true);
+    }
+    assert.equal(requests.length, 0, 'invalid input must not fetch');
+    const first = unpack(await call('list_receipts', { limit: 1 }));
+    assert.equal(first.receipts[0].key, 'receipt-1.pdf');
+    assert.equal(first.nextCursor, 'page-2');
+    assert.equal(requests.at(-1).url.searchParams.get('limit'), '1');
+    const second = unpack(await call('list_receipts', { limit: 100, cursor: first.nextCursor }));
+    assert.equal(second.receipts[0].key, 'receipt-3.pdf');
+    assert.equal(second.nextCursor, null);
+    assert.equal(requests.at(-1).url.searchParams.get('limit'), '100');
+    for (const backend of ['ynab', 'howmuch']) {
+      const claims = unpack(await call('list_pending_claims', { backend }));
+      assert.equal(claims.backend, backend);
+      assert.equal(claims.claims[1].amount, 12.34);
+      assert.equal(claims.amountUnit, 'dollars');
+      assert.equal(claims.claims.length, 3, 'hidden transfer must not disappear');
+    }
+    assert.deepEqual(unpack(await call('get_xero_status', {})), { connected: true, tenantName: 'Test Xero' });
+    assert(requests.every(request => request.method === 'GET'), 'read tools must never write');
+    assert(requests.every(request => ['/list', '/ynab/todos', '/xero/status'].includes(request.url.pathname)));
+    const failureRoute = '**/list?*';
+    await toolPage.route(failureRoute, route => route.fulfill({ status: 503, body: 'secret-upstream-detail' }));
+    const failure = await call('list_receipts', {});
+    assert.equal(failure.isError, true);
+    assert(!JSON.stringify(failure).includes('secret-upstream-detail'));
+    await toolPage.unroute(failureRoute);
+    await toolPage.route('**/ynab/todos?*', route => route.fulfill({ json: { backend: 'howmuch', todos: [] } }));
+    assert.equal((await call('list_pending_claims', { backend: 'ynab' })).isError, true);
+    await toolPage.route(failureRoute, route => route.fulfill({ status: 401, json: { error: 'Unauthorized' } }));
+    assert.equal((await call('list_receipts', {})).isError, true);
+    assert.equal(await toolPage.evaluate(() => sessionStorage.getItem('claim_manager_auth')), null);
+    assert.equal(await toolPage.getByLabel('Password', { exact: true }).isVisible(), true);
+    await toolPage.close();
+  }
+  todoBackends.length = 0;
+  console.log('WebMCP browser contract passed (both API locations, auth, validation, pagination, backend isolation, read-only requests)');
   const failedSubresources = [];
   page.on('response', (response) => {
     const type = response.request().resourceType();

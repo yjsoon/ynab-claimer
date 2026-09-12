@@ -1,5 +1,6 @@
 import { initTheme, initAuthUi, checkAuth, hidePasswordPrompt, setOnAuthSuccess } from './lib/core.js';
 import { initPreview } from './lib/preview.js';
+import { initWebMcp } from './webmcp.js';
 import {
   initClaims,
   loadReceipts,
@@ -21,6 +22,7 @@ initAuthUi();
 initClaims();
 initInvoices();
 setOnClaimsLoadError(renderInvoiceClaimLoadError);
+void initWebMcp();
 
 // Receipts and claims come from different backends, so fetch them together.
 async function loadEverything() {

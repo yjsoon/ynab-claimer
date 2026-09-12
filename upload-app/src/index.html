@@ -6,6 +6,7 @@
   <meta name="theme-color" content="#f5f5f5" media="(prefers-color-scheme: light)">
   <meta name="theme-color" content="#0b1220" media="(prefers-color-scheme: dark)">
   <title>Receipt Upload</title>
+  <link rel="help" type="text/plain" href="/llms.txt" title="Agent workflow guide">
   <script>
     (function () {
       const THEME_KEY = 'claim_manager_theme';
@@ -31,7 +32,7 @@
   </script>
   <link rel="stylesheet" href="/style.css?v=20260911-invoices-ux">
   <!-- Preload the module graph so it loads in one round instead of a three-level waterfall -->
-  <link rel="modulepreload" href="/main.js?v=20260911-invoices-ux">
+  <link rel="modulepreload" href="/main.js?v=20260912-webmcp">
   <link rel="modulepreload" href="/claims.js">
   <link rel="modulepreload" href="/invoices.js?v=20260911-invoices-ux">
   <link rel="modulepreload" href="/lib/constants.js">
@@ -44,7 +45,7 @@
   <div id="authOverlay" class="auth-overlay" style="display: none;">
     <div class="auth-modal">
       <h2>Authentication Required</h2>
-      <input type="password" id="passwordInput" placeholder="Enter password" autofocus>
+      <input type="password" id="passwordInput" aria-label="Password" autocomplete="current-password" placeholder="Enter password" autofocus>
       <label class="remember-label">
         <input type="checkbox" id="rememberMe">
         Remember me
@@ -84,7 +85,7 @@
 
     <div id="claimsView" class="claims-view">
     <div id="dropzone" class="dropzone is-compact">
-      <input type="file" id="fileInput" accept="image/*,.pdf" multiple>
+      <input type="file" id="fileInput" aria-label="Upload receipts" accept="image/*,.pdf" multiple>
       <div class="dropzone-expanded">
         <p>Tap to upload or drag files here</p>
         <p class="hint">Images and PDFs accepted</p>
@@ -221,11 +222,11 @@
           <div class="spinner"></div>
         </div>
         <img id="previewImage" class="preview-image" alt="Receipt preview">
-        <iframe id="previewPdf" class="preview-pdf"></iframe>
+        <iframe id="previewPdf" class="preview-pdf" title="Receipt PDF preview"></iframe>
       </div>
     </div>
   </div>
 
-  <script type="module" src="/main.js?v=20260911-invoices-ux"></script>
+  <script type="module" src="/main.js?v=20260912-webmcp"></script>
 </body>
 </html>
