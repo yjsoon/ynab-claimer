@@ -514,14 +514,34 @@ async function main() {
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
+  await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('do not have a remembered bill from a push in this browser'));
+  if (markClaimRequests.length !== 0) {
+    throw new Error('leftover xeroPending stamps must not be enough to mark claimed');
+  }
+
+  await page.evaluate(() => {
+    localStorage.setItem('claim_manager_invoice_push_history', JSON.stringify({
+      byLine: {
+        'howmuch::receipt-2.pdf::claim-1': {
+          invoiceID: 'session-bill-1',
+          invoiceNumber: 'SESSION-1',
+          claimsBackend: 'howmuch',
+          bucket: 'nongst',
+          savedAt: '2026-09-12T00:00:00Z',
+        },
+      },
+    }));
+  });
+
   primaryMockState.delayMarkClaimed = true;
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
   await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
-  if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
-    throw new Error(`mark claimed should use pending receipt invoice id, got ${markClaimRequests[0].invoiceID}`);
+  if (markClaimRequests[0].invoiceID !== 'session-bill-1') {
+    throw new Error(`mark claimed should use this browser's remembered push, got ${markClaimRequests[0].invoiceID}`);
   }
   if (markClaimRequests[0].backend !== 'howmuch') {
     throw new Error(`mark claimed should use HowMuch, got ${markClaimRequests[0].backend}`);

@@ -344,9 +344,8 @@ function rememberPushedInvoice(data, payload) {
 }
 
 function rememberedInvoiceIDForItem(item) {
-  if (typeof item?.xeroPendingInvoiceId === 'string' && item.xeroPendingInvoiceId) {
-    return item.xeroPendingInvoiceId;
-  }
+  // Only a push remembered in this browser counts. Receipt xeroPending*
+  // stamps are leftover portal metadata and are not proof a bill exists.
   const entry = pushHistoryEntryForItem(item);
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
 }
@@ -666,19 +665,6 @@ function renderInvoiceStaleNoteRow() {
         <span class="inv-review-stale">Receipt or claim data changed since this line was reviewed — check it and tick again.</span>
       </td>
     </tr>`;
-}
-
-// The draft a line already belongs to: stamped on the receipt by the worker,
-// or remembered locally when that stamp failed after a push.
-function lineDraftInfo(line) {
-  if (line.xeroPendingInvoiceId) {
-    return { id: line.xeroPendingInvoiceId, number: line.xeroPendingInvoiceNumber || '' };
-  }
-  const entry = pushHistoryEntryForItem(line);
-  if (typeof entry?.invoiceID === 'string' && entry.invoiceID) {
-    return { id: entry.invoiceID, number: entry.invoiceNumber || '' };
-  }
-  return null;
 }
 
 function renderInvoiceLineRow(line, accounts) {
@@ -1877,7 +1863,7 @@ async function markCheckedLineItemsClaimed(bucket, lineItems, btn, { payload = n
       : groupedLineItemsByInvoice(lineItems);
     if (missing.length > 0) {
       throw new Error(
-        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered Xero bill. Re-push or use the bill-created action before marking claimed.`,
+        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered bill from a push in this browser. Push first, or use the draft-created action, before marking claimed.`,
       );
     }
     await markLineItemGroupsClaimed(groups, bucket);
