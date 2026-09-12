@@ -246,7 +246,7 @@ interface ReceiptSummary {
   // Set once the linked YNAB claim has been marked claimed for this bill.
   xeroInvoiceId?: string;
   invoicedAt?: string;
-  // Set after a draft exists, before the user marks the linked YNAB claims.
+  // Portal leftover from a push attempt. Not proof a bill exists in Xero.
   xeroPendingInvoiceId?: string;
   xeroPendingInvoiceNumber?: string;
   xeroPendingAt?: string;
@@ -1961,6 +1961,36 @@ export default {
         });
       }
 
+      // PATCH /receipt/:key/xero-pending - drop leftover draft-push stamps only.
+      // Never deletes the receipt object. Never marks claims CLAIMED.
+      if (path.startsWith('/receipt/') && path.endsWith('/xero-pending') && request.method === 'PATCH') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/xero-pending', ''));
+        const body = (await request.json().catch(() => ({}))) as { clear?: unknown };
+        if (body.clear !== true) {
+          return new Response(JSON.stringify({ error: 'Pass { "clear": true } to drop leftover draft stamps.' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const updated = await patchReceiptMetadata(env, key, {
+          xeroPendingInvoiceId: undefined,
+          xeroPendingInvoiceNumber: undefined,
+          xeroPendingAt: undefined,
+          xeroPendingClaimsBackend: undefined,
+        });
+        if (!updated) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, key, cleared: ['xeroPendingInvoiceId', 'xeroPendingInvoiceNumber', 'xeroPendingAt', 'xeroPendingClaimsBackend'] }), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
       // PATCH /receipt/:key/receipt-date - Manually override receipt date
       if (path.startsWith('/receipt/') && path.endsWith('/receipt-date') && request.method === 'PATCH') {
         const key = decodeURIComponent(path.replace('/receipt/', '').replace('/receipt-date', ''));
@@ -2480,6 +2510,8 @@ export default {
           const backend = resolveMutationBackend(body.backend, lineItems);
 
           const bucketLabel = body.bucket === 'gst' ? 'GST' : body.bucket === 'transport' ? 'Transport' : 'Non-GST';
+          // Fallback bill name is the bucket only — avoid a trailing "claims",
+          // which reads like already reimbursed. HowMuch/YNAB stay TODO until /mark-claimed.
           // Bill date in Singapore time — toISOString() is UTC and would backdate
           // the bill by a day when pushing between 00:00 and 07:59 SGT.
           const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Singapore' }).format(new Date());
@@ -2496,7 +2528,7 @@ export default {
             contactName: 'Soon Yin Jie',
             date: today,
             dueDate,
-            reference: body.reference || `${bucketLabel} claims`,
+            reference: body.reference || bucketLabel,
             idempotencyKey: idem,
             lineItems: lineItems.map((l) => ({
               description: l.description,

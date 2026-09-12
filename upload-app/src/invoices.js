@@ -31,11 +31,12 @@ const invoicesLoadingEl = document.getElementById('invoicesLoading');
 
 const INVOICE_BUCKETS = ['gst', 'nongst', 'transport'];
 const BUCKET_HEADING = {
-  gst: 'GST claims — DRAFT bill',
-  nongst: 'Non-GST claims — DRAFT bill',
-  transport: 'Transport claims — DRAFT bill',
+  gst: 'GST',
+  nongst: 'Non-GST',
+  transport: 'Transport',
 };
 const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
+const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const INVOICE_SECTIONS_KEY = 'claim_manager_invoice_sections';
 const INVOICE_SORTS_KEY = 'claim_manager_invoice_sorts';
 const INVOICE_LAST_PUSH_KEY = 'claim_manager_invoice_last_push';
@@ -343,9 +344,8 @@ function rememberPushedInvoice(data, payload) {
 }
 
 function rememberedInvoiceIDForItem(item) {
-  if (typeof item?.xeroPendingInvoiceId === 'string' && item.xeroPendingInvoiceId) {
-    return item.xeroPendingInvoiceId;
-  }
+  // Only a push remembered in this browser counts. Receipt xeroPending*
+  // stamps are leftover portal metadata and are not proof a bill exists.
   const entry = pushHistoryEntryForItem(item);
   return typeof entry?.invoiceID === 'string' ? entry.invoiceID : '';
 }
@@ -485,8 +485,7 @@ function buildInvoiceLines() {
         if (pref) amount = pref.value;
       }
 
-      const claimsBackend = receipt.xeroPendingClaimsBackend
-        || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend);
+      const claimsBackend = linkedBackend === 'howmuch' ? 'howmuch' : 'ynab';
       lines.push({
         id: `${claimsBackend}::${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
@@ -569,7 +568,7 @@ function bucketReviewState(bucket) {
 function invoicePushNote(bucket) {
   const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
   if (pushable.length === 0) return '';
-  if (allReviewed) return 'Creates a DRAFT bill in Xero and attaches the receipts.';
+  if (allReviewed) return 'HowMuch/YNAB stay TODO until you mark checked lines claimed.';
   return `Review every line before pushing (${reviewedCount}/${pushable.length} reviewed).`;
 }
 
@@ -581,6 +580,42 @@ function invoiceSectionMeta(bucket, lines, total) {
     return `${pushable.length} bill lines · ${amount} · ${reviewedCount}/${pushable.length} reviewed`;
   }
   return `${lines.length} items · ${pushable.length} will push · ${amount} · ${reviewedCount}/${pushable.length} reviewed`;
+}
+
+function invoicePeriodLabel(lines) {
+  const dates = lines
+    .map((line) => String(line?.date || ''))
+    .filter((date) => /^\d{4}-\d{2}/.test(date))
+    .sort();
+  if (!dates.length) return '';
+  const start = dates[0];
+  const end = dates[dates.length - 1];
+  const monthName = (iso) => MONTH_SHORT[Number(iso.slice(5, 7)) - 1] || iso.slice(5, 7);
+  const startYear = start.slice(0, 4);
+  const endYear = end.slice(0, 4);
+  if (startYear === endYear && start.slice(5, 7) === end.slice(5, 7)) {
+    return `${monthName(start)} ${startYear}`;
+  }
+  if (startYear === endYear) return `${monthName(start)}-${monthName(end)} ${startYear}`;
+  return `${monthName(start)} ${startYear}-${monthName(end)} ${endYear}`;
+}
+
+function defaultDraftReference(bucket, lines = []) {
+  const period = invoicePeriodLabel(lines);
+  const label = BUCKET_LABEL[bucket];
+  return period ? `${period} ${label}` : label;
+}
+
+function invoiceSectionStatusHtml() {
+  return 'Payee: <strong>Soon Yin Jie</strong> · tax-inclusive. HowMuch/YNAB stay TODO until you mark lines claimed.';
+}
+
+function hasLeftoverDraftStamp(line) {
+  return Boolean(line?.xeroPendingInvoiceId || line?.xeroPendingInvoiceNumber);
+}
+
+function leftoverDraftStampKeys(lines) {
+  return [...new Set(lines.filter(hasLeftoverDraftStamp).map((line) => line.receiptKey).filter(Boolean))];
 }
 
 function setLineReviewed(line, reviewed, btn) {
@@ -631,27 +666,10 @@ function renderInvoiceStaleNoteRow() {
     </tr>`;
 }
 
-// The draft a line already belongs to: stamped on the receipt by the worker,
-// or remembered locally when that stamp failed after a push.
-function lineDraftInfo(line) {
-  if (line.xeroPendingInvoiceId) {
-    return { id: line.xeroPendingInvoiceId, number: line.xeroPendingInvoiceNumber || '' };
-  }
-  const entry = pushHistoryEntryForItem(line);
-  if (typeof entry?.invoiceID === 'string' && entry.invoiceID) {
-    return { id: entry.invoiceID, number: entry.invoiceNumber || '' };
-  }
-  return null;
-}
-
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   const reviewed = isLineReviewed(line);
   const invalidated = line.reviewInvalidated === true;
-  const draft = lineDraftInfo(line);
-  const pendingDraft = draft
-    ? `<span class="inv-draft-chip" title="Already in Xero draft bill ${escapeHtml(draft.number || draft.id)}. Mark it claimed once the bill is done, or push again to create another draft.">In ${escapeHtml(draft.number || 'Xero draft')}</span>`
-    : '';
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
       <td class="col-reviewed" data-label="Reviewed">
@@ -669,7 +687,6 @@ function renderInvoiceLineRow(line, accounts) {
       <td class="inv-cell-editable inv-cell-tax" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit">${taxTypeCellHtml(deriveTaxType(line))}</td>
       <td class="num inv-cell-editable inv-cell-amount" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
       <td class="col-actions" data-label="Actions">
-        ${pendingDraft}
         <div class="inv-row-actions">
           <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
           <button type="button" class="inv-unlink-btn" title="Unlink from invoice list">Unlink</button>
@@ -692,12 +709,20 @@ function renderInvoiceSection(bucket, lines, accounts) {
   const { pushable, allReviewed } = bucketReviewState(bucket);
   const checkedCount = pushable.filter(isLineReviewed).length;
   const noteClass = pushable.length > 0 && !allReviewed ? 'invoice-doc-note invoice-doc-note-warn' : 'invoice-doc-note';
-  const actionsHtml = pushable.length > 0
-    ? `<div class="invoice-doc-actions">
-          <button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${allReviewed ? '' : 'disabled'}>Push to Xero (draft)</button>
+  const stampKeys = leftoverDraftStampKeys(lines);
+  const stampBtn = stampKeys.length
+    ? `<button type="button" class="btn-secondary invoice-clear-stamps-btn" data-bucket="${bucket}">Clear stale draft stamps</button>`
+    : '';
+  const pushActions = pushable.length > 0
+    ? `<button type="button" class="btn-primary invoice-push-btn" data-bucket="${bucket}" ${allReviewed ? '' : 'disabled'}>Push to Xero (draft)</button>
           <button type="button" class="btn-secondary invoice-download-btn" data-bucket="${bucket}">Download receipts PDF</button>
           <button type="button" class="btn-secondary invoice-claim-checked-btn" data-bucket="${bucket}" ${checkedCount ? '' : 'disabled'}>Mark checked as claimed</button>
-          <span class="${noteClass}">${escapeHtml(invoicePushNote(bucket))}</span>
+          <span class="${noteClass}">${escapeHtml(invoicePushNote(bucket))}</span>`
+    : '';
+  const actionsHtml = (pushActions || stampBtn)
+    ? `<div class="invoice-doc-actions">
+          ${pushActions}
+          ${stampBtn}
         </div>`
     : '';
   return `
@@ -707,7 +732,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
         <span class="invoice-section-meta" aria-live="polite">${invoiceSectionMeta(bucket, lines, total)}</span>
       </summary>
       <div class="invoice-section-body">
-        <p class="invoice-doc-sub">Payee: <strong>Soon Yin Jie</strong> · tax-inclusive</p>
+        <p class="invoice-doc-sub">${invoiceSectionStatusHtml()}</p>
         <div class="invoice-section-tools">
           <label class="invoice-sort-label">
             <span>Sort</span>
@@ -1070,6 +1095,51 @@ async function unlinkInvoiceLine(line, btn) {
   }
 }
 
+async function clearLeftoverDraftStamps(bucket, btn) {
+  const keys = leftoverDraftStampKeys(bucketLines(bucket));
+  if (keys.length === 0) {
+    showStatus('error', `No leftover draft stamps in ${BUCKET_LABEL[bucket]}.`);
+    return;
+  }
+  const proceed = window.confirm(
+    `Clear leftover draft stamps from ${keys.length} ${BUCKET_LABEL[bucket]} receipt${keys.length === 1 ? '' : 's'}? ` +
+    'This only removes portal metadata (xeroPending*). It does not delete receipts or mark anything claimed.',
+  );
+  if (!proceed) return;
+
+  const originalText = btn?.textContent;
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = 'Clearing...';
+  }
+  try {
+    const failures = [];
+    for (const key of keys) {
+      const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(key)}/xero-pending`, {
+        method: 'PATCH',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ clear: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.error) {
+        failures.push(`${key}: ${data.error || `HTTP ${res.status}`}`);
+      }
+    }
+    if (failures.length) {
+      showStatus('error', `Cleared with issues: ${failures.slice(0, 2).join(' ')}`);
+    } else {
+      showStatus('success', `Cleared leftover draft stamps from ${keys.length} receipt${keys.length === 1 ? '' : 's'}.`);
+    }
+    await refreshInvoicesView({ showLoading: false, reloadClaims: false });
+  } catch (err) {
+    showStatus('error', `Could not clear draft stamps: ${err instanceof Error ? err.message : String(err)}`);
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = originalText || 'Clear stale draft stamps';
+    }
+  }
+}
+
 function updateSectionHeaders() {
   if (!invoicesSectionsEl) return;
   INVOICE_BUCKETS.forEach((bucket) => {
@@ -1112,6 +1182,10 @@ function bindInvoiceSectionEvents() {
     const claimBtn = section.querySelector('.invoice-claim-checked-btn');
     if (claimBtn) {
       claimBtn.addEventListener('click', () => markCheckedSectionClaimed(bucket, claimBtn));
+    }
+    const clearStampsBtn = section.querySelector('.invoice-clear-stamps-btn');
+    if (clearStampsBtn) {
+      clearStampsBtn.addEventListener('click', () => clearLeftoverDraftStamps(bucket, clearStampsBtn));
     }
     const sortSelect = section.querySelector('.invoice-sort-select');
     if (sortSelect) {
@@ -1286,7 +1360,6 @@ function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
       ynabClaimId: l.ynabClaimId,
       claimSource: l.claimSource || null,
       claimsBackend: l.claimsBackend || backend,
-      xeroPendingInvoiceId: l.xeroPendingInvoiceId || '',
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
       accountCode: l.accountCode,
@@ -1726,7 +1799,7 @@ async function submitClaimed(invoiceID, lineItems) {
 
 function checkedCurrentPayload(bucket) {
   const lines = pushableBucketLines(bucket).filter(isLineReviewed);
-  return pushPayloadForLines(bucket, `${BUCKET_LABEL[bucket]} claims`, lines);
+  return pushPayloadForLines(bucket, defaultDraftReference(bucket, lines), lines);
 }
 
 function groupedLineItemsByInvoice(lineItems) {
@@ -1788,7 +1861,7 @@ async function markCheckedLineItemsClaimed(bucket, lineItems, btn, { payload = n
       : groupedLineItemsByInvoice(lineItems);
     if (missing.length > 0) {
       throw new Error(
-        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered Xero draft bill. Re-push or use the draft-created action before marking claimed.`,
+        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered bill from a push in this browser. Push first, or use the draft-created action, before marking claimed.`,
       );
     }
     await markLineItemGroupsClaimed(groups, bucket);
@@ -1892,7 +1965,7 @@ function invoicePushSummary(bucket, lines) {
   const lineLabel = lines.length === 1 ? '1 line' : `${lines.length} lines`;
   const receiptLabel = receiptCount === 1 ? '1 receipt' : `${receiptCount} receipts`;
   return [
-    `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
+    `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]})`,
     `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
     'TODO memos change in the selected backend only when you click Mark checked as claimed.',
   ].join('\n');
@@ -1923,18 +1996,9 @@ async function pushInvoice(bucket, btn) {
     showStatus('error', 'Connect Xero first.');
     return;
   }
-  const alreadyDrafted = lines.map((l) => ({ line: l, draft: lineDraftInfo(l) })).filter((item) => item.draft);
-  if (alreadyDrafted.length > 0) {
-    const drafts = [...new Set(alreadyDrafted.map((item) => item.draft.number || item.draft.id))].join(', ');
-    const proceed = window.confirm(
-      `${alreadyDrafted.length} of ${lines.length} ${BUCKET_LABEL[bucket]} line${alreadyDrafted.length === 1 ? ' is' : 's are'} already in Xero draft ${drafts}. ` +
-      'Pushing again creates another draft bill with the same lines. Continue?',
-    );
-    if (!proceed) return;
-  }
   const reference = window.prompt(
-    `${invoicePushSummary(bucket, lines)}\n\nReference / note for this Xero DRAFT bill:`,
-    `${BUCKET_LABEL[bucket]} claims`,
+    `${invoicePushSummary(bucket, lines)}\n\nReference / note for this bill:`,
+    defaultDraftReference(bucket, lines),
   );
   if (reference === null) return;
 

@@ -2173,7 +2173,9 @@ body.selecting .claims-view {
     padding-top: 6px;
   }
 
-  .invoice-doc-table tbody td.col-actions .inv-draft-chip {
+  .invoice-doc-table tbody td.col-actions .inv-bill-name,
+  .invoice-doc-table tbody td.col-actions .inv-draft-chip,
+  .invoice-doc-table tbody td.col-actions .inv-ready-chip {
     margin: 0 auto 0 0;
   }
 
@@ -2861,7 +2863,30 @@ body.selecting .claims-view {
 .invoices-intro {
   color: #666;
   font-size: 0.9rem;
-  margin: 14px 2px;
+  margin: 14px 2px 8px;
+}
+
+.invoices-status-legend {
+  list-style: none;
+  margin: 0 2px 16px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: #64748b;
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.invoices-status-legend li {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.invoices-status-legend code {
+  font-size: 0.78em;
 }
 
 .invoices-loading {
@@ -3211,18 +3236,39 @@ body.selecting .claims-view {
   text-align: left;
 }
 
-/* Lines already sitting in a Xero draft bill */
-.inv-draft-chip {
+/* Optional leftover-stamp chips — not used as Xero status */
+.inv-bill-name {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #334155;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
+.inv-draft-chip,
+.inv-ready-chip {
   display: inline-block;
   margin-bottom: 4px;
   padding: 1px 7px;
   border-radius: 999px;
-  background: #fef3c7;
-  color: #92400e;
   font-size: 0.72rem;
   font-weight: 600;
-  white-space: nowrap;
+  line-height: 1.35;
+  white-space: normal;
+  max-width: 100%;
   cursor: help;
+}
+
+.inv-draft-chip {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.inv-ready-chip {
+  background: #e2e8f0;
+  color: #334155;
 }
 
 .inv-cell-date,
@@ -3548,6 +3594,19 @@ body.selecting .claims-view {
 :root[data-theme="dark"] .inv-draft-chip {
   background: #713f12;
   color: #fde68a;
+}
+
+:root[data-theme="dark"] .inv-ready-chip {
+  background: #334155;
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .inv-bill-name {
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .invoices-status-legend {
+  color: #94a3b8;
 }
 
 :root[data-theme="dark"] .inv-tax-name {

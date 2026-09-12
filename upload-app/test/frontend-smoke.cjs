@@ -120,6 +120,8 @@ async function main() {
   let uploadCount = 0;
   const markClaimRequests = [];
   const linkRequests = [];
+  const pendingClearRequests = [];
+  const receiptDeletes = [];
   const todoBackends = [];
 
   async function setupMockApi(page, mockState = {}) {
@@ -152,6 +154,22 @@ async function main() {
           ? todos.map((todo) => ({ ...todo, description: `${backend}: ${todo.description}` }))
           : todos;
         return route.fulfill({ json: { todos: responseTodos, backend } });
+      }
+      if (url.pathname.startsWith('/receipt/') && route.request().method() === 'DELETE' && !url.pathname.endsWith('/link')) {
+        receiptDeletes.push(url.pathname);
+        return route.fulfill({ status: 500, json: { error: 'must not delete receipt files' } });
+      }
+      if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/xero-pending') && route.request().method() === 'PATCH') {
+        const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/xero-pending'.length));
+        const body = JSON.parse(route.request().postData() || '{}');
+        pendingClearRequests.push({ key, body });
+        const receipt = [...receiptsPageOne, ...receiptsPageTwo].find((item) => item.key === key);
+        if (receipt && body.clear === true) {
+          delete receipt.xeroPendingInvoiceId;
+          delete receipt.xeroPendingInvoiceNumber;
+          delete receipt.xeroPendingClaimsBackend;
+        }
+        return route.fulfill({ json: { success: true, key, cleared: ['xeroPendingInvoiceId', 'xeroPendingInvoiceNumber', 'xeroPendingAt', 'xeroPendingClaimsBackend'] } });
       }
       if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'PATCH') {
         const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/link'.length));
@@ -407,8 +425,47 @@ async function main() {
 
   await page.goto(`http://127.0.0.1:${port}/invoices/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  const sectionTitle = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-title').textContent();
+  if (sectionTitle.trim() !== 'Non-GST') {
+    throw new Error(`invoice section title should be the bucket name only, got: ${sectionTitle}`);
+  }
+  const invoicesCopy = await page.locator('#invoicesView').innerText();
+  if (/\bin Xero\b/i.test(invoicesCopy) || /still TODO/i.test(invoicesCopy) || /not yet pushed/i.test(invoicesCopy)) {
+    throw new Error(`invoices view must not invent an in-Xero status, got: ${invoicesCopy}`);
+  }
+  const intro = await page.locator('.invoices-intro').textContent();
+  if (!intro.includes('still here, it is not claimed') || !intro.includes('TODO')) {
+    throw new Error(`invoice intro should say listed lines are not claimed, got: ${intro}`);
+  }
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .inv-draft-chip, .invoice-section[data-bucket="nongst"] .inv-ready-chip').count()) {
+    throw new Error('pending metadata must not appear as a status chip');
+  }
   const meta = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
-  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed')) throw new Error(`unexpected invoice meta: ${meta}`);
+  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed') || /in Xero/i.test(meta)) {
+    throw new Error(`unexpected invoice meta: ${meta}`);
+  }
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.locator('.invoice-section[data-bucket="nongst"] .invoice-clear-stamps-btn').click();
+  await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Cleared leftover draft stamps'));
+  if (pendingClearRequests.length !== 1 || pendingClearRequests[0].key !== 'receipt-2.pdf' || pendingClearRequests[0].body.clear !== true) {
+    throw new Error(`expected one PATCH xero-pending clear, got ${JSON.stringify(pendingClearRequests)}`);
+  }
+  if (receiptDeletes.length) {
+    throw new Error(`must never DELETE receipt files, got ${receiptDeletes.join(', ')}`);
+  }
+  if (await page.locator('.invoice-section[data-bucket="nongst"] .invoice-clear-stamps-btn').count()) {
+    throw new Error('clear-stamps control should hide after leftover metadata is gone');
+  }
+  const invoiceReceipt = receiptsPageOne.find((item) => item.key === 'receipt-2.pdf');
+  invoiceReceipt.xeroPendingInvoiceId = 'pending-bill-1';
+  invoiceReceipt.xeroPendingInvoiceNumber = 'DRAFT-1';
+  delete invoiceReceipt.xeroPendingClaimsBackend;
+  await page.locator('#invoicesRefreshBtn').click();
+  await page.waitForFunction(() => document.querySelector('#invoicesSections')?.getAttribute('aria-busy') !== 'true');
+  await page.waitForSelector('.invoice-section[data-bucket="nongst"] .invoice-clear-stamps-btn');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] tr[data-id]').count() !== 1) {
+    throw new Error('a leftover stamp without xeroPendingClaimsBackend must not hide a HowMuch-linked line');
+  }
 
   const disabledBefore = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (!disabledBefore) throw new Error('push should be disabled before review');
@@ -417,7 +474,6 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('push should enable after review');
 
-  const invoiceReceipt = receiptsPageOne.find((item) => item.key === 'receipt-2.pdf');
   invoiceReceipt.linkedClaimsBackend = 'ynab';
   invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
   await page.locator('#claimsBackend').selectOption('ynab');
@@ -461,14 +517,34 @@ async function main() {
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
 
+  await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
+  await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('do not have a remembered bill from a push in this browser'));
+  if (markClaimRequests.length !== 0) {
+    throw new Error('leftover xeroPending stamps must not be enough to mark claimed');
+  }
+
+  await page.evaluate(() => {
+    localStorage.setItem('claim_manager_invoice_push_history', JSON.stringify({
+      byLine: {
+        'howmuch::receipt-2.pdf::claim-1': {
+          invoiceID: 'session-bill-1',
+          invoiceNumber: 'SESSION-1',
+          claimsBackend: 'howmuch',
+          bucket: 'nongst',
+          savedAt: '2026-09-12T00:00:00Z',
+        },
+      },
+    }));
+  });
+
   primaryMockState.delayMarkClaimed = true;
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
   await page.locator('#claimsBackend').selectOption('ynab');
   await page.locator('#claimsBackend').selectOption('howmuch');
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('Marked 1 checked Non-GST item claimed'));
   if (markClaimRequests.length !== 1) throw new Error(`expected one mark-claimed request, got ${markClaimRequests.length}`);
-  if (markClaimRequests[0].invoiceID !== 'pending-bill-1') {
-    throw new Error(`mark claimed should use pending receipt invoice id, got ${markClaimRequests[0].invoiceID}`);
+  if (markClaimRequests[0].invoiceID !== 'session-bill-1') {
+    throw new Error(`mark claimed should use this browser's remembered push, got ${markClaimRequests[0].invoiceID}`);
   }
   if (markClaimRequests[0].backend !== 'howmuch') {
     throw new Error(`mark claimed should use HowMuch, got ${markClaimRequests[0].backend}`);

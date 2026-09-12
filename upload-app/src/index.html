@@ -30,11 +30,11 @@
       document.documentElement.dataset.themePreference = preference;
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=20260911-invoices-ux">
+  <link rel="stylesheet" href="/style.css?v=20260912-no-xero-status">
   <!-- Preload the module graph so it loads in one round instead of a three-level waterfall -->
   <link rel="modulepreload" href="/main.js?v=20260912-webmcp">
   <link rel="modulepreload" href="/claims.js">
-  <link rel="modulepreload" href="/invoices.js?v=20260911-invoices-ux">
+  <link rel="modulepreload" href="/invoices.js?v=20260912-pending-backend">
   <link rel="modulepreload" href="/lib/constants.js">
   <link rel="modulepreload" href="/lib/core.js">
   <link rel="modulepreload" href="/lib/state.js">
@@ -186,8 +186,8 @@
       </div>
 
       <p class="invoices-intro">
-        Review ready-to-claim items grouped into draft bills (payee <strong>Soon Yin Jie</strong>).
-        Tap ✓ on each line after checking the receipt; push each section to Xero when every line is reviewed.
+        GST / Non-GST / Transport is the bill split. If a line is still here, it is not claimed.
+        Pushing does not mark HowMuch/YNAB claimed — memos stay <strong>TODO</strong> until you mark checked lines claimed.
       </p>
 
       <div id="invoicesLoading" class="invoices-loading" hidden aria-live="polite">
