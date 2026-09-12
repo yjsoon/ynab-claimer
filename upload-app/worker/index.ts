@@ -246,7 +246,7 @@ interface ReceiptSummary {
   // Set once the linked YNAB claim has been marked claimed for this bill.
   xeroInvoiceId?: string;
   invoicedAt?: string;
-  // Set after a draft exists, before the user marks the linked YNAB claims.
+  // Portal leftover from a push attempt. Not proof a bill exists in Xero.
   xeroPendingInvoiceId?: string;
   xeroPendingInvoiceNumber?: string;
   xeroPendingAt?: string;
@@ -1957,6 +1957,36 @@ export default {
 
         return new Response(JSON.stringify(result), {
           status: statusCode,
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+        });
+      }
+
+      // PATCH /receipt/:key/xero-pending - drop leftover draft-push stamps only.
+      // Never deletes the receipt object. Never marks claims CLAIMED.
+      if (path.startsWith('/receipt/') && path.endsWith('/xero-pending') && request.method === 'PATCH') {
+        const key = decodeURIComponent(path.replace('/receipt/', '').replace('/xero-pending', ''));
+        const body = (await request.json().catch(() => ({}))) as { clear?: unknown };
+        if (body.clear !== true) {
+          return new Response(JSON.stringify({ error: 'Pass { "clear": true } to drop leftover draft stamps.' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        const updated = await patchReceiptMetadata(env, key, {
+          xeroPendingInvoiceId: undefined,
+          xeroPendingInvoiceNumber: undefined,
+          xeroPendingAt: undefined,
+          xeroPendingClaimsBackend: undefined,
+        });
+        if (!updated) {
+          return new Response(JSON.stringify({ error: 'Receipt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+          });
+        }
+
+        return new Response(JSON.stringify({ success: true, key, cleared: ['xeroPendingInvoiceId', 'xeroPendingInvoiceNumber', 'xeroPendingAt', 'xeroPendingClaimsBackend'] }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' },
         });
       }

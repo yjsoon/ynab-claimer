@@ -3236,7 +3236,7 @@ body.selecting .claims-view {
   text-align: left;
 }
 
-/* Status chips: ready vs already in Xero (HowMuch/YNAB still TODO) */
+/* Optional leftover-stamp chips — not used as Xero status */
 .inv-bill-name {
   display: block;
   margin-bottom: 2px;

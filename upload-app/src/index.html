@@ -30,11 +30,11 @@
       document.documentElement.dataset.themePreference = preference;
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=20260912-draft-status">
+  <link rel="stylesheet" href="/style.css?v=20260912-no-xero-status">
   <!-- Preload the module graph so it loads in one round instead of a three-level waterfall -->
   <link rel="modulepreload" href="/main.js?v=20260912-webmcp">
   <link rel="modulepreload" href="/claims.js">
-  <link rel="modulepreload" href="/invoices.js?v=20260912-draft-status">
+  <link rel="modulepreload" href="/invoices.js?v=20260912-no-xero-status">
   <link rel="modulepreload" href="/lib/constants.js">
   <link rel="modulepreload" href="/lib/core.js">
   <link rel="modulepreload" href="/lib/state.js">
@@ -186,14 +186,9 @@
       </div>
 
       <p class="invoices-intro">
-        GST / Non-GST / Transport is the bill split. Pushing does not mark HowMuch/YNAB claimed —
-        memos stay <strong>TODO</strong> until you mark checked lines claimed.
+        GST / Non-GST / Transport is the bill split. If a line is still here, it is not claimed.
+        Pushing does not mark HowMuch/YNAB claimed — memos stay <strong>TODO</strong> until you mark checked lines claimed.
       </p>
-      <ul class="invoices-status-legend">
-        <li><span class="inv-ready-chip">Not yet pushed</span> Ready to review and push.</li>
-        <li><span class="inv-draft-chip">In Xero · still TODO</span> Already pushed; HowMuch/YNAB still TODO.</li>
-        <li>Claimed lines leave this tab after you mark them claimed (<code>CLAIMED:</code> in HowMuch/YNAB).</li>
-      </ul>
 
       <div id="invoicesLoading" class="invoices-loading" hidden aria-live="polite">
         <div class="spinner"></div>

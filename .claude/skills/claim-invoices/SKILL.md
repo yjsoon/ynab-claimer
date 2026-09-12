@@ -43,10 +43,12 @@ flipped to `CLAIMED:`.
 
 Open receipts.soon.sg → **Invoices** (toolbar toggle). Review the editable table —
 tweak description, **Account**, the **GST?** toggle (sets the input tax code), and
-the per-line **remark**; the GST / non-GST / transport buckets update live. Those
-headings are the bill split, not status: a name such as `Jul-Aug 2026 GST claims`
-is the Xero bill number, and HowMuch/YNAB stay `TODO:` until **Mark checked as
-claimed**. Click **Generate … invoice** to preview, then **Push to Xero (draft)**.
+the per-line **remark**; the GST / non-GST / transport buckets update live. If a
+line is still on this tab, it is not claimed. HowMuch/YNAB stay `TODO:` until
+**Mark checked as claimed**. Do not treat `xeroPending*` metadata as a live Xero
+bill — use **Clear stale draft stamps** (or `PATCH /receipt/:key/xero-pending`
+with `{ "clear": true }`) to drop leftover stamps only; never delete the receipt
+file. Click **Generate … invoice** to preview, then **Push to Xero (draft)**.
 Open the returned link, review/approve in Xero.
 
 The **GST?** toggle defaults from an AI verdict (`taggedGstShown` receipt
@@ -66,6 +68,7 @@ automatically; the **Detect GST** button backfills receipts without a verdict
 | POST | `/xero/disconnect` | Forget stored tokens |
 | GET | `/xero/meta` | Tax rates + expense accounts (dropdowns / verification) |
 | POST | `/xero/invoices/push` | Create DRAFT bill, attach receipts, tag + flip YNAB CLAIMED |
+| PATCH | `/receipt/:key/xero-pending` | Clear leftover `xeroPending*` stamps only (`{ "clear": true }`); never deletes the file |
 | POST | `/gst-tags/pending?limit=8` | Detect GST for receipts without a verdict (backfill; returns `remaining`) |
 | POST | `/receipt/:key/tag-gst` | Force GST re-detection for one receipt |
 
