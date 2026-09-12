@@ -459,10 +459,13 @@ async function main() {
   const invoiceReceipt = receiptsPageOne.find((item) => item.key === 'receipt-2.pdf');
   invoiceReceipt.xeroPendingInvoiceId = 'pending-bill-1';
   invoiceReceipt.xeroPendingInvoiceNumber = 'DRAFT-1';
-  invoiceReceipt.xeroPendingClaimsBackend = 'howmuch';
+  delete invoiceReceipt.xeroPendingClaimsBackend;
   await page.locator('#invoicesRefreshBtn').click();
   await page.waitForFunction(() => document.querySelector('#invoicesSections')?.getAttribute('aria-busy') !== 'true');
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] .invoice-clear-stamps-btn');
+  if (await page.locator('.invoice-section[data-bucket="nongst"] tr[data-id]').count() !== 1) {
+    throw new Error('a leftover stamp without xeroPendingClaimsBackend must not hide a HowMuch-linked line');
+  }
 
   const disabledBefore = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (!disabledBefore) throw new Error('push should be disabled before review');

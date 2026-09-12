@@ -485,8 +485,7 @@ function buildInvoiceLines() {
         if (pref) amount = pref.value;
       }
 
-      const claimsBackend = receipt.xeroPendingClaimsBackend
-        || (receipt.xeroPendingInvoiceId ? 'ynab' : linkedBackend);
+      const claimsBackend = linkedBackend === 'howmuch' ? 'howmuch' : 'ynab';
       lines.push({
         id: `${claimsBackend}::${receipt.key}::${claimId}`,
         receiptKey: receipt.key,
@@ -1361,7 +1360,6 @@ function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
       ynabClaimId: l.ynabClaimId,
       claimSource: l.claimSource || null,
       claimsBackend: l.claimsBackend || backend,
-      xeroPendingInvoiceId: l.xeroPendingInvoiceId || '',
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
       accountCode: l.accountCode,
