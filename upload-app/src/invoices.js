@@ -31,9 +31,9 @@ const invoicesLoadingEl = document.getElementById('invoicesLoading');
 
 const INVOICE_BUCKETS = ['gst', 'nongst', 'transport'];
 const BUCKET_HEADING = {
-  gst: 'GST — Xero draft (not claimed yet)',
-  nongst: 'Non-GST — Xero draft (not claimed yet)',
-  transport: 'Transport — Xero draft (not claimed yet)',
+  gst: 'GST',
+  nongst: 'Non-GST',
+  transport: 'Transport',
 };
 const BUCKET_LABEL = { gst: 'GST', nongst: 'Non-GST', transport: 'Transport' };
 const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
@@ -570,7 +570,7 @@ function bucketReviewState(bucket) {
 function invoicePushNote(bucket) {
   const { pushable, reviewedCount, allReviewed } = bucketReviewState(bucket);
   if (pushable.length === 0) return '';
-  if (allReviewed) return 'Creates a Xero DRAFT only. HowMuch/YNAB stay TODO until you mark checked lines claimed.';
+  if (allReviewed) return 'HowMuch/YNAB stay TODO until you mark checked lines claimed.';
   return `Review every line before pushing (${reviewedCount}/${pushable.length} reviewed).`;
 }
 
@@ -583,8 +583,8 @@ function invoiceSectionMeta(bucket, lines, total) {
   const amount = `S$${total.toFixed(2)}`;
   const drafted = draftedLineCount(lines);
   const draftBit = drafted
-    ? ` · ${drafted} in Xero draft (still TODO)`
-    : ' · not in Xero yet';
+    ? ` · ${drafted} in Xero · still TODO`
+    : ' · not yet pushed';
   if (pushable.length === 0) return `${lines.length} items · ${amount}${draftBit}`;
   if (pushable.length === lines.length) {
     return `${pushable.length} bill lines · ${amount} · ${reviewedCount}/${pushable.length} reviewed${draftBit}`;
@@ -612,34 +612,34 @@ function invoicePeriodLabel(lines) {
 
 function defaultDraftReference(bucket, lines = []) {
   const period = invoicePeriodLabel(lines);
-  const label = `${BUCKET_LABEL[bucket]} Xero draft`;
+  const label = BUCKET_LABEL[bucket];
   return period ? `${period} ${label}` : label;
 }
 
 function invoiceSectionStatusHtml(lines) {
   const drafted = lines.map((line) => lineDraftInfo(line)).filter(Boolean);
   if (drafted.length === 0) {
-    return 'Payee: <strong>Soon Yin Jie</strong> · tax-inclusive. Nothing here is in Xero yet — pushing creates a draft only, and HowMuch/YNAB stay TODO.';
+    return 'Payee: <strong>Soon Yin Jie</strong> · tax-inclusive. Nothing pushed yet — HowMuch/YNAB stay TODO until you mark lines claimed.';
   }
   const names = [...new Set(drafted.map((draft) => draft.number).filter(Boolean))];
   const named = names.length ? ` (${names.map((name) => escapeHtml(name)).join(', ')})` : '';
   const ready = lines.length - drafted.length;
   const readyBit = ready > 0
-    ? ` ${ready} line${ready === 1 ? '' : 's'} not in Xero yet.`
+    ? ` ${ready} line${ready === 1 ? '' : 's'} not yet pushed.`
     : '';
-  return `Payee: <strong>Soon Yin Jie</strong> · tax-inclusive. ${drafted.length} line${drafted.length === 1 ? '' : 's'} already in a Xero draft${named}. That is not claimed — memos are still TODO.${readyBit}`;
+  return `Payee: <strong>Soon Yin Jie</strong> · tax-inclusive. ${drafted.length} line${drafted.length === 1 ? '' : 's'} already in Xero${named} — HowMuch/YNAB still TODO.${readyBit}`;
 }
 
 function renderLineStatusChip(line) {
   const draft = lineDraftInfo(line);
   if (!draft) {
-    return '<span class="inv-ready-chip" title="Not in Xero yet. Review and push to create a draft bill. HowMuch/YNAB stay TODO until you mark this claimed.">Not in Xero yet</span>';
+    return '<span class="inv-ready-chip" title="Not yet pushed. HowMuch/YNAB stay TODO until you mark this claimed.">Not yet pushed</span>';
   }
   const name = draft.number || '';
-  const label = name
-    ? `Xero draft ${escapeHtml(name)} — still TODO`
-    : 'Xero draft — still TODO';
-  return `<span class="inv-draft-chip" title="This line is in Xero draft bill ${escapeHtml(name || draft.id)}. That is not reimbursement. HowMuch/YNAB stay TODO until you mark it claimed. Pushing again would create another draft.">${label}</span>`;
+  const nameHtml = name
+    ? `<span class="inv-bill-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>`
+    : '';
+  return `${nameHtml}<span class="inv-draft-chip" title="Already in Xero. HowMuch/YNAB stay TODO until you mark this claimed. Pushing again would create another bill.">In Xero · still TODO</span>`;
 }
 
 function setLineReviewed(line, reviewed, btn) {
@@ -1843,7 +1843,7 @@ async function markCheckedLineItemsClaimed(bucket, lineItems, btn, { payload = n
       : groupedLineItemsByInvoice(lineItems);
     if (missing.length > 0) {
       throw new Error(
-        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered Xero draft bill. Re-push or use the draft-created action before marking claimed.`,
+        `${missing.length} checked ${BUCKET_LABEL[bucket]} item${missing.length === 1 ? '' : 's'} do not have a remembered Xero bill. Re-push or use the bill-created action before marking claimed.`,
       );
     }
     await markLineItemGroupsClaimed(groups, bucket);
@@ -1947,7 +1947,7 @@ function invoicePushSummary(bucket, lines) {
   const lineLabel = lines.length === 1 ? '1 line' : `${lines.length} lines`;
   const receiptLabel = receiptCount === 1 ? '1 receipt' : `${receiptCount} receipts`;
   return [
-    `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]}, draft)`,
+    `${lineLabel} · S$${total.toFixed(2)} → Soon Yin Jie (${BUCKET_LABEL[bucket]})`,
     `Attempts Xero attachment and prepares a downloadable ${receiptLabel} PDF in this list order; line descriptions include receipt page references.`,
     'TODO memos change in the selected backend only when you click Mark checked as claimed.',
   ].join('\n');
@@ -1982,13 +1982,13 @@ async function pushInvoice(bucket, btn) {
   if (alreadyDrafted.length > 0) {
     const drafts = [...new Set(alreadyDrafted.map((item) => item.draft.number || item.draft.id))].join(', ');
     const proceed = window.confirm(
-      `${alreadyDrafted.length} of ${lines.length} ${BUCKET_LABEL[bucket]} line${alreadyDrafted.length === 1 ? ' is' : 's are'} already in Xero draft ${drafts}. ` +
-      'Pushing again creates another draft bill with the same lines. Continue?',
+      `${alreadyDrafted.length} of ${lines.length} ${BUCKET_LABEL[bucket]} line${alreadyDrafted.length === 1 ? ' is' : 's are'} already in Xero (${drafts}). ` +
+      'Pushing again creates another bill with the same lines. Continue?',
     );
     if (!proceed) return;
   }
   const reference = window.prompt(
-    `${invoicePushSummary(bucket, lines)}\n\nReference / note for this Xero DRAFT bill (this becomes the bill number; a draft is not a claim):`,
+    `${invoicePushSummary(bucket, lines)}\n\nReference / note for this bill:`,
     defaultDraftReference(bucket, lines),
   );
   if (reference === null) return;

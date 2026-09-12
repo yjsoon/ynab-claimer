@@ -44,10 +44,10 @@ flipped to `CLAIMED:`.
 Open receipts.soon.sg → **Invoices** (toolbar toggle). Review the editable table —
 tweak description, **Account**, the **GST?** toggle (sets the input tax code), and
 the per-line **remark**; the GST / non-GST / transport buckets update live. Those
-headings are Xero draft buckets, not claim status: a draft (and names such as
-`Jul-Aug 2026 GST Xero draft`) means staged for Xero, while HowMuch/YNAB stay
-`TODO:` until **Mark checked as claimed**. Click **Generate … invoice** to preview,
-then **Push to Xero (draft)**. Open the returned link, review/approve in Xero.
+headings are the bill split, not status: a name such as `Jul-Aug 2026 GST claims`
+is the Xero bill number, and HowMuch/YNAB stay `TODO:` until **Mark checked as
+claimed**. Click **Generate … invoice** to preview, then **Push to Xero (draft)**.
+Open the returned link, review/approve in Xero.
 
 The **GST?** toggle defaults from an AI verdict (`taggedGstShown` receipt
 metadata). Vision tagging (amount extraction + GST detection) uses MiniMax

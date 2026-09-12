@@ -2173,6 +2173,7 @@ body.selecting .claims-view {
     padding-top: 6px;
   }
 
+  .invoice-doc-table tbody td.col-actions .inv-bill-name,
   .invoice-doc-table tbody td.col-actions .inv-draft-chip,
   .invoice-doc-table tbody td.col-actions .inv-ready-chip {
     margin: 0 auto 0 0;
@@ -3235,7 +3236,17 @@ body.selecting .claims-view {
   text-align: left;
 }
 
-/* Lines already sitting in a Xero draft bill — not the same as claimed */
+/* Status chips: ready vs already in Xero (HowMuch/YNAB still TODO) */
+.inv-bill-name {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #334155;
+  line-height: 1.35;
+  word-break: break-word;
+}
+
 .inv-draft-chip,
 .inv-ready-chip {
   display: inline-block;
@@ -3587,6 +3598,10 @@ body.selecting .claims-view {
 
 :root[data-theme="dark"] .inv-ready-chip {
   background: #334155;
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .inv-bill-name {
   color: #e2e8f0;
 }
 

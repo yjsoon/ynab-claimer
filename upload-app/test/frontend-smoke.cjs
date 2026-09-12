@@ -408,23 +408,27 @@ async function main() {
   await page.goto(`http://127.0.0.1:${port}/invoices/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
   const sectionTitle = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-title').textContent();
-  if (!sectionTitle.includes('Xero draft (not claimed yet)') || sectionTitle.includes('claims')) {
-    throw new Error(`invoice section title should be a draft bucket, not a claim: ${sectionTitle}`);
+  if (sectionTitle.trim() !== 'Non-GST') {
+    throw new Error(`invoice section title should be the bucket name only, got: ${sectionTitle}`);
   }
   const intro = await page.locator('.invoices-intro').textContent();
-  if (!intro.includes('not claim status') || !intro.includes('TODO')) {
-    throw new Error(`invoice intro should say groups are drafts still TODO, got: ${intro}`);
+  if (!intro.includes('does not mark HowMuch/YNAB claimed') || !intro.includes('TODO')) {
+    throw new Error(`invoice intro should say pushing does not mark claimed, got: ${intro}`);
+  }
+  const billName = await page.locator('.invoice-section[data-bucket="nongst"] .inv-bill-name').textContent();
+  if (billName.trim() !== 'DRAFT-1') {
+    throw new Error(`pending bill name should stay as stored, got: ${billName}`);
   }
   const draftChip = await page.locator('.invoice-section[data-bucket="nongst"] .inv-draft-chip').textContent();
-  if (!draftChip.includes('Xero draft DRAFT-1') || !draftChip.includes('still TODO')) {
-    throw new Error(`pending draft chip should wrap the invoice number as still TODO, got: ${draftChip}`);
+  if (draftChip.trim() !== 'In Xero · still TODO') {
+    throw new Error(`pending status chip should be short, got: ${draftChip}`);
   }
   const sectionStatus = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-doc-sub').textContent();
-  if (!sectionStatus.includes('already in a Xero draft') || !sectionStatus.includes('still TODO')) {
-    throw new Error(`section status should say the Xero draft is not claimed, got: ${sectionStatus}`);
+  if (!sectionStatus.includes('already in Xero') || !sectionStatus.includes('still TODO')) {
+    throw new Error(`section status should say already in Xero and still TODO, got: ${sectionStatus}`);
   }
   const meta = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-section-meta').textContent();
-  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed') || !meta.includes('in Xero draft (still TODO)')) {
+  if (!meta.includes('1 bill lines') || !meta.includes('0/1 reviewed') || !meta.includes('in Xero · still TODO')) {
     throw new Error(`unexpected invoice meta: ${meta}`);
   }
 
