@@ -1,12 +1,12 @@
 import { initTheme, initAuthUi, checkAuth, hidePasswordPrompt, setOnAuthSuccess } from './lib/core.js';
-import { initPreview } from './lib/preview.js';
+import { initPreview } from './lib/preview.js?v=20260914-preview-review';
 import { initWebMcp } from './webmcp.js';
 import {
   initClaims,
   loadReceipts,
   loadYnabTodos,
   setOnClaimsLoadError,
-} from './claims.js';
+} from './claims.js?v=20260914-preview-review';
 import {
   initInvoices,
   showInvoicesView,
@@ -14,7 +14,7 @@ import {
   navigateToMode,
   renderInvoiceClaimLoadError,
   renderInvoicesFromLoadedData,
-} from './invoices.js?v=20260914-wide-invoices';
+} from './invoices.js?v=20260914-preview-review';
 
 initTheme();
 initPreview();

@@ -15,8 +15,8 @@ import {
   getReceiptDisplayName,
   getComparableReceiptAmounts,
 } from './lib/match.js';
-import { openPreview } from './lib/preview.js';
-import { clearSelection, getClaimsBackend, loadReceipts, loadYnabTodos } from './claims.js';
+import { openPreview } from './lib/preview.js?v=20260914-preview-review';
+import { clearSelection, getClaimsBackend, loadReceipts, loadYnabTodos } from './claims.js?v=20260914-preview-review';
 
 const claimsView = document.getElementById('claimsView');
 const navClaims = document.getElementById('navClaims');
@@ -664,7 +664,7 @@ function reaffirmLineReviewAfterEdit(line, contextEl) {
 function renderInvoiceStaleNoteRow() {
   return `
     <tr class="inv-row-note">
-      <td colspan="9">
+      <td colspan="8">
         <span class="inv-review-stale">Receipt or claim data changed since this line was reviewed — check it and tick again.</span>
       </td>
     </tr>`;
@@ -676,13 +676,6 @@ function renderInvoiceLineRow(line, accounts) {
   const invalidated = line.reviewInvalidated === true;
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
-      <td class="col-reviewed" data-label="Reviewed">
-        <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
-            aria-pressed="${reviewed ? 'true' : 'false'}"
-            aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
-          <span class="inv-review-check" aria-hidden="true">✓</span>
-        </button>
-      </td>
       <td class="inv-cell-editable inv-cell-date" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
       <td class="inv-cell-editable inv-cell-description" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
       <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
@@ -693,7 +686,12 @@ function renderInvoiceLineRow(line, accounts) {
       <td class="col-actions" data-label="Actions">
         <div class="inv-row-actions">
           <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
-          <button type="button" class="inv-unlink-btn" title="Unlink from invoice list">Unlink</button>
+          <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
+              aria-pressed="${reviewed ? 'true' : 'false'}"
+              aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
+            <span class="inv-review-check" aria-hidden="true">✓</span>
+          </button>
+          <button type="button" class="inv-unlink-btn" title="Unlink from invoice list" aria-label="Unlink from invoice list">⛔</button>
         </div>
       </td>
     </tr>${invalidated ? renderInvoiceStaleNoteRow() : ''}`;
@@ -749,7 +747,6 @@ function renderInvoiceSection(bucket, lines, accounts) {
           <table class="invoice-doc-table">
             <thead>
               <tr>
-                <th class="col-reviewed" aria-label="Reviewed">✓</th>
                 <th>Date</th>
                 <th>Description</th>
                 <th>Account</th>
@@ -760,10 +757,10 @@ function renderInvoiceSection(bucket, lines, accounts) {
                 <th class="col-actions">Actions</th>
               </tr>
             </thead>
-            <tbody>${rowsHtml || `<tr><td colspan="9" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
+            <tbody>${rowsHtml || `<tr><td colspan="8" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
             <tfoot>
               <tr>
-                <td colspan="7" class="num"><strong>Total</strong></td>
+                <td colspan="6" class="num"><strong>Total</strong></td>
                 <td class="num"><strong>S$${total.toFixed(2)}</strong></td>
                 <td></td>
               </tr>
@@ -1064,12 +1061,18 @@ function attachInvoiceRowEditors(tr, line, accounts) {
   });
   tr.querySelector('.inv-preview-btn').addEventListener('click', (e) => {
     e.stopPropagation();
-    openPreview(line.receiptKey, line.receiptName);
+    commitActiveInvoiceEdit();
+    openPreview(line.receiptKey, line.receiptName, {
+      amount: formatCurrencyAmount('SGD', Number(line.amount)),
+      onReview: () => setLineReviewed(line, true, reviewBtn),
+    });
   });
   const unlinkBtn = tr.querySelector('.inv-unlink-btn');
   if (unlinkBtn) {
     unlinkBtn.addEventListener('click', (e) => {
       e.stopPropagation();
+      const proceed = window.confirm(`Unlink ${line.receiptName || line.description || 'this receipt'} from the invoice list?`);
+      if (!proceed) return;
       unlinkInvoiceLine(line, unlinkBtn);
     });
   }
@@ -1079,7 +1082,7 @@ async function unlinkInvoiceLine(line, btn) {
   const originalText = btn?.textContent;
   if (btn) {
     btn.disabled = true;
-    btn.textContent = 'Unlinking...';
+    btn.textContent = '…';
   }
   try {
     const res = await fetch(`${API_BASE}/receipt/${encodeURIComponent(line.receiptKey)}/link`, {
@@ -1094,7 +1097,7 @@ async function unlinkInvoiceLine(line, btn) {
     showStatus('error', `Could not unlink receipt: ${err instanceof Error ? err.message : String(err)}`);
     if (btn) {
       btn.disabled = false;
-      btn.textContent = originalText || 'Unlink';
+      btn.textContent = originalText || '⛔';
     }
   }
 }

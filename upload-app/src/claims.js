@@ -44,7 +44,7 @@ import {
   describeMatchReason,
   makeSuggestionPairId,
 } from './lib/match.js';
-import { openPreview } from './lib/preview.js';
+import { openPreview } from './lib/preview.js?v=20260914-preview-review';
 
 const dropzone = document.getElementById('dropzone');
 const fileInput = document.getElementById('fileInput');

@@ -30,16 +30,16 @@
       document.documentElement.dataset.themePreference = preference;
     })();
   </script>
-  <link rel="stylesheet" href="/style.css?v=20260914-wide-invoices-1440">
+  <link rel="stylesheet" href="/style.css?v=20260914-preview-review">
   <!-- Preload the module graph so it loads in one round instead of a three-level waterfall -->
-  <link rel="modulepreload" href="/main.js?v=20260914-wide-invoices">
-  <link rel="modulepreload" href="/claims.js">
-  <link rel="modulepreload" href="/invoices.js?v=20260914-wide-invoices">
+  <link rel="modulepreload" href="/main.js?v=20260914-preview-review">
+  <link rel="modulepreload" href="/claims.js?v=20260914-preview-review">
+  <link rel="modulepreload" href="/invoices.js?v=20260914-preview-review">
   <link rel="modulepreload" href="/lib/constants.js">
   <link rel="modulepreload" href="/lib/core.js">
   <link rel="modulepreload" href="/lib/state.js">
   <link rel="modulepreload" href="/lib/match.js">
-  <link rel="modulepreload" href="/lib/preview.js">
+  <link rel="modulepreload" href="/lib/preview.js?v=20260914-preview-review">
 </head>
 <body>
   <div id="authOverlay" class="auth-overlay" style="display: none;">
@@ -224,9 +224,13 @@
         <img id="previewImage" class="preview-image" alt="Receipt preview">
         <iframe id="previewPdf" class="preview-pdf" title="Receipt PDF preview"></iframe>
       </div>
+      <div id="previewReview" class="preview-review" hidden>
+        <span>Registered amount: <strong id="previewAmount"></strong></span>
+        <button id="previewReviewBtn" class="preview-review-btn" type="button" aria-label="Mark invoice line as reviewed and close preview">✓</button>
+      </div>
     </div>
   </div>
 
-  <script type="module" src="/main.js?v=20260914-wide-invoices"></script>
+  <script type="module" src="/main.js?v=20260914-preview-review"></script>
 </body>
 </html>

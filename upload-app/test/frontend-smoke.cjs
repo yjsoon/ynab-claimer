@@ -122,6 +122,7 @@ async function main() {
   const linkRequests = [];
   const pendingClearRequests = [];
   const receiptDeletes = [];
+  const invoiceUnlinkRequests = [];
   const todoBackends = [];
 
   async function setupMockApi(page, mockState = {}) {
@@ -158,6 +159,10 @@ async function main() {
       if (url.pathname.startsWith('/receipt/') && route.request().method() === 'DELETE' && !url.pathname.endsWith('/link')) {
         receiptDeletes.push(url.pathname);
         return route.fulfill({ status: 500, json: { error: 'must not delete receipt files' } });
+      }
+      if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/link') && route.request().method() === 'DELETE') {
+        invoiceUnlinkRequests.push(url.pathname);
+        return route.fulfill({ json: { success: true } });
       }
       if (url.pathname.startsWith('/receipt/') && url.pathname.endsWith('/xero-pending') && route.request().method() === 'PATCH') {
         const key = decodeURIComponent(url.pathname.slice('/receipt/'.length, -'/xero-pending'.length));
@@ -474,9 +479,32 @@ async function main() {
   const disabledBefore = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (!disabledBefore) throw new Error('push should be disabled before review');
 
-  await page.locator('.invoice-section[data-bucket="nongst"] .inv-review-btn').click();
+  const rowActions = page.locator('.invoice-section[data-bucket="nongst"] .inv-row-actions');
+  assert.deepEqual(
+    await rowActions.locator('button').evaluateAll((buttons) => buttons.map((button) => button.className)),
+    ['inv-preview-btn', 'inv-review-btn', 'inv-unlink-btn'],
+    'preview, review, and unlink actions should be grouped in that order',
+  );
+  assert.equal(await rowActions.locator('.inv-unlink-btn').textContent(), '⛔');
+  let unlinkConfirmShown = false;
+  page.once('dialog', async (dialog) => {
+    unlinkConfirmShown = true;
+    await dialog.dismiss();
+  });
+  await rowActions.locator('.inv-unlink-btn').click();
+  assert.equal(unlinkConfirmShown, true, 'unlink should require confirmation');
+  assert.equal(invoiceUnlinkRequests.length, 0, 'canceling unlink must not send a request');
+
+  const amountCell = page.locator('.invoice-section[data-bucket="nongst"] [data-field="amount"]');
+  await amountCell.click();
+  await amountCell.locator('input').fill('23.67');
+  await rowActions.locator('.inv-preview-btn').click();
+  await page.waitForSelector('#previewOverlay.active');
+  assert.equal(await page.locator('#previewAmount').textContent(), 'S$23.67', 'preview should commit and show the active amount edit');
+  await page.locator('#previewReviewBtn').click();
+  await page.waitForSelector('#previewOverlay:not(.active)');
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
-  if (disabledAfter) throw new Error('push should enable after review');
+  if (disabledAfter) throw new Error('preview check should review the line and enable push');
 
   invoiceReceipt.linkedClaimsBackend = 'ynab';
   invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
@@ -699,6 +727,21 @@ async function main() {
   await desktopPage.locator('#navClaims').click();
   const claimsContainerWidth = await desktopPage.locator('.container').evaluate((element) => element.getBoundingClientRect().width);
   assert.equal(claimsContainerWidth, 1100, 'Claims should retain its existing desktop width');
+
+  const shortPage = await browser.newPage({ viewport: { width: 568, height: 390 } });
+  await shortPage.addInitScript(() => {
+    localStorage.setItem('claim_manager_auth', 'test');
+    localStorage.setItem('claim_manager_remember', 'true');
+  });
+  await setupMockApi(shortPage);
+  await shortPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
+  await shortPage.locator('.invoice-section[data-bucket="nongst"] .inv-preview-btn').click();
+  const shortReviewBounds = await shortPage.locator('#previewReviewBtn').boundingBox();
+  if (!shortReviewBounds || shortReviewBounds.y < 0 || shortReviewBounds.y + shortReviewBounds.height > 390) {
+    throw new Error(`preview review action must fit a short viewport: ${JSON.stringify(shortReviewBounds)}`);
+  }
+  await shortPage.locator('#previewReviewBtn').click();
+  await shortPage.waitForSelector('#previewOverlay:not(.active)');
 
   const compactPage = await browser.newPage({ viewport: { width: 320, height: 700 } });
   await compactPage.addInitScript(() => {

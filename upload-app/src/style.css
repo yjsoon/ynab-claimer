@@ -1079,6 +1079,7 @@ h2 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
   padding: 16px 20px;
   border-bottom: 1px solid #eee;
   background: #fafafa;
@@ -1170,6 +1171,48 @@ h2 {
   display: block;
 }
 
+.preview-review {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 16px;
+  padding: 12px 20px;
+  border-top: 1px solid #e5e7eb;
+  background: #fff;
+  font-size: 0.9rem;
+}
+
+.preview-review[hidden] {
+  display: none;
+}
+
+.preview-review-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 44px;
+  height: 44px;
+  flex-shrink: 0;
+  border: 2px solid #16a34a;
+  border-radius: 999px;
+  background: #16a34a;
+  color: #fff;
+  font-size: 1.1rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.preview-overlay.has-review-action .preview-content,
+.preview-overlay.has-review-action .preview-image {
+  min-height: 0;
+  max-height: calc(90vh - 145px);
+}
+
+.preview-overlay.has-review-action .preview-pdf {
+  height: calc(90vh - 145px);
+}
+
 /* Mobile: full-screen modal */
 @media (max-width: 600px) {
   .preview-overlay {
@@ -1203,6 +1246,17 @@ h2 {
   .preview-pdf {
     height: calc(100vh - 80px);
     height: calc(100dvh - 80px);
+  }
+
+  .preview-overlay.has-review-action .preview-content,
+  .preview-overlay.has-review-action .preview-image {
+    max-height: calc(100vh - 145px);
+    max-height: calc(100dvh - 145px);
+  }
+
+  .preview-overlay.has-review-action .preview-pdf {
+    height: calc(100vh - 145px);
+    height: calc(100dvh - 145px);
   }
 
   .preview-close {
@@ -2096,18 +2150,18 @@ body.selecting .claims-view {
     display: none;
   }
 
-  /* Card: tick + description + amount in a header row, then labelled fields */
+  /* Card: description + amount in a header row, then labelled fields and actions */
   .invoice-doc-table tbody tr {
     display: grid;
-    grid-template-columns: 44px minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "check desc amount"
-      "date date date"
-      "account account account"
-      "type type type"
-      "remark remark remark"
-      "tax tax tax"
-      "actions actions actions";
+      "desc amount"
+      "date date"
+      "account account"
+      "type type"
+      "remark remark"
+      "tax tax"
+      "actions actions";
     column-gap: 10px;
     border: 1px solid #e5e7eb;
     border-radius: 10px;
@@ -2139,12 +2193,6 @@ body.selecting .claims-view {
     padding: 0;
   }
 
-  .invoice-doc-table tbody td.col-reviewed {
-    grid-area: check;
-    padding: 0;
-    align-items: flex-start;
-  }
-
   .invoice-doc-table tbody td.inv-cell-description {
     grid-area: desc;
     padding: 0;
@@ -2161,14 +2209,14 @@ body.selecting .claims-view {
      amount to its own row directly beneath, keeping every named area placed. */
   .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) {
     grid-template-areas:
-      "check desc desc"
-      "amount amount amount"
-      "date date date"
-      "account account account"
-      "type type type"
-      "remark remark remark"
-      "tax tax tax"
-      "actions actions actions";
+      "desc desc"
+      "amount amount"
+      "date date"
+      "account account"
+      "type type"
+      "remark remark"
+      "tax tax"
+      "actions actions";
   }
 
   .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) td.inv-cell-amount {
@@ -2192,7 +2240,6 @@ body.selecting .claims-view {
     font-size: 1rem;
   }
 
-  .invoice-doc-table tbody td.col-reviewed::before,
   .invoice-doc-table tbody td.inv-cell-description::before,
   .invoice-doc-table tbody td.inv-cell-amount::before {
     display: none;
@@ -2792,6 +2839,12 @@ body.selecting .claims-view {
   background: #020617;
 }
 
+:root[data-theme="dark"] .preview-review {
+  border-top-color: #334155;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
 :root[data-theme="dark"] .preview-close {
   color: #94a3b8;
 }
@@ -3171,12 +3224,7 @@ body.selecting .claims-view {
 }
 
 .invoice-doc-table .col-actions {
-  width: 118px;
-  text-align: center;
-}
-
-.invoice-doc-table .col-reviewed {
-  width: 44px;
+  width: 142px;
   text-align: center;
 }
 
@@ -3319,10 +3367,11 @@ body.selecting .claims-view {
   background: #fff1f2;
   color: #be123c;
   border-radius: 6px;
-  padding: 4px 8px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
   cursor: pointer;
-  font-size: 0.78rem;
-  font-weight: 600;
+  font-size: 1rem;
 }
 
 .inv-unlink-btn:hover {
