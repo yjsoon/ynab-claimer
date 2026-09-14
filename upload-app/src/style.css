@@ -38,6 +38,10 @@ textarea {
   margin: 0 auto;
 }
 
+body.invoices-active .container {
+  max-width: 1440px;
+}
+
 h1 {
   font-size: 1.35rem;
   font-weight: 600;

@@ -14,7 +14,7 @@ import {
   navigateToMode,
   renderInvoiceClaimLoadError,
   renderInvoicesFromLoadedData,
-} from './invoices.js?v=20260914-sort-accounts';
+} from './invoices.js?v=20260914-wide-invoices';
 
 initTheme();
 initPreview();

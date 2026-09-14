@@ -2159,6 +2159,7 @@ export function showInvoicesView(show, { refresh = true } = {}) {
     clearSelection();
   }
   invoicesActive = show;
+  document.body.classList.toggle('invoices-active', show);
   if (claimsView) claimsView.hidden = show;
   invoicesView.hidden = !show;
   updateModeNav(show);

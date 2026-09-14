@@ -672,6 +672,19 @@ async function main() {
     throw new Error('failed receipt loads must not erase dismissed matches');
   }
 
+  const desktopPage = await browser.newPage({ viewport: { width: 1600, height: 900 } });
+  await desktopPage.addInitScript(() => {
+    localStorage.setItem('claim_manager_auth', 'test');
+    localStorage.setItem('claim_manager_remember', 'true');
+  });
+  await setupMockApi(desktopPage);
+  await desktopPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
+  const invoiceContainerWidth = await desktopPage.locator('.container').evaluate((element) => element.getBoundingClientRect().width);
+  assert.equal(invoiceContainerWidth, 1440, 'Invoices should use the wider desktop container');
+  await desktopPage.locator('#navClaims').click();
+  const claimsContainerWidth = await desktopPage.locator('.container').evaluate((element) => element.getBoundingClientRect().width);
+  assert.equal(claimsContainerWidth, 1100, 'Claims should retain its existing desktop width');
+
   const compactPage = await browser.newPage({ viewport: { width: 320, height: 700 } });
   await compactPage.addInitScript(() => {
     localStorage.setItem('claim_manager_auth', 'test');
