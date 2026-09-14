@@ -93,7 +93,11 @@ const INVOICE_EMPTY_TEXT = 'No ready-to-claim items. Mark receipts ready or link
 const INVOICE_CLAIMS_UNAVAILABLE_TEXT = 'Claims unavailable. Refresh claims before creating Xero bills.';
 
 function invoiceAccounts() {
-  return xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
+  const accounts = xeroAccounts && xeroAccounts.length ? xeroAccounts : FALLBACK_ACCOUNTS;
+  return [...accounts].sort((a, b) => (
+    a.name.localeCompare(b.name, undefined, { sensitivity: 'base' })
+    || a.code.localeCompare(b.code, undefined, { numeric: true })
+  ));
 }
 
 function invoiceTaxTypes() {

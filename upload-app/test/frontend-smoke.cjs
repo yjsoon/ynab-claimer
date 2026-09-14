@@ -190,7 +190,11 @@ async function main() {
       if (url.pathname === '/xero/meta') {
         return route.fulfill({
           json: {
-            accounts: [],
+            accounts: [
+              { code: '999', name: 'Zulu Expenses' },
+              { code: '463', name: 'Computer Software' },
+              { code: '111', name: 'alpha Expenses' },
+            ],
             taxRates: [
               { taxType: 'INPUTY24', name: 'Standard-Rated Purchases' },
               { taxType: 'NONE', name: 'No Tax' },
@@ -516,6 +520,14 @@ async function main() {
 
   const accountText = await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"] .inv-cell-text').textContent();
   if (accountText !== 'Computer Software - 463') throw new Error(`account label should be name-code, got ${accountText}`);
+  await page.locator('.invoice-section[data-bucket="nongst"] [data-label="Account"]').click();
+  const accountOptions = await page.locator('.invoice-section[data-bucket="nongst"] .inv-edit-select option').allTextContents();
+  assert.deepEqual(accountOptions, [
+    'alpha Expenses - 111',
+    'Computer Software - 463',
+    'Zulu Expenses - 999',
+  ], 'invoice account options should be alphabetical by category name');
+  await page.keyboard.press('Escape');
 
   await page.locator('.invoice-section[data-bucket="nongst"] .invoice-claim-checked-btn').click();
   await page.waitForFunction(() => document.querySelector('#status')?.textContent?.includes('do not have a remembered bill from a push in this browser'));
