@@ -1252,6 +1252,7 @@ function renderInvoiceEditorDeferred() {
 export function renderInvoicesFromLoadedData() {
   buildInvoiceLines();
   renderInvoiceEditor();
+  setInvoicesLoading(false);
 }
 
 // reloadClaims: false when the action only touched receipt metadata (unlink,
@@ -2169,6 +2170,10 @@ export function showInvoicesView(show, { refresh = true } = {}) {
     loadXeroStatus();
     if (refresh && getAuthToken()) {
       refreshInvoicesView({ showLoading: true });
+    } else if (!refresh && invoiceLines.length === 0) {
+      // The initial route reuses the shared page load rather than fetching a
+      // second time. Still show progress until that data is rendered.
+      setInvoicesLoading(true);
     }
   } else {
     closeActiveInvoiceEdit({ commit: true });

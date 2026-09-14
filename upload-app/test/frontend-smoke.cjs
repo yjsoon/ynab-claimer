@@ -641,6 +641,21 @@ async function main() {
   }
   if (failedSubresources.length > 0) throw new Error(`subresource load failures: ${failedSubresources.join(', ')}`);
 
+  const initialLoadingPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  await initialLoadingPage.addInitScript(() => {
+    localStorage.setItem('claim_manager_auth', 'test');
+    localStorage.setItem('claim_manager_remember', 'true');
+  });
+  await setupMockApi(initialLoadingPage, { delayedBackend: 'howmuch' });
+  await initialLoadingPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'domcontentloaded' });
+  if (!await initialLoadingPage.locator('#invoicesLoading').isVisible()) {
+    throw new Error('initial Invoices load should show its loading state');
+  }
+  if (await initialLoadingPage.locator('#invoicesEmpty').isVisible()) {
+    throw new Error('Invoices empty state must stay hidden until initial data finishes loading');
+  }
+  await initialLoadingPage.waitForSelector('.invoice-section[data-bucket="nongst"] tr[data-id]');
+
   const authPage = await browser.newPage({ viewport: { width: 390, height: 844 } });
   await setupMockApi(authPage);
   await authPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
