@@ -78,6 +78,7 @@ const todos = [
     description: 'Subscription',
     amount: 15,
     accountName: 'Work Refundables',
+    sourceUrl: 'https://howmuch.example/transactions?plan=plan-1&transaction=claim-1',
   },
   {
     id: 'claim-2',
@@ -490,6 +491,39 @@ async function main() {
     'col-actions',
     'row actions should be in the leftmost cell',
   );
+  const sourceLink = rowActions.locator('..').locator('.inv-source-link');
+  assert.equal(await sourceLink.textContent(), 'HowMuch');
+  assert.equal(await sourceLink.getAttribute('href'), 'https://howmuch.example/transactions?plan=plan-1&transaction=claim-1');
+  assert.equal(await sourceLink.getAttribute('target'), '_blank');
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] .inv-description-payee').textContent(),
+    'Vendor B',
+  );
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] .inv-description-memo').evaluate((element) => element.closest('td')?.className),
+    'inv-cell-memo',
+    'Memo should have its own invoice field column',
+  );
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] .inv-description-memo').textContent(),
+    'Subscription',
+  );
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] .inv-description-remark').textContent(),
+    'Remark: MYR 50.00',
+  );
+  const memoCell = page.locator('.invoice-section[data-bucket="nongst"] .inv-cell-memo');
+  const memoBoundsBeforeEdit = await memoCell.boundingBox();
+  await memoCell.locator('.inv-description-memo').click();
+  assert.equal(await memoCell.locator('.inv-edit-input').count(), 0, 'single-click should not edit memo');
+  await memoCell.locator('.inv-description-memo').dblclick();
+  await memoCell.locator('.inv-edit-input').waitFor();
+  const memoBoundsDuringEdit = await memoCell.boundingBox();
+  assert.ok(
+    memoBoundsBeforeEdit && memoBoundsDuringEdit && Math.abs(memoBoundsBeforeEdit.width - memoBoundsDuringEdit.width) <= 1,
+    `memo column should remain stable during editing: ${JSON.stringify({ memoBoundsBeforeEdit, memoBoundsDuringEdit })}`,
+  );
+  await page.keyboard.press('Escape');
   assert.deepEqual(
     await rowActions.locator('button').evaluateAll((buttons) => buttons.map((button) => button.className)),
     ['inv-preview-btn', 'inv-review-btn', 'inv-unlink-btn'],
@@ -742,6 +776,21 @@ async function main() {
   await desktopPage.goto(`http://127.0.0.1:${port}/invoices`, { waitUntil: 'networkidle' });
   const invoiceContainerWidth = await desktopPage.locator('.container').evaluate((element) => element.getBoundingClientRect().width);
   assert.equal(invoiceContainerWidth, 1440, 'Invoices should use the wider desktop container');
+  const desktopRow = desktopPage.locator('.invoice-section[data-bucket="nongst"] tr[data-id]');
+  const rowLayout = () => desktopRow.evaluate((row) => ({
+    height: row.getBoundingClientRect().height,
+    cells: [...row.children].map((cell) => {
+      const { x, width } = cell.getBoundingClientRect();
+      return { x, width };
+    }),
+  }));
+  const desktopViewLayout = await rowLayout();
+  await desktopRow.locator('.inv-description-memo').dblclick();
+  await desktopRow.locator('.inv-edit-input').waitFor();
+  const desktopEditLayout = await rowLayout();
+  assert.ok(Math.abs(desktopViewLayout.height - desktopEditLayout.height) <= 1, 'Memo editing should not change row height');
+  assert.deepEqual(desktopEditLayout.cells, desktopViewLayout.cells, 'Memo editing should not move or resize invoice columns');
+  await desktopPage.keyboard.press('Escape');
   await desktopPage.locator('#navClaims').click();
   const claimsContainerWidth = await desktopPage.locator('.container').evaluate((element) => element.getBoundingClientRect().width);
   assert.equal(claimsContainerWidth, 1100, 'Claims should retain its existing desktop width');

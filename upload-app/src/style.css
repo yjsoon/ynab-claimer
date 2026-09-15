@@ -2155,11 +2155,11 @@ body.selecting .claims-view {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-areas:
-      "desc amount"
+      "payee amount"
+      "memo memo"
       "date date"
       "account account"
       "type type"
-      "remark remark"
       "tax tax"
       "actions actions";
     column-gap: 10px;
@@ -2193,8 +2193,8 @@ body.selecting .claims-view {
     padding: 0;
   }
 
-  .invoice-doc-table tbody td.inv-cell-description {
-    grid-area: desc;
+  .invoice-doc-table tbody td.inv-cell-payee {
+    grid-area: payee;
     padding: 0;
     flex-direction: column;
     gap: 4px;
@@ -2205,21 +2205,26 @@ body.selecting .claims-view {
     justify-content: center;
   }
 
+  .invoice-doc-table tbody td.inv-cell-memo {
+    grid-area: memo;
+    padding: 6px 0;
+  }
+
   /* Editing the title: give the input the full header width and drop the
      amount to its own row directly beneath, keeping every named area placed. */
-  .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) {
+  .invoice-doc-table tbody tr:has(td.inv-cell-memo .is-editing) {
     grid-template-areas:
-      "desc desc"
+      "payee payee"
+      "memo memo"
       "amount amount"
       "date date"
       "account account"
       "type type"
-      "remark remark"
       "tax tax"
       "actions actions";
   }
 
-  .invoice-doc-table tbody tr:has(td.inv-cell-description.is-editing) td.inv-cell-amount {
+  .invoice-doc-table tbody tr:has(td.inv-cell-memo .is-editing) td.inv-cell-amount {
     justify-content: flex-end;
     min-height: 0;
     padding-top: 6px;
@@ -2240,7 +2245,8 @@ body.selecting .claims-view {
     font-size: 1rem;
   }
 
-  .invoice-doc-table tbody td.inv-cell-description::before,
+  .invoice-doc-table tbody td.inv-cell-payee::before,
+  .invoice-doc-table tbody td.inv-cell-memo::before,
   .invoice-doc-table tbody td.inv-cell-amount::before {
     display: none;
   }
@@ -2254,7 +2260,6 @@ body.selecting .claims-view {
 
   .invoice-doc-table tbody td[data-field="accountCode"] { grid-area: account; }
   .invoice-doc-table tbody td.inv-cell-type { grid-area: type; }
-  .invoice-doc-table tbody td[data-field="remark"] { grid-area: remark; }
   .invoice-doc-table tbody td.inv-cell-tax { grid-area: tax; }
   .invoice-doc-table tbody td.col-actions { grid-area: actions; }
 
@@ -3146,6 +3151,62 @@ body.selecting .claims-view {
   min-height: 1.2em;
 }
 
+.inv-description-stack,
+.inv-action-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.inv-description-payee {
+  font-weight: 600;
+  color: #1f2937;
+}
+
+.inv-description-memo,
+.inv-description-remark,
+.inv-source-label {
+  color: #64748b;
+  font-size: 0.78rem;
+  font-weight: 400;
+  line-height: 1.25;
+}
+
+.inv-cell-memo,
+.inv-description-memo,
+.inv-description-remark {
+  min-width: 0;
+}
+
+.inv-description-memo,
+.inv-description-remark {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inv-detail-label {
+  font-weight: 600;
+}
+
+.inv-source-label {
+  text-align: left;
+  padding-left: 2px;
+}
+
+.inv-source-link {
+  width: fit-content;
+  color: #2563eb;
+  text-decoration: underline;
+  text-decoration-color: #93c5fd;
+  text-underline-offset: 2px;
+}
+
+.inv-source-link:hover {
+  color: #1d4ed8;
+  text-decoration-color: currentColor;
+}
+
 .inv-cell-static {
   color: #64748b;
   font-size: 0.85rem;
@@ -3421,9 +3482,17 @@ body.selecting .claims-view {
 
 .invoice-doc-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 0.88rem;
 }
+
+.invoice-doc-table .col-date { width: 110px; }
+.invoice-doc-table .col-payee { width: 150px; }
+.invoice-doc-table .col-account { width: 220px; }
+.invoice-doc-table .col-type { width: 90px; }
+.invoice-doc-table .col-tax { width: 160px; }
+.invoice-doc-table .col-amount { width: 100px; }
 
 .invoice-doc-table th,
 .invoice-doc-table td {
@@ -3528,6 +3597,21 @@ body.selecting .claims-view {
   background: #0f172a;
   border-color: #166534;
   color: #4ade80;
+}
+
+:root[data-theme="dark"] .inv-description-payee {
+  color: #e2e8f0;
+}
+
+:root[data-theme="dark"] .inv-description-memo,
+:root[data-theme="dark"] .inv-description-remark,
+:root[data-theme="dark"] .inv-source-label {
+  color: #94a3b8;
+}
+
+:root[data-theme="dark"] .inv-source-link {
+  color: #60a5fa;
+  text-decoration-color: #1d4ed8;
 }
 
 :root[data-theme="dark"] .inv-review-btn.is-reviewed {

@@ -497,6 +497,7 @@ function buildInvoiceLines() {
         ynabClaimId: isReadyOnly ? null : claimId,
         claimSource: claim?.source || null,
         claimsBackend,
+        sourceUrl: claimsBackend === 'howmuch' ? (claim?.sourceUrl || '') : '',
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
         xeroPendingInvoiceNumber: receipt.xeroPendingInvoiceNumber || '',
         // Default excluded when there's no usable amount yet, so we never push $0.00.
@@ -670,6 +671,33 @@ function renderInvoiceStaleNoteRow() {
     </tr>`;
 }
 
+function invoiceMemoHtml(line) {
+  return escapeHtml(line.description || '—');
+}
+
+function invoiceRemarkHtml(line) {
+  return `<span class="inv-detail-label">Remark:</span> ${escapeHtml(line.remark || '—')}`;
+}
+
+function invoiceMemoRemarkHtml(line) {
+  return `
+    <div class="inv-description-stack">
+      <div class="inv-cell-editable inv-description-memo" data-field="description" title="Double-click memo to edit">${invoiceMemoHtml(line)}</div>
+      <div class="inv-cell-editable inv-description-remark" data-field="remark" title="Double-click remark to edit">${invoiceRemarkHtml(line)}</div>
+    </div>`;
+}
+
+function invoiceSourceLabel(line) {
+  if (!line.ynabClaimId) return 'Receipt only';
+  return line.claimsBackend === 'howmuch' ? 'HowMuch' : 'YNAB';
+}
+
+function invoiceSourceHtml(line) {
+  const label = invoiceSourceLabel(line);
+  if (!line.sourceUrl) return `<span class="inv-source-label">${label}</span>`;
+  return `<a class="inv-source-label inv-source-link" href="${escapeHtml(line.sourceUrl)}" target="_blank" rel="noopener noreferrer" aria-label="Open ${label} transaction">${label}</a>`;
+}
+
 function renderInvoiceLineRow(line, accounts) {
   const section = getLineSection(line);
   const reviewed = isLineReviewed(line);
@@ -677,21 +705,24 @@ function renderInvoiceLineRow(line, accounts) {
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
       <td class="col-actions" data-label="Actions">
-        <div class="inv-row-actions">
-          <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
-          <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
-              aria-pressed="${reviewed ? 'true' : 'false'}"
-              aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
-            <span class="inv-review-check" aria-hidden="true">✓</span>
-          </button>
-          <button type="button" class="inv-unlink-btn" title="Unlink from invoice list" aria-label="Unlink from invoice list">⛔</button>
+        <div class="inv-action-stack">
+          <div class="inv-row-actions">
+            <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
+            <button type="button" class="inv-review-btn${reviewed ? ' is-reviewed' : ''}"
+                aria-pressed="${reviewed ? 'true' : 'false'}"
+                aria-label="${reviewed ? 'Marked reviewed — tap to unmark' : 'Mark line as reviewed after checking receipt'}">
+              <span class="inv-review-check" aria-hidden="true">✓</span>
+            </button>
+            <button type="button" class="inv-unlink-btn" title="Unlink from invoice list" aria-label="Unlink from invoice list">⛔</button>
+          </div>
+          ${invoiceSourceHtml(line)}
         </div>
       </td>
       <td class="inv-cell-editable inv-cell-date" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
-      <td class="inv-cell-editable inv-cell-description" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
+      <td class="inv-cell-payee" data-label="Payee"><span class="inv-description-payee">${escapeHtml(line.payee || 'Unknown payee')}</span></td>
+      <td class="inv-cell-memo" data-label="Memo">${invoiceMemoRemarkHtml(line)}</td>
+      <td class="inv-cell-editable inv-cell-account" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
       <td class="inv-cell-editable inv-cell-type" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
-      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
       <td class="inv-cell-editable inv-cell-tax" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit">${taxTypeCellHtml(deriveTaxType(line))}</td>
       <td class="num inv-cell-editable inv-cell-amount" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
     </tr>${invalidated ? renderInvoiceStaleNoteRow() : ''}`;
@@ -748,13 +779,13 @@ function renderInvoiceSection(bucket, lines, accounts) {
             <thead>
               <tr>
                 <th class="col-actions">Actions</th>
-                <th>Date</th>
-                <th>Description</th>
-                <th>Account</th>
-                <th>Type</th>
-                <th>Remark</th>
-                <th>Tax</th>
-                <th class="num">Amount</th>
+                <th class="col-date">Date</th>
+                <th class="col-payee">Payee</th>
+                <th class="col-memo">Memo</th>
+                <th class="col-account">Account</th>
+                <th class="col-type">Type</th>
+                <th class="col-tax">Tax</th>
+                <th class="col-amount num">Amount</th>
               </tr>
             </thead>
             <tbody>${rowsHtml || `<tr><td colspan="8" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
@@ -786,9 +817,17 @@ function commitActiveInvoiceEdit() {
   closeActiveInvoiceEdit({ commit: true });
 }
 
-function attachTextEditCell(cell, line, field, { inputType = 'text', inputAttrs = '', format, parse }) {
+function attachTextEditCell(cell, line, field, {
+  inputType = 'text', inputAttrs = '', format, parse, displayHtml, editOnDoubleClick = false,
+}) {
   const renderDisplay = () => {
     cell.classList.remove('is-editing');
+    if (displayHtml) {
+      cell.innerHTML = displayHtml(line);
+      cell.onclick = editOnDoubleClick ? null : () => startEdit();
+      cell.ondblclick = editOnDoubleClick ? () => startEdit() : null;
+      return;
+    }
     const value = format ? format(line[field]) : (line[field] ?? '');
     const text = String(value ?? '').trim();
     // An empty value still needs something to tap on.
@@ -1045,10 +1084,18 @@ function attachInvoiceRowEditors(tr, line, accounts) {
     });
   }
   attachTextEditCell(tr.querySelector('[data-field="date"]'), line, 'date', { inputType: 'date' });
-  attachTextEditCell(tr.querySelector('[data-field="description"]'), line, 'description', { inputType: 'text' });
+  attachTextEditCell(tr.querySelector('[data-field="description"]'), line, 'description', {
+    inputType: 'text',
+    displayHtml: invoiceMemoHtml,
+    editOnDoubleClick: true,
+  });
+  attachTextEditCell(tr.querySelector('[data-field="remark"]'), line, 'remark', {
+    inputType: 'text',
+    displayHtml: invoiceRemarkHtml,
+    editOnDoubleClick: true,
+  });
   attachAccountEditCell(tr.querySelector('[data-field="accountCode"]'), line, accounts);
   attachTypeEditCell(tr.querySelector('[data-field="section"]'), line);
-  attachTextEditCell(tr.querySelector('[data-field="remark"]'), line, 'remark', { inputType: 'text' });
   attachTaxTypeEditCell(tr.querySelector('[data-field="taxType"]'), line);
   attachTextEditCell(tr.querySelector('[data-field="amount"]'), line, 'amount', {
     inputType: 'number',

@@ -140,6 +140,7 @@ interface YnabTodo {
   categoryName?: string;
   source: 'transaction' | 'subtransaction';
   parentTransactionId?: string;
+  sourceUrl?: string;
 }
 
 type ClaimsBackend = 'howmuch' | 'ynab';
@@ -431,6 +432,14 @@ function sortYnabTodos(todos: YnabTodo[]): YnabTodo[] {
   return todos.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 }
 
+function howMuchTransactionUrl(config: ClaimsBackendConfig, todo: YnabTodo): string {
+  const url = new URL('/transactions', config.apiUrl);
+  url.searchParams.set('plan', config.planId);
+  url.searchParams.set('transaction', todo.parentTransactionId || todo.id);
+  if (todo.parentTransactionId) url.searchParams.set('subtransaction', todo.id);
+  return url.toString();
+}
+
 function parseExplicitClaimsBackend(value: unknown): ClaimsBackend {
   if (value === 'howmuch' || value === 'ynab') return value;
   throw new ClaimsBackendInputError(`Unsupported claims backend: ${String(value)}`);
@@ -557,6 +566,12 @@ async function fetchYnabTodos(
     }
     todos.push(...subtransactionTodos);
   });
+
+  if (backend === 'howmuch') {
+    todos.forEach((todo) => {
+      todo.sourceUrl = howMuchTransactionUrl(config, todo);
+    });
+  }
 
   return sortYnabTodos(todos);
 }
