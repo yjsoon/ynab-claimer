@@ -38,6 +38,10 @@ jobs:
         working-directory: upload-app
         run: npm run smoke:frontend
 
+      - name: Worker claims smoke test
+        working-directory: upload-app
+        run: npm run smoke:worker-claims
+
       - name: Verify HowMuch secret exists
         if: github.event_name == 'push'
         working-directory: upload-app

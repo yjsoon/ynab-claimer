@@ -644,6 +644,9 @@ async function main() {
   if (markClaimRequests[0].lineItems[0].claimsBackend !== 'howmuch') {
     throw new Error(`mark claimed line should retain HowMuch provenance, got ${markClaimRequests[0].lineItems[0].claimsBackend}`);
   }
+  if (markClaimRequests[0].lineItems[0].claimDescription !== 'Subscription') {
+    throw new Error(`mark claimed line should retain the original claim description, got ${markClaimRequests[0].lineItems[0].claimDescription}`);
+  }
   primaryMockState.delayMarkClaimed = false;
 
   let taxCell = page.locator('.invoice-section[data-bucket="nongst"] [data-label="Tax"]');

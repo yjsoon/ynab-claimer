@@ -201,6 +201,7 @@ interface PushLineItem {
   receiptKey: string;
   ynabClaimId?: string | null;
   claimSource?: 'transaction' | 'subtransaction' | null;
+  claimDescription?: string | null;
   claimsBackend?: ClaimsBackend;
   date: string;
   description: string;
@@ -1450,6 +1451,9 @@ function parsePushLineItems(raw: unknown): PushLineItem[] {
     if (line.date !== undefined && typeof line.date !== 'string') {
       throw new ClaimsBackendInputError(`Invalid date on invoice line ${index + 1}.`);
     }
+    if (line.claimDescription !== undefined && line.claimDescription !== null && typeof line.claimDescription !== 'string') {
+      throw new ClaimsBackendInputError(`Invalid claim description on invoice line ${index + 1}.`);
+    }
     if (line.currency !== undefined && typeof line.currency !== 'string') {
       throw new ClaimsBackendInputError(`Invalid currency on invoice line ${index + 1}.`);
     }
@@ -1459,6 +1463,7 @@ function parsePushLineItems(raw: unknown): PushLineItem[] {
       ynabClaimId: typeof line.ynabClaimId === 'string' ? line.ynabClaimId : null,
       claimSource:
         line.claimSource === 'transaction' || line.claimSource === 'subtransaction' ? line.claimSource : null,
+      claimDescription: typeof line.claimDescription === 'string' ? line.claimDescription.trim() : null,
       claimsBackend:
         line.claimsBackend === undefined ? undefined : parseExplicitClaimsBackend(line.claimsBackend),
       date: typeof line.date === 'string' ? line.date : '',
@@ -1728,6 +1733,9 @@ async function buildClaimReceiptPdf(
 }
 
 type YnabClaimResult = { status: 'claimed' | 'skipped' | 'failed'; detail?: string };
+type ClaimLine = PushLineItem & { ynabClaimId: string };
+
+const HOWMUCH_UPDATE_BATCH_SIZE = 100;
 
 async function readYnabError(response: Response): Promise<string> {
   const text = await response.text();
@@ -1740,6 +1748,76 @@ async function readYnabError(response: Response): Promise<string> {
     /* fall back to raw text */
   }
   return text.replace(/\s+/g, ' ').slice(0, 180);
+}
+
+async function markHowMuchClaimed(
+  env: Env,
+  claims: ClaimLine[],
+  claimedDate = singaporeToday()
+): Promise<Array<{ id: string; status: string; detail?: string }>> {
+  const results = new Map<string, YnabClaimResult>();
+  const pending = claims.filter((claim) => {
+    if (claim.claimSource === 'subtransaction' || claim.ynabClaimId.includes('_st_')) {
+      results.set(claim.ynabClaimId, { status: 'skipped', detail: 'Subtransactions must be updated manually.' });
+      return false;
+    }
+    if (!claim.claimDescription) {
+      results.set(claim.ynabClaimId, { status: 'failed', detail: 'Original claim description is missing; refresh and retry.' });
+      return false;
+    }
+    return true;
+  });
+  if (pending.length === 0) {
+    return claims.map((claim) => ({ id: claim.ynabClaimId, ...results.get(claim.ynabClaimId)! }));
+  }
+  const config = claimsBackendConfig(env, 'howmuch');
+
+  for (let offset = 0; offset < pending.length; offset += HOWMUCH_UPDATE_BATCH_SIZE) {
+    const batch = pending.slice(offset, offset + HOWMUCH_UPDATE_BATCH_SIZE);
+    const updates = batch.map((claim) => ({
+      id: claim.ynabClaimId,
+      memo: `CLAIMED - ${claimedDate}: ${claim.claimDescription}`,
+    }));
+
+    try {
+      const response = await fetch(`${config.apiUrl}/plans/${encodeURIComponent(config.planId)}/transactions`, {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${config.token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ transactions: updates }),
+      });
+      if (!response.ok) {
+        const detail = await readYnabError(response);
+        batch.forEach((claim) => results.set(claim.ynabClaimId, { status: 'failed', detail }));
+        break;
+      }
+
+      const body = (await response.json()) as {
+        data?: { transactions?: Array<{ id?: string; memo?: string | null }> };
+      };
+      const returned = new Map((body.data?.transactions || []).map((transaction) => [transaction.id, transaction.memo]));
+      batch.forEach((claim, index) => {
+        const update = updates[index];
+        results.set(
+          claim.ynabClaimId,
+          returned.get(claim.ynabClaimId) === update.memo
+            ? { status: 'claimed' }
+            : { status: 'failed', detail: 'HowMuch did not confirm the requested memo update.' }
+        );
+      });
+      if (batch.some((claim) => results.get(claim.ynabClaimId)?.status === 'failed')) break;
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      batch.forEach((claim) => results.set(claim.ynabClaimId, { status: 'failed', detail }));
+      break;
+    }
+  }
+
+  pending.forEach((claim) => {
+    if (!results.has(claim.ynabClaimId)) {
+      results.set(claim.ynabClaimId, { status: 'failed', detail: 'Not attempted after a HowMuch batch update failed.' });
+    }
+  });
+  return claims.map((claim) => ({ id: claim.ynabClaimId, ...results.get(claim.ynabClaimId)! }));
 }
 
 // Flip a transaction memo from "TODO: ..." to "CLAIMED - YYYY-MM-DD: ...".
@@ -2446,14 +2524,19 @@ export default {
           const claims = Array.from(
             new Map(
               lineItems
-                .filter((line): line is PushLineItem & { ynabClaimId: string } => Boolean(line.ynabClaimId))
+                .filter((line): line is ClaimLine => Boolean(line.ynabClaimId))
                 .map((line) => [line.ynabClaimId, line])
             ).values()
           );
-          const claimedYnab: Array<{ id: string; status: string; detail?: string }> = [];
-          for (const claim of claims) {
-            const result = await markYnabClaimed(env, claim.ynabClaimId, claimedDate, backend, claim.claimSource || null);
-            claimedYnab.push({ id: claim.ynabClaimId, ...result });
+          let claimedYnab: Array<{ id: string; status: string; detail?: string }>;
+          if (backend === 'howmuch') {
+            claimedYnab = await markHowMuchClaimed(env, claims, claimedDate);
+          } else {
+            claimedYnab = [];
+            for (const claim of claims) {
+              const result = await markYnabClaimed(env, claim.ynabClaimId, claimedDate, backend, claim.claimSource || null);
+              claimedYnab.push({ id: claim.ynabClaimId, ...result });
+            }
           }
 
           const ynabIssues = claimedYnab.filter((item) => item.status === 'failed');

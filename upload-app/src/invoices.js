@@ -496,6 +496,7 @@ function buildInvoiceLines() {
         receiptName: getReceiptDisplayName(receipt),
         ynabClaimId: isReadyOnly ? null : claimId,
         claimSource: claim?.source || null,
+        claimDescription: claim?.description || null,
         claimsBackend,
         sourceUrl: claimsBackend === 'howmuch' ? (claim?.sourceUrl || '') : '',
         xeroPendingInvoiceId: receipt.xeroPendingInvoiceId || '',
@@ -1414,6 +1415,7 @@ function pushPayloadForLines(bucket, reference, lines, pageRefs = null) {
       receiptKey: l.receiptKey,
       ynabClaimId: l.ynabClaimId,
       claimSource: l.claimSource || null,
+      claimDescription: l.claimDescription || null,
       claimsBackend: l.claimsBackend || backend,
       date: l.date,
       description: lineToDescriptionWithPageRef(l, pageRefs),
@@ -1831,9 +1833,13 @@ async function submitClaimed(invoiceID, lineItems) {
   const backends = [...new Set(lineItems.filter((item) => item.ynabClaimId).map(rememberedClaimsBackendForItem))];
   if (backends.length > 1) throw new Error('Cannot mark claims from different backends together.');
   const backend = backends[0] || getClaimsBackend();
+  const claimsById = new Map(claimsData.map((claim) => [claim.id, claim]));
   const attributedLineItems = lineItems.map((item) => ({
     ...item,
     claimsBackend: item.ynabClaimId ? rememberedClaimsBackendForItem(item) : undefined,
+    claimDescription: item.ynabClaimId
+      ? claimsById.get(item.ynabClaimId)?.description || item.claimDescription
+      : undefined,
   }));
   const res = await fetch(`${API_BASE}/xero/invoices/mark-claimed`, {
     method: 'POST',
