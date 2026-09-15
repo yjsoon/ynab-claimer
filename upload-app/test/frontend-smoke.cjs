@@ -480,6 +480,16 @@ async function main() {
   if (!disabledBefore) throw new Error('push should be disabled before review');
 
   const rowActions = page.locator('.invoice-section[data-bucket="nongst"] .inv-row-actions');
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] thead th').first().textContent(),
+    'Actions',
+    'Actions should be the leftmost invoice column',
+  );
+  assert.equal(
+    await page.locator('.invoice-section[data-bucket="nongst"] tbody tr[data-id] td').first().getAttribute('class'),
+    'col-actions',
+    'row actions should be in the leftmost cell',
+  );
   assert.deepEqual(
     await rowActions.locator('button').evaluateAll((buttons) => buttons.map((button) => button.className)),
     ['inv-preview-btn', 'inv-review-btn', 'inv-unlink-btn'],

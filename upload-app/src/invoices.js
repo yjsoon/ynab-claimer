@@ -676,13 +676,6 @@ function renderInvoiceLineRow(line, accounts) {
   const invalidated = line.reviewInvalidated === true;
   return `
     <tr data-id="${escapeHtml(line.id)}" class="${reviewed ? 'inv-row-reviewed' : ''}${invalidated ? ' inv-row-stale' : ''}">
-      <td class="inv-cell-editable inv-cell-date" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
-      <td class="inv-cell-editable inv-cell-description" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
-      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
-      <td class="inv-cell-editable inv-cell-type" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
-      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
-      <td class="inv-cell-editable inv-cell-tax" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit">${taxTypeCellHtml(deriveTaxType(line))}</td>
-      <td class="num inv-cell-editable inv-cell-amount" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
       <td class="col-actions" data-label="Actions">
         <div class="inv-row-actions">
           <button type="button" class="inv-preview-btn" title="Preview receipt" aria-label="Preview receipt">${EYE_ICON}</button>
@@ -694,6 +687,13 @@ function renderInvoiceLineRow(line, accounts) {
           <button type="button" class="inv-unlink-btn" title="Unlink from invoice list" aria-label="Unlink from invoice list">⛔</button>
         </div>
       </td>
+      <td class="inv-cell-editable inv-cell-date" data-label="Date" data-field="date" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.date || '—')}</span></td>
+      <td class="inv-cell-editable inv-cell-description" data-label="Description" data-field="description" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.description || '—')}</span></td>
+      <td class="inv-cell-editable" data-label="Account" data-field="accountCode" data-input="select" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(accountLabel(line.accountCode, accounts))}</span></td>
+      <td class="inv-cell-editable inv-cell-type" data-label="Type" data-field="section" data-input="type" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(BUCKET_LABEL[section])}</span></td>
+      <td class="inv-cell-editable" data-label="Remark" data-field="remark" data-input="text" title="Tap to edit"><span class="inv-cell-text">${escapeHtml(line.remark || '—')}</span></td>
+      <td class="inv-cell-editable inv-cell-tax" data-label="Tax" data-field="taxType" data-input="select" title="Tap to edit">${taxTypeCellHtml(deriveTaxType(line))}</td>
+      <td class="num inv-cell-editable inv-cell-amount" data-label="Amount" data-field="amount" data-input="text" title="Tap to edit"><span class="inv-cell-text">S$${Number(line.amount).toFixed(2)}</span></td>
     </tr>${invalidated ? renderInvoiceStaleNoteRow() : ''}`;
 }
 
@@ -747,6 +747,7 @@ function renderInvoiceSection(bucket, lines, accounts) {
           <table class="invoice-doc-table">
             <thead>
               <tr>
+                <th class="col-actions">Actions</th>
                 <th>Date</th>
                 <th>Description</th>
                 <th>Account</th>
@@ -754,15 +755,14 @@ function renderInvoiceSection(bucket, lines, accounts) {
                 <th>Remark</th>
                 <th>Tax</th>
                 <th class="num">Amount</th>
-                <th class="col-actions">Actions</th>
               </tr>
             </thead>
             <tbody>${rowsHtml || `<tr><td colspan="8" class="empty-state">No ${BUCKET_LABEL[bucket]} items yet.</td></tr>`}</tbody>
             <tfoot>
               <tr>
+                <td></td>
                 <td colspan="6" class="num"><strong>Total</strong></td>
                 <td class="num"><strong>S$${total.toFixed(2)}</strong></td>
-                <td></td>
               </tr>
             </tfoot>
           </table>
