@@ -516,6 +516,14 @@ async function main() {
   const disabledAfter = await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').isDisabled();
   if (disabledAfter) throw new Error('preview check should review the line and enable push');
 
+  let defaultBillReference = '';
+  page.once('dialog', async (dialog) => {
+    defaultBillReference = dialog.defaultValue();
+    await dialog.dismiss();
+  });
+  await page.locator('.invoice-section[data-bucket="nongst"] .invoice-push-btn').click();
+  assert.equal(defaultBillReference, 'Non-GST - YJ Jun-Jun 2026', 'bill reference should use the claim type and month range');
+
   invoiceReceipt.linkedClaimsBackend = 'ynab';
   invoiceReceipt.xeroPendingClaimsBackend = 'ynab';
   await page.locator('#claimsBackend').selectOption('ynab');

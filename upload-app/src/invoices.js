@@ -598,7 +598,7 @@ function invoicePeriodLabel(lines) {
   const startYear = start.slice(0, 4);
   const endYear = end.slice(0, 4);
   if (startYear === endYear && start.slice(5, 7) === end.slice(5, 7)) {
-    return `${monthName(start)} ${startYear}`;
+    return `${monthName(start)}-${monthName(end)} ${startYear}`;
   }
   if (startYear === endYear) return `${monthName(start)}-${monthName(end)} ${startYear}`;
   return `${monthName(start)} ${startYear}-${monthName(end)} ${endYear}`;
@@ -607,7 +607,7 @@ function invoicePeriodLabel(lines) {
 function defaultDraftReference(bucket, lines = []) {
   const period = invoicePeriodLabel(lines);
   const label = BUCKET_LABEL[bucket];
-  return period ? `${period} ${label}` : label;
+  return period ? `${label} - YJ ${period}` : label;
 }
 
 function invoiceSectionStatusHtml() {
